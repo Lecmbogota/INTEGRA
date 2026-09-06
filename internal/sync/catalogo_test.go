@@ -264,7 +264,7 @@ func (t *tiendaFalsa) VariantesPorOdooID(context.Context, int64) (map[int64]int6
 	return copia, nil
 }
 
-func (t *tiendaFalsa) ReemplazarStock(_ context.Context, filas []store.FilaStock) error {
+func (t *tiendaFalsa) ReemplazarStock(_ context.Context, _ int64, filas []store.FilaStock) error {
 	t.stock = filas
 	return nil
 }

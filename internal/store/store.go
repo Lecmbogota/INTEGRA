@@ -382,15 +382,25 @@ type FilaStock struct {
 // Borrar e insertar en una transacción evita el fallo clásico del upsert: una
 // bodega que se vació del todo desaparece de stock.quant, y con un upsert su
 // fila vieja se quedaría publicando existencias que ya no hay.
-func (s *Store) ReemplazarStock(ctx context.Context, filas []FilaStock) error {
+func (s *Store) ReemplazarStock(ctx context.Context, conexionID int64, filas []FilaStock) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
 
-	if _, err := tx.Exec(ctx, `DELETE FROM variant_stock`); err != nil {
-		return fmt.Errorf("limpiando el stock: %w", err)
+	// El borrado se acota a la conexión que se está sincronizando. Sin el
+	// WHERE, sincronizar una conexión dejaba a cero el stock de todas las
+	// demás, y como las consultas de publicación no filtran por conexión,
+	// esos productos seguían siendo candidatos: el motor creaba una SEGUNDA
+	// publicación del mismo SKU en el canal, con stock cero, mientras la
+	// buena seguía viva. Ocurre en el traslado entre instancias
+	// (`integra conexiones migrar`), que es justo cuando conviven dos.
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM variant_stock vs
+		USING product_variants v JOIN products p ON p.id = v.product_id
+		WHERE vs.variant_id = v.id AND p.odoo_connection_id = $1`, conexionID); err != nil {
+		return fmt.Errorf("limpiando el stock de la conexión %d: %w", conexionID, err)
 	}
 	for _, f := range filas {
 		if f.OnHand == 0 && f.Forecast == 0 && f.Free == 0 {

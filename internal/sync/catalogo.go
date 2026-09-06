@@ -47,7 +47,7 @@ type almacen interface {
 	UpsertAlmacenes(ctx context.Context, conexionID int64, as []store.Almacen) (map[int64]int64, error)
 	UpsertIdentidad(ctx context.Context, conexionID int64, ident store.Identidad) (int64, int64, error)
 	VariantesPorOdooID(ctx context.Context, conexionID int64) (map[int64]int64, error)
-	ReemplazarStock(ctx context.Context, filas []store.FilaStock) error
+	ReemplazarStock(ctx context.Context, conexionID int64, filas []store.FilaStock) error
 	RecalcularAtencion(ctx context.Context) error
 	ActualizarWatermark(ctx context.Context, conexionID int64, hasta time.Time) error
 	AjustarActividad(ctx context.Context, conexionID int64, activas, inactivas []int64) (altas, bajas int, err error)
@@ -223,7 +223,7 @@ func (s *Sincronizador) Catalogo(ctx context.Context, conexionID int64, desde ti
 			OnHand: q.onHand, Forecast: q.forecast, Free: q.free,
 		})
 	}
-	if err := s.st.ReemplazarStock(ctx, filasStock); err != nil {
+	if err := s.st.ReemplazarStock(ctx, conexionID, filasStock); err != nil {
 		return nil, err
 	}
 
