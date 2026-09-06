@@ -169,6 +169,16 @@ func (p *Planificador) planificarTodas(ctx context.Context, h store.Horario) err
 			return err
 		}
 	}
+	// Antes de encolar montajes, se rescata lo que falló por un SKU que
+	// todavía no estaba sincronizado: si el catálogo ya lo tiene, la línea se
+	// empareja y el pedido vuelve a la cola en vez de quedarse perdido.
+	if lin, ped, err := p.st.ReemparejarLineasHuerfanas(ctx); err != nil {
+		return err
+	} else if lin > 0 || ped > 0 {
+		p.log.Info("pedidos rescatados al aparecer su SKU en el catálogo",
+			"lineas_emparejadas", lin, "pedidos_reactivados", ped)
+	}
+
 	// Red de seguridad para el montaje en Odoo: la ingesta encola cada pedido
 	// nuevo, pero un pedido guardado antes de que existiera ese encolado, o
 	// uno cuyo trabajo se perdió, se quedaría en 'received' para siempre. Esta

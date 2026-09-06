@@ -189,6 +189,57 @@ func (s *Store) OrdenesPendientesOdoo(ctx context.Context, limite int) ([]Orden,
 	return out, nil
 }
 
+// ReemparejarLineasHuerfanas vuelve a buscar la variante de las líneas que se
+// guardaron sin ella, y devuelve al circuito los pedidos que fallaron por eso.
+//
+// El emparejamiento por SKU solo se hacía al insertar la línea. Un pedido de
+// un producto que aún no se había sincronizado quedaba con variant_id nulo,
+// fallaba cinco veces al montarse en Odoo y desaparecía de la cola de
+// pendientes para siempre: ni sincronizar el catálogo después lo rescataba,
+// porque las líneas de un pedido ya existente no se vuelven a tocar y el
+// contador de intentos solo sube. Era un pedido cobrado que nunca llegaba a
+// Odoo, sin más rastro que una alerta.
+//
+// Devuelve cuántas líneas se emparejaron y cuántos pedidos se reactivaron.
+func (s *Store) ReemparejarLineasHuerfanas(ctx context.Context) (lineas, pedidos int, err error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer tx.Rollback(ctx)
+
+	tag, err := tx.Exec(ctx, `
+		UPDATE channel_order_lines l
+		SET variant_id = v.id
+		FROM product_variants v
+		WHERE l.variant_id IS NULL
+		  AND l.channel_sku IS NOT NULL
+		  AND lower(v.sku) = lower(l.channel_sku)
+		  AND v.active`)
+	if err != nil {
+		return 0, 0, fmt.Errorf("reemparejando líneas de pedido: %w", err)
+	}
+	lineas = int(tag.RowsAffected())
+
+	// Solo se reactiva lo que falló por falta de mapeo y ya no le falta: un
+	// pedido con líneas todavía sin variante seguiría fallando igual, y
+	// reiniciarle los intentos lo dejaría girando en la cola sin avanzar.
+	tag, err = tx.Exec(ctx, `
+		UPDATE channel_orders o
+		SET status = 'received', sync_attempts = 0, sync_error = NULL, updated_at = now()
+		WHERE o.status = 'failed'
+		  AND o.odoo_sale_order_id IS NULL
+		  AND NOT EXISTS (
+		      SELECT 1 FROM channel_order_lines l
+		      WHERE l.channel_order_id = o.id AND l.variant_id IS NULL)`)
+	if err != nil {
+		return 0, 0, fmt.Errorf("reactivando pedidos emparejados: %w", err)
+	}
+	pedidos = int(tag.RowsAffected())
+
+	return lineas, pedidos, tx.Commit(ctx)
+}
+
 // OrdenPendientePorID devuelve un pedido concreto si sigue pendiente de
 // montarse en Odoo, o nil si ya se creó, se descartó o agotó los intentos.
 //
