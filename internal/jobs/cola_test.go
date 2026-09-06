@@ -115,7 +115,7 @@ func TestFallarReintentaConBackoffYAgota(t *testing.T) {
 	if _, err := cola.Reclamar(ctx, 50, time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	if err := cola.Fallar(ctx, id, "primer tropiezo"); err != nil {
+	if err := cola.Fallar(ctx, id, "primer tropiezo", 0); err != nil {
 		t.Fatal(err)
 	}
 	var estado string
@@ -139,7 +139,7 @@ func TestFallarReintentaConBackoffYAgota(t *testing.T) {
 	if _, err := cola.Reclamar(ctx, 50, time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	if err := cola.Fallar(ctx, id, "segundo tropiezo"); err != nil {
+	if err := cola.Fallar(ctx, id, "segundo tropiezo", 0); err != nil {
 		t.Fatal(err)
 	}
 	if err := cola.pool.QueryRow(ctx,
@@ -177,3 +177,87 @@ func TestRecuperarHuerfanos(t *testing.T) {
 		t.Fatalf("el huérfano debía volver a pending, quedó %s", estado)
 	}
 }
+
+// El bloqueo de un canal dura lo que dice el canal: reintentar a los 30 s
+// mientras MercadoLibre nos tiene parados una hora no publica nada, alarga el
+// bloqueo y gasta los cinco intentos en ocho minutos, de modo que el catálogo
+// entero acaba en failed justo cuando la API vuelve a aceptar escrituras.
+func TestElTrabajoFrenadoPorElCanalNoVuelveAntesDeLaHoraQuePidio(t *testing.T) {
+	ctx := context.Background()
+	cola := NuevaCola(abrirPool(t))
+
+	id, err := cola.Encolar(ctx, "test_cupo", nil, Opciones{Priority: prioridadDePrueba})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cola.Reclamar(ctx, 50, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if err := cola.Fallar(ctx, id, "429: llamadas por segundo excedidas", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+
+	var runAt time.Time
+	if err := cola.pool.QueryRow(ctx,
+		`SELECT run_at FROM jobs WHERE id = $1`, id).Scan(&runAt); err != nil {
+		t.Fatal(err)
+	}
+	// Con el backoff solo, el primer reintento caería a los 30 s.
+	if falta := time.Until(runAt); falta < 55*time.Minute {
+		t.Fatalf("el canal pidió una hora y el reintento se programó dentro de %v", falta.Round(time.Second))
+	}
+}
+
+// La espera del canal es un mínimo, no un sustituto: si el backoff ya es más
+// largo (intentos avanzados), manda el backoff.
+func TestLaEsperaDelCanalNoAcortaElBackoff(t *testing.T) {
+	ctx := context.Background()
+	cola := NuevaCola(abrirPool(t))
+
+	id, err := cola.Encolar(ctx, "test_cupo_corto", nil,
+		Opciones{Priority: prioridadDePrueba, MaxAttempts: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Se simulan cuatro intentos gastados: el backoff toca a ocho minutos.
+	if _, err := cola.pool.Exec(ctx, `UPDATE jobs SET attempts = 4 WHERE id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cola.Reclamar(ctx, 50, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if err := cola.Fallar(ctx, id, "429 sin plazo", 2*time.Second); err != nil {
+		t.Fatal(err)
+	}
+
+	var runAt time.Time
+	if err := cola.pool.QueryRow(ctx,
+		`SELECT run_at FROM jobs WHERE id = $1`, id).Scan(&runAt); err != nil {
+		t.Fatal(err)
+	}
+	if falta := time.Until(runAt); falta < 4*time.Minute {
+		t.Fatalf("el backoff del quinto intento son ocho minutos y quedó en %v", falta.Round(time.Second))
+	}
+}
+
+// El plazo que pide el canal se lee del error sin que la cola sepa qué es un
+// canal: cualquiera que sepa decir cuánto esperar sirve.
+func TestLaEsperaSeLeeDelErrorDelCanal(t *testing.T) {
+	if d := EsperaPedida(errorConEspera{30 * time.Minute}); d != 30*time.Minute {
+		t.Fatalf("no se leyó la espera del error: %v", d)
+	}
+	if d := EsperaPedida(fmt.Errorf("un fallo cualquiera")); d != 0 {
+		t.Fatalf("un error sin plazo no pide esperar nada: %v", d)
+	}
+	// Envuelto también: los manejadores devuelven el error del canal con
+	// contexto añadido.
+	envuelto := fmt.Errorf("publicando la variante 42: %w", errorConEspera{time.Minute})
+	if d := EsperaPedida(envuelto); d != time.Minute {
+		t.Fatalf("la espera tiene que sobrevivir al envoltorio: %v", d)
+	}
+}
+
+type errorConEspera struct{ d time.Duration }
+
+func (e errorConEspera) Error() string                          { return "el canal pidió parar" }
+func (e errorConEspera) EsperaAntesDeReintentar() time.Duration { return e.d }

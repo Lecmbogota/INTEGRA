@@ -39,6 +39,10 @@ type almacen interface {
 	GuardarPrecioPublicado(ctx context.Context, cuentaID, varianteID int64, hash string, precio float64) error
 	GuardarStockPublicado(ctx context.Context, cuentaID, varianteID int64, hash string, cantidad int) error
 	AnotarErrorPublicacion(ctx context.Context, cuentaID, productoID int64, causa string) error
+	// AnotarFeed guarda el rastro de una escritura asíncrona todavía sin
+	// veredicto: es lo único que explica después por qué un producto que se
+	// mandó no aparece en el canal.
+	AnotarFeed(ctx context.Context, cuentaID, productoID int64, feedID, estado string) error
 }
 
 // Servicio ejecuta los trabajos de publicación contra los canales.
@@ -74,6 +78,7 @@ func (s *Servicio) Registrar(w *jobs.Worker) {
 	w.Registrar(TrabajoPublicar, s.publicar)
 	w.Registrar(TrabajoPrecio, s.actualizarPrecio)
 	w.Registrar(TrabajoStock, s.actualizarStock)
+	w.Registrar(TrabajoVerificarFeed, s.verificarFeed)
 }
 
 func (s *Servicio) datos(ctx context.Context, t jobs.Trabajo) (*store.CandidatoPublicacion, channel.Adapter, PayloadPublicar, error) {
@@ -147,6 +152,13 @@ func (s *Servicio) publicar(ctx context.Context, t jobs.Trabajo) error {
 		return s.actualizarFicha(ctx, ad, c, p, prod, res.Ref)
 	}
 
+	// Una escritura asíncrona todavía puede acabar rechazada: hasta que el
+	// canal la confirme, ni el contenido ni el precio ni el stock están
+	// publicados por mucho que la llamada haya devuelto 200.
+	if len(res.FeedsPendientes) > 0 {
+		return s.publicacionSinConfirmar(ctx, c, p, res)
+	}
+
 	// Solo aquí hubo creación de verdad, y la creación lleva el precio y el
 	// stock en el mismo cuerpo: los tres hashes describen lo que tiene el
 	// canal.
@@ -191,6 +203,25 @@ func (s *Servicio) actualizarFicha(ctx context.Context, ad channel.Adapter,
 		ref = res.Ref
 	}
 
+	// Con el feed sin resolver la ficha no está aplicada: se registra la
+	// referencia (para no volver a crear la publicación) pero sin hash, y el
+	// hash lo sellará la verificación si el canal confirma.
+	if len(res.FeedsPendientes) > 0 {
+		if err := s.st.GuardarContenidoPublicado(ctx, p.CuentaID, c.ProductoID, c.VarianteID,
+			ref.ListingID, "", ref.VariantID, ""); err != nil {
+			return err
+		}
+		if err := s.encolarVerificacion(ctx, PayloadVerificarFeed{
+			CuentaID: p.CuentaID, ProductoID: c.ProductoID, VarianteID: c.VarianteID,
+			SKU: skuDe(ref, c), Feeds: res.FeedsPendientes, Que: QueContenido,
+			ExternalID: ref.ListingID, VarianteExterna: ref.VariantID,
+			ContentHash: HashContenido(*c),
+		}); err != nil {
+			return err
+		}
+		return s.encolarPrecioYStock(ctx, p.CuentaID, p.VarianteID)
+	}
+
 	// Solo se anota el contenido: Update no lleva precio ni stock en ninguno
 	// de los cuatro canales. Los hashes de esos dos quedan intactos y sus
 	// trabajos, encolados abajo, son los que los anotarán al enviarlos. Pasar
@@ -201,6 +232,41 @@ func (s *Servicio) actualizarFicha(ctx context.Context, ad channel.Adapter,
 		return err
 	}
 	return s.encolarPrecioYStock(ctx, p.CuentaID, p.VarianteID)
+}
+
+// publicacionSinConfirmar registra el alta que el canal aceptó pero todavía no
+// aplicó.
+//
+// La referencia sí se guarda: el producto puede existir ya en el canal y
+// volver a crearlo duplicaría el SKU. Los tres hashes van vacíos a propósito
+// —es lo que hace que la próxima planificación lo reencole si el feed acaba
+// rechazado— y quien los sella es la verificación diferida.
+func (s *Servicio) publicacionSinConfirmar(ctx context.Context, c *store.CandidatoPublicacion,
+	p PayloadPublicar, res channel.PublishResult) error {
+
+	if err := s.st.GuardarPublicacion(ctx, p.CuentaID, c.ProductoID, c.VarianteID,
+		res.Ref.ListingID, res.Permalink, res.Ref.VariantID,
+		"", "", "", c.PrecioCanal, c.Stock); err != nil {
+		return err
+	}
+	return s.encolarVerificacion(ctx, PayloadVerificarFeed{
+		CuentaID: p.CuentaID, ProductoID: c.ProductoID, VarianteID: c.VarianteID,
+		SKU: skuDe(res.Ref, c), Feeds: res.FeedsPendientes, Que: QuePublicacion,
+		ExternalID: res.Ref.ListingID, ExternalURL: res.Permalink,
+		VarianteExterna: res.Ref.VariantID,
+		ContentHash:     HashContenido(*c), PriceHash: HashPrecio(*c), StockHash: HashStock(*c),
+		Precio: c.PrecioCanal, Cantidad: c.Stock,
+	})
+}
+
+// skuDe prefiere el SKU con el que se publicó: es como el canal nombra sus
+// rechazos, y puede no ser el actual de la variante si alguien lo renombró en
+// Odoo.
+func skuDe(ref channel.ExternalRef, c *store.CandidatoPublicacion) string {
+	if ref.SKU != "" {
+		return ref.SKU
+	}
+	return c.SKU
 }
 
 func (s *Servicio) encolarPrecioYStock(ctx context.Context, cuentaID, varianteID int64) error {
@@ -234,6 +300,16 @@ func (s *Servicio) actualizarPrecio(ctx context.Context, t jobs.Trabajo) error {
 	if len(res) > 0 && !res[0].OK {
 		return res[0].Error
 	}
+	// El canal asíncrono aceptó el feed y nada más: el precio se sella cuando
+	// confirme. Sellarlo ahora congelaría el precio viejo en el canal si el
+	// Seller Center acaba rechazando el envío.
+	if len(res) > 0 && res[0].FeedPendiente {
+		return s.encolarVerificacion(ctx, PayloadVerificarFeed{
+			CuentaID: p.CuentaID, ProductoID: c.ProductoID, VarianteID: p.VarianteID,
+			SKU: skuDe(ref, c), Feeds: []string{res[0].FeedID}, Que: QuePrecio,
+			PriceHash: HashPrecio(*c), Precio: c.PrecioCanal,
+		})
+	}
 	return s.st.GuardarPrecioPublicado(ctx, p.CuentaID, p.VarianteID, HashPrecio(*c), c.PrecioCanal)
 }
 
@@ -252,6 +328,15 @@ func (s *Servicio) actualizarStock(ctx context.Context, t jobs.Trabajo) error {
 	}
 	if len(res) > 0 && !res[0].OK {
 		return res[0].Error
+	}
+	// Lo mismo que con el precio, y aquí duele más: una bajada de stock dada
+	// por buena sin que el canal la aplique es vender lo que ya no hay.
+	if len(res) > 0 && res[0].FeedPendiente {
+		return s.encolarVerificacion(ctx, PayloadVerificarFeed{
+			CuentaID: p.CuentaID, ProductoID: c.ProductoID, VarianteID: p.VarianteID,
+			SKU: skuDe(ref, c), Feeds: []string{res[0].FeedID}, Que: QueStock,
+			StockHash: HashStock(*c), Cantidad: c.Stock,
+		})
 	}
 	return s.st.GuardarStockPublicado(ctx, p.CuentaID, p.VarianteID, HashStock(*c), c.Stock)
 }

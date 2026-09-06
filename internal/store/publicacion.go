@@ -359,6 +359,25 @@ func (s *Store) GuardarStockPublicado(ctx context.Context, cuentaID, varianteID 
 	return err
 }
 
+// AnotarFeed deja en la publicación el rastro de la última escritura asíncrona.
+//
+// Falabella acepta el feed y resuelve después. Sin estas tres columnas —que
+// existen desde la migración 019 y no las escribía nadie— un feed rechazado
+// veinte minutos más tarde no dejaba huella en ninguna parte, y desde el panel
+// no había forma de saber por qué el producto sigue sin aparecer en el canal.
+//
+// Cuando una escritura manda dos feeds (la ficha y las imágenes) se anota el de
+// la ficha, que es el que decide si el producto existe.
+func (s *Store) AnotarFeed(ctx context.Context, cuentaID, productoID int64, feedID, estado string) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE product_channel_listings
+		SET last_feed_id = $3, last_feed_status = $4,
+		    last_feed_checked_at = now(), updated_at = now()
+		WHERE product_id = $1 AND channel_account_id = $2`,
+		productoID, cuentaID, nulo(feedID), nulo(estado))
+	return err
+}
+
 // AnotarErrorPublicacion deja constancia del fallo en la publicación.
 func (s *Store) AnotarErrorPublicacion(ctx context.Context, cuentaID, productoID int64, causa string) error {
 	_, err := s.pool.Exec(ctx, `

@@ -136,17 +136,49 @@ func (c *Cola) Completar(ctx context.Context, id int64) error {
 	return err
 }
 
+// TopeDeEspera acota cuánto puede hacernos esperar un canal. Es el mismo techo
+// que ya tenía el backoff: un Retry-After absurdo —o mal leído— no puede
+// aparcar un trabajo durante días.
+const TopeDeEspera = 2 * time.Hour
+
 // Fallar registra el error y decide: reintento con backoff exponencial
 // (30s, 1m, 2m, 4m… hasta 2h) o fallo definitivo si se agotaron los intentos.
-func (c *Cola) Fallar(ctx context.Context, id int64, causa string) error {
+//
+// `espera` es el mínimo que pidió quien falló, y no lo sabe el backoff: cuando
+// un canal responde 429 con Retry-After de una hora, volver a los 30 s no
+// publica nada, alarga el bloqueo y gasta los cinco intentos en ocho minutos,
+// de modo que el catálogo entero acaba en `failed` justo cuando el canal
+// vuelve a aceptar escrituras. Cero significa «lo que diga el backoff».
+func (c *Cola) Fallar(ctx context.Context, id int64, causa string, espera time.Duration) error {
+	if espera > TopeDeEspera {
+		espera = TopeDeEspera
+	}
+	if espera < 0 {
+		espera = 0
+	}
 	_, err := c.pool.Exec(ctx, `
 		UPDATE jobs SET
 		    status = CASE WHEN attempts >= max_attempts THEN 'failed' ELSE 'pending' END,
 		    run_at = CASE WHEN attempts >= max_attempts THEN run_at
-		             ELSE now() + make_interval(secs => LEAST(30 * power(2, attempts - 1), 7200)) END,
+		             ELSE now() + GREATEST(
+		                  make_interval(secs => LEAST(30 * power(2, attempts - 1), 7200)),
+		                  make_interval(secs => $3)) END,
 		    locked_until = NULL, last_error = $2, updated_at = now()
-		WHERE id = $1 AND status = 'running'`, id, causa)
+		WHERE id = $1 AND status = 'running'`, id, causa, espera.Seconds())
 	return err
+}
+
+// EsperaPedida saca de un error cuánto pidió esperar el canal.
+//
+// Se resuelve por interfaz y no por el tipo concreto para que la cola no
+// importe internal/channel: aquí solo hay trabajos, no canales. La cumple
+// channel.Error con su RetryAfter.
+func EsperaPedida(err error) time.Duration {
+	var e interface{ EsperaAntesDeReintentar() time.Duration }
+	if errors.As(err, &e) {
+		return e.EsperaAntesDeReintentar()
+	}
+	return 0
 }
 
 // RecuperarHuerfanos devuelve a la cola los trabajos cuyo lease expiró: su

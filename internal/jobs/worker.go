@@ -168,7 +168,7 @@ func (w *Worker) procesar(ctx context.Context, t Trabajo) {
 	if !ok {
 		// Sin manejador no tiene sentido reintentar: fallaría igual siempre.
 		// Se anota claro para que se vea en el panel.
-		_ = w.cola.Fallar(ctx, t.ID, fmt.Sprintf("no hay manejador registrado para %q", t.Kind))
+		_ = w.cola.Fallar(ctx, t.ID, fmt.Sprintf("no hay manejador registrado para %q", t.Kind), 0)
 		w.log.Error("trabajo sin manejador", "kind", t.Kind, "id", t.ID)
 		return
 	}
@@ -185,11 +185,14 @@ func (w *Worker) procesar(ctx context.Context, t Trabajo) {
 	}()
 
 	if err != nil {
-		if fe := w.cola.Fallar(ctx, t.ID, err.Error()); fe != nil {
+		// Si el canal dijo cuándo volver, manda su plazo sobre el backoff: es
+		// el único que sabe cuánto dura su propio bloqueo.
+		espera := EsperaPedida(err)
+		if fe := w.cola.Fallar(ctx, t.ID, err.Error(), espera); fe != nil {
 			w.log.Error("no se pudo registrar el fallo", "id", t.ID, "error", fe)
 		}
 		w.log.Warn("trabajo fallido", "kind", t.Kind, "id", t.ID,
-			"intento", t.Intentos, "de", t.MaxIntentos, "error", err)
+			"intento", t.Intentos, "de", t.MaxIntentos, "espera", espera.String(), "error", err)
 		return
 	}
 

@@ -671,6 +671,13 @@ func (a *Adaptador) llamarCab(ctx context.Context, metodo, ruta string, q url.Va
 		if resp.StatusCode == http.StatusNotFound {
 			e.Err = channel.ErrNoEncontrado
 		}
+		// WooCommerce no limita por sí mismo, pero el hosting sí: Cloudflare,
+		// Wordfence o el módulo de rate limit del servidor devuelven 429 con
+		// Retry-After. Sin leerlo, la cola reintentaba a los 30 s contra una
+		// tienda que ya estaba rechazando por exceso.
+		if resp.StatusCode == http.StatusTooManyRequests {
+			e.RetryAfter = conectores.EsperaTrasCupo(resp.Header)
+		}
 		return resp.Header, e
 	}
 	if out == nil {

@@ -34,6 +34,9 @@ type almacenFalso struct {
 	precioHash    string
 	stockHash     string
 	errAnotados   []string
+	// feedsAnotados guarda lo que se escribió en last_feed_id/last_feed_status:
+	// es el único rastro de una escritura asíncrona sin resolver.
+	feedsAnotados []string
 }
 
 type publicacionGuardada struct {
@@ -97,16 +100,41 @@ func (a *almacenFalso) AnotarErrorPublicacion(ctx context.Context, cuentaID, pro
 	return nil
 }
 
-// colaFalsa anota qué trabajos se pidieron, en orden, y con qué clave única.
+func (a *almacenFalso) AnotarFeed(ctx context.Context, cuentaID, productoID int64, feedID, estado string) error {
+	a.feedsAnotados = append(a.feedsAnotados, feedID+"="+estado)
+	return nil
+}
+
+// colaFalsa anota qué trabajos se pidieron, en orden, con qué clave única —que
+// es lo que demuestra que no se encolan dos veces— y con qué carga, porque la
+// verificación diferida del feed lleva dentro los hashes que habrá que sellar.
 type colaFalsa struct {
 	encolados []string
 	claves    []string
+	cargas    []any
 }
 
 func (c *colaFalsa) Encolar(ctx context.Context, kind string, payload any, op jobs.Opciones) (int64, error) {
 	c.encolados = append(c.encolados, kind)
 	c.claves = append(c.claves, op.UniqueKey)
+	c.cargas = append(c.cargas, payload)
 	return int64(len(c.encolados)), nil
+}
+
+// verificacion devuelve la carga del trabajo de verificación encolado.
+func (c *colaFalsa) verificacion(t *testing.T) PayloadVerificarFeed {
+	t.Helper()
+	for i, k := range c.encolados {
+		if k == TrabajoVerificarFeed {
+			p, ok := c.cargas[i].(PayloadVerificarFeed)
+			if !ok {
+				t.Fatalf("la carga de %s no es un PayloadVerificarFeed: %T", k, c.cargas[i])
+			}
+			return p
+		}
+	}
+	t.Fatalf("no se encoló ninguna verificación de feed; encolados: %v", c.encolados)
+	return PayloadVerificarFeed{}
 }
 
 func (c *colaFalsa) tiene(kind string) bool {
@@ -122,6 +150,12 @@ func (c *colaFalsa) tiene(kind string) bool {
 // Sirve para cualquiera de los cuatro canales: el núcleo solo ve el contrato.
 type canalFalso struct {
 	adopta bool
+	// feedPendiente imita a Falabella: la escritura se acepta y el veredicto
+	// llega minutos después. Vacío = canal síncrono.
+	feedPendiente string
+	// veredicto es lo que responderá cuando se pregunte por ese feed.
+	veredicto  channel.Veredicto
+	consultado []string
 
 	publicaciones   []channel.Product
 	actualizadas    []channel.UpdateRequest
@@ -131,7 +165,21 @@ type canalFalso struct {
 
 func (c *canalFalso) Kind() channel.Kind { return channel.Shopify }
 func (c *canalFalso) Capabilities() channel.Capabilities {
-	return channel.Capabilities{MaxTitleLength: 255}
+	return channel.Capabilities{MaxTitleLength: 255, AsyncFeeds: c.feedPendiente != ""}
+}
+
+// pendientes es lo que devuelve un canal asíncrono mientras el feed no
+// termina: la lista vacía significa "ya está aplicado".
+func (c *canalFalso) pendientes() []string {
+	if c.feedPendiente == "" {
+		return nil
+	}
+	return []string{c.feedPendiente}
+}
+
+func (c *canalFalso) VeredictoDeFeed(ctx context.Context, feedID, sku string) (channel.Veredicto, error) {
+	c.consultado = append(c.consultado, feedID)
+	return c.veredicto, nil
 }
 
 func (c *canalFalso) Publish(ctx context.Context, req channel.PublishRequest) (channel.PublishResult, error) {
@@ -142,24 +190,33 @@ func (c *canalFalso) Publish(ctx context.Context, req channel.PublishRequest) (c
 		ref := channel.ExternalRef{ListingID: "ADOPTADA-1", VariantID: "ADOPTADA-V1", SKU: req.Product.SKU}
 		return channel.PublishResult{Ref: ref, Adopted: true}, nil
 	}
-	return channel.PublishResult{Ref: channel.ExternalRef{
-		ListingID: "NUEVA-1", VariantID: "NUEVA-V1", SKU: req.Product.SKU,
-	}}, nil
+	return channel.PublishResult{
+		Ref: channel.ExternalRef{
+			ListingID: "NUEVA-1", VariantID: "NUEVA-V1", SKU: req.Product.SKU,
+		},
+		FeedsPendientes: c.pendientes(),
+	}, nil
 }
 
 func (c *canalFalso) Update(ctx context.Context, req channel.UpdateRequest) (channel.UpdateResult, error) {
 	c.actualizadas = append(c.actualizadas, req)
-	return channel.UpdateResult{Ref: req.Ref}, nil
+	return channel.UpdateResult{Ref: req.Ref, FeedsPendientes: c.pendientes()}, nil
 }
 
 func (c *canalFalso) UpdateStock(ctx context.Context, ups []channel.StockUpdate) ([]channel.OpResult, error) {
 	c.stocksEnviados = append(c.stocksEnviados, ups...)
-	return []channel.OpResult{{Ref: ups[0].Ref, OK: true}}, nil
+	return []channel.OpResult{{
+		Ref: ups[0].Ref, OK: true,
+		FeedID: c.feedPendiente, FeedPendiente: c.feedPendiente != "",
+	}}, nil
 }
 
 func (c *canalFalso) UpdatePrice(ctx context.Context, ups []channel.PriceUpdate) ([]channel.OpResult, error) {
 	c.preciosEnviados = append(c.preciosEnviados, ups...)
-	return []channel.OpResult{{Ref: ups[0].Ref, OK: true}}, nil
+	return []channel.OpResult{{
+		Ref: ups[0].Ref, OK: true,
+		FeedID: c.feedPendiente, FeedPendiente: c.feedPendiente != "",
+	}}, nil
 }
 
 func (c *canalFalso) Pause(ctx context.Context, ref channel.ExternalRef) error  { return nil }
@@ -315,6 +372,155 @@ func TestPublicacionNuevaGuardaLosTresHashesYNoEncolaNada(t *testing.T) {
 	}
 	if len(cola.encolados) != 0 {
 		t.Fatalf("no hace falta pedir nada más: %v", cola.encolados)
+	}
+}
+
+// ------------------------------------- escrituras asíncronas (feeds lentos)
+
+// trabajoVerificarDe arma el trabajo de verificación tal como lo dejó el envío.
+func trabajoVerificarDe(t *testing.T, p PayloadVerificarFeed, intentos, max int) jobs.Trabajo {
+	t.Helper()
+	cuerpo, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return jobs.Trabajo{ID: 9, Kind: TrabajoVerificarFeed, Payload: cuerpo,
+		Intentos: intentos, MaxIntentos: max}
+}
+
+// El defecto: Falabella acepta el feed en siete segundos y lo procesa en
+// minutos. Sellar el hash del stock con la escritura solo aceptada deja la
+// bajada sin aplicar y sin volver a encolarse nunca —vender lo que ya no hay—
+// si el Seller Center la rechaza después.
+func TestUnStockConFeedSinVeredictoNoSeDaPorPublicado(t *testing.T) {
+	st := &almacenFalso{
+		candidato: candidatoListo(),
+		ref:       channel.ExternalRef{ListingID: "AO-1", VariantID: "AO-1", SKU: "AO-1"},
+	}
+	ad := &canalFalso{feedPendiente: "FEED-77"}
+	cola := &colaFalsa{}
+	s := servicioDePrueba(st, cola, ad)
+
+	if err := s.actualizarStock(context.Background(), trabajoDe(t, 1, 1)); err != nil {
+		t.Fatal(err)
+	}
+	if st.stockHash != "" {
+		t.Fatalf("el canal solo aceptó el feed: el stock no está publicado (hash %q)", st.stockHash)
+	}
+	v := cola.verificacion(t)
+	if len(v.Feeds) != 1 || v.Feeds[0] != "FEED-77" || v.Que != QueStock {
+		t.Fatalf("hay que dejar pedido el veredicto de ese feed: %+v", v)
+	}
+	if v.StockHash != HashStock(st.candidato) || v.Cantidad != st.candidato.Stock {
+		t.Fatalf("la verificación tiene que llevar lo que se envió, no lo que haya luego: %+v", v)
+	}
+	if len(st.feedsAnotados) != 1 || !strings.HasPrefix(st.feedsAnotados[0], "FEED-77=") {
+		t.Fatalf("el feed pendiente tiene que quedar anotado en la publicación: %v", st.feedsAnotados)
+	}
+}
+
+// Cuando el canal confirma, y solo entonces, se sella exactamente lo que se
+// envió: el hash viaja en el trabajo porque entre el envío y el veredicto el
+// catálogo puede haber cambiado.
+func TestElHashSeSellaCuandoElCanalConfirmaElFeed(t *testing.T) {
+	st := &almacenFalso{candidato: candidatoListo()}
+	ad := &canalFalso{feedPendiente: "FEED-77",
+		veredicto: channel.Veredicto{Terminado: true, Estado: "Finished"}}
+	s := servicioDePrueba(st, &colaFalsa{}, ad)
+
+	carga := PayloadVerificarFeed{
+		CuentaID: 1, VarianteID: 1, ProductoID: 10, SKU: "AO-1",
+		Feeds: []string{"FEED-77"}, Que: QueStock,
+		StockHash: "hash-del-envio", Cantidad: 4,
+	}
+	if err := s.verificarFeed(context.Background(), trabajoVerificarDe(t, carga, 1, 8)); err != nil {
+		t.Fatal(err)
+	}
+	if st.stockHash != "hash-del-envio" {
+		t.Fatalf("confirmado el feed, hay que sellar el hash enviado: %q", st.stockHash)
+	}
+	if len(ad.consultado) != 1 || ad.consultado[0] != "FEED-77" {
+		t.Fatalf("hay que preguntar por el feed que quedó pendiente: %v", ad.consultado)
+	}
+}
+
+// Un rechazo tardío es el caso que nadie veía: ni se sella (así la próxima
+// planificación lo vuelve a encolar) ni se calla (queda en la publicación, que
+// es de donde salen las alertas).
+func TestUnFeedRechazadoTardeNoSellaYQuedaAnotado(t *testing.T) {
+	st := &almacenFalso{candidato: candidatoListo()}
+	ad := &canalFalso{feedPendiente: "FEED-77", veredicto: channel.Veredicto{
+		Terminado: true, Estado: "Finished", Rechazo: "31 mandatory attribute missing: Talla"}}
+	s := servicioDePrueba(st, &colaFalsa{}, ad)
+
+	carga := PayloadVerificarFeed{
+		CuentaID: 1, VarianteID: 1, ProductoID: 10, SKU: "AO-1",
+		Feeds: []string{"FEED-77"}, Que: QuePrecio, PriceHash: "hash-del-envio", Precio: 1500,
+	}
+	if err := s.verificarFeed(context.Background(), trabajoVerificarDe(t, carga, 1, 8)); err != nil {
+		t.Fatalf("un rechazo es definitivo, no un fallo a reintentar: %v", err)
+	}
+	if st.precioHash != "" {
+		t.Fatalf("lo que el canal rechazó no se puede dar por publicado: %q", st.precioHash)
+	}
+	if len(st.errAnotados) != 1 || !strings.Contains(st.errAnotados[0], "mandatory attribute missing") {
+		t.Fatalf("el motivo del rechazo tiene que quedar visible: %v", st.errAnotados)
+	}
+}
+
+// Mientras el feed siga en cola el trabajo falla, que es como la cola lo
+// reprograma con su backoff. Nada se sella por el camino.
+func TestMientrasElFeedSigaEnColaLaVerificacionNoSellaNada(t *testing.T) {
+	st := &almacenFalso{candidato: candidatoListo()}
+	ad := &canalFalso{feedPendiente: "FEED-77",
+		veredicto: channel.Veredicto{Terminado: false, Estado: "Queued"}}
+	s := servicioDePrueba(st, &colaFalsa{}, ad)
+
+	carga := PayloadVerificarFeed{
+		CuentaID: 1, VarianteID: 1, ProductoID: 10, SKU: "AO-1",
+		Feeds: []string{"FEED-77"}, Que: QueStock, StockHash: "hash-del-envio", Cantidad: 4,
+	}
+	err := s.verificarFeed(context.Background(), trabajoVerificarDe(t, carga, 1, 8))
+	if err == nil {
+		t.Fatal("sin veredicto hay que volver a preguntar: el trabajo tiene que fallar")
+	}
+	if st.stockHash != "" {
+		t.Fatalf("sin veredicto no se sella nada: %q", st.stockHash)
+	}
+	if len(st.errAnotados) != 0 {
+		t.Fatalf("todavía queda margen: no hay que alarmar aún: %v", st.errAnotados)
+	}
+
+	// En el último intento sí se avisa: un trabajo agotado en la cola no dice
+	// qué producto se quedó a medias.
+	if err := s.verificarFeed(context.Background(), trabajoVerificarDe(t, carga, 8, 8)); err == nil {
+		t.Fatal("agotada la espera el trabajo sigue siendo un fallo")
+	}
+	if len(st.errAnotados) != 1 {
+		t.Fatalf("agotada la espera hay que dejarlo anotado: %v", st.errAnotados)
+	}
+}
+
+// El alta también es asíncrona: se registra la referencia —volver a crearla
+// duplicaría el SKU en el canal— pero ninguno de los tres hashes.
+func TestUnAltaConFeedPendienteGuardaLaReferenciaYNingunHash(t *testing.T) {
+	st := &almacenFalso{candidato: candidatoListo()}
+	ad := &canalFalso{feedPendiente: "FEED-77"}
+	cola := &colaFalsa{}
+	s := servicioDePrueba(st, cola, ad)
+
+	if err := s.publicar(context.Background(), trabajoDe(t, 1, 1)); err != nil {
+		t.Fatal(err)
+	}
+	if st.guardado == nil || st.guardado.externalID != "NUEVA-1" {
+		t.Fatalf("la referencia sí se guarda: %+v", st.guardado)
+	}
+	if st.guardado.contentHash != "" || st.guardado.priceHash != "" || st.guardado.stockHash != "" {
+		t.Fatalf("nada está publicado hasta que el canal lo confirme: %+v", st.guardado)
+	}
+	v := cola.verificacion(t)
+	if v.Que != QuePublicacion || v.ContentHash != HashContenido(st.candidato) {
+		t.Fatalf("la verificación tiene que traer los tres hashes del envío: %+v", v)
 	}
 }
 
