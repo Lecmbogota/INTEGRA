@@ -38,6 +38,9 @@ type Plan struct {
 	Stock      int `json:"stock"`
 	SinCambios int `json:"sin_cambios"`
 	NoListos   int `json:"no_listos"`
+	// BajoCosto: variantes cuyo precio no cubre el coste y a las que se les
+	// retuvo el envío de precio.
+	BajoCosto int `json:"bajo_costo"`
 }
 
 // catalogo y encolador son lo que Planificar necesita del store y de la cola.
@@ -69,6 +72,19 @@ func Planificar(ctx context.Context, st catalogo, cola encolador, cuentaID int64
 			continue
 		}
 
+		// Un precio que no cubre el coste no sale. En un alta se retiene el
+		// producto entero, porque el alta lleva el precio dentro; sobre una
+		// publicación que ya existe se retiene solo el envío de precio, y así
+		// el canal sigue mostrando el precio bueno que ya tenía en vez de que
+		// lo pise el malo. El stock se manda igual: dejar de sincronizar
+		// existencias por un problema de precio haría vender lo que no hay.
+		if c.BloqueadoPorCosto {
+			p.BajoCosto++
+			if c.ExternalID == "" {
+				continue
+			}
+		}
+
 		hContenido := HashContenido(c)
 		hPrecio := HashPrecio(c)
 		hStock := HashStock(c)
@@ -96,10 +112,14 @@ func Planificar(ctx context.Context, st catalogo, cola encolador, cuentaID int64
 				cambio = true
 			}
 			if c.PriceHash != hPrecio {
-				if err := encolar(ctx, cola, TrabajoPrecio, cuentaID, c.VarianteID, 50); err != nil {
-					return nil, err
+				// Retenido no es lo mismo que sin cambios: el precio cambió,
+				// simplemente no se manda.
+				if !c.BloqueadoPorCosto {
+					if err := encolar(ctx, cola, TrabajoPrecio, cuentaID, c.VarianteID, 50); err != nil {
+						return nil, err
+					}
+					p.Precio++
 				}
-				p.Precio++
 				cambio = true
 			}
 			// El stock es lo más urgente: vender lo que no hay cuesta más caro

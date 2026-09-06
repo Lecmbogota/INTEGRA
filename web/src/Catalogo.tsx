@@ -5,7 +5,12 @@ import { EdicionMasiva } from './EdicionMasiva'
 import { PlantillaMasiva } from './PlantillaMasiva'
 
 const POR_PAGINA = 50
-const BLOQUEANTES = new Set(['missing_sku', 'duplicate_sku', 'missing_description', 'missing_price'])
+// Motivos que impiden publicar. Un producto con cualquiera de ellos no sale al
+// canal, así que la pantalla los marca distinto de los que solo empeoran la
+// ficha.
+const BLOQUEANTES = new Set([
+  'missing_sku', 'duplicate_sku', 'missing_description', 'missing_price', 'price_below_cost',
+])
 const bloqueante = (m: string) => BLOQUEANTES.has(m)
 
 export function Catalogo({ marcas, categorias = [], onVer, onCambio }: {

@@ -203,6 +203,15 @@ func cobayas(t *testing.T, st *Store, ctx context.Context) (int64, int64) {
 		RETURNING id`, marcaTestID, canalID).Scan(&cuentaID); err != nil {
 		t.Fatalf("creando la cuenta de prueba: %v", err)
 	}
+	// Una bodega asignada: desde que se exige la asignación, una cuenta sin
+	// ninguna no publica nada, y las pruebas que se apoyan en esta cobaya
+	// dejarían de medir lo suyo para medir esa regla.
+	if _, err := st.pool.Exec(ctx, `
+		INSERT INTO channel_account_warehouses (channel_account_id, odoo_warehouse_id)
+		SELECT $1, id FROM odoo_warehouses WHERE active ORDER BY id LIMIT 1`, cuentaID); err != nil {
+		t.Fatalf("asignando la bodega a la cuenta de prueba: %v", err)
+	}
+
 	t.Cleanup(func() {
 		_, _ = st.pool.Exec(ctx, `DELETE FROM channel_accounts WHERE id = $1`, cuentaID)
 		_, _ = st.pool.Exec(ctx, `DELETE FROM brands WHERE id = $1`, marcaTestID)

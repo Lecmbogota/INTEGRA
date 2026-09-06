@@ -92,7 +92,8 @@ export function Cuentas() {
         {!cargando && CANALES.map((c) => {
           const cuenta = cuentas.find((x) => x.canal === c.codigo)
           return (
-            <div key={c.codigo} className="fila-cuenta fila-apilable">
+            <div key={c.codigo}>
+            <div className="fila-cuenta fila-apilable">
               <div className="expande-recorta">
                 <div>{c.nombre}</div>
                 <div className="tenue mini-texto">
@@ -135,6 +136,8 @@ export function Cuentas() {
                 </button>
               </div>
             </div>
+            {cuenta && <SueloDeCosto cuenta={cuenta} onGuardado={cargar} />}
+            </div>
           )
         })}
       </div>
@@ -152,6 +155,70 @@ export function Cuentas() {
           onGuardada={() => { setBodegasDe(null); cargar() }} />
       )}
     </section>
+  )
+}
+
+// SueloDeCosto es el margen mínimo por debajo del cual esta cuenta no publica.
+//
+// Sin esto, el suelo solo existía si alguien había creado una regla de canal y
+// le había puesto margen mínimo: el resto del catálogo salía a la venta sin
+// una sola comprobación contra el coste. El valor por defecto (0 % y frenar)
+// es «que al menos cubra el coste», que es lo único que se puede dar por
+// decidido sin preguntar.
+function SueloDeCosto({ cuenta, onGuardado }: { cuenta: CuentaCanal; onGuardado: () => void }) {
+  const [margen, setMargen] = useState(String(cuenta.min_margen_pct))
+  const [bloquear, setBloquear] = useState(cuenta.bloquear_bajo_costo)
+  const [guardando, setGuardando] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  // Los valores guardados mandan cuando la lista se recarga: si no, tras
+  // guardar se seguiría viendo el borrador aunque el servidor hubiera
+  // redondeado o rechazado algo.
+  useEffect(() => {
+    setMargen(String(cuenta.min_margen_pct))
+    setBloquear(cuenta.bloquear_bajo_costo)
+  }, [cuenta.min_margen_pct, cuenta.bloquear_bajo_costo])
+
+  const sucio = String(cuenta.min_margen_pct) !== margen || cuenta.bloquear_bajo_costo !== bloquear
+
+  async function guardar() {
+    const pct = Number(margen.replace(',', '.'))
+    if (!Number.isFinite(pct) || pct < 0) {
+      setError('El margen mínimo debe ser un número positivo.')
+      return
+    }
+    setGuardando(true)
+    setError(null)
+    try {
+      await api.guardarSueloCosto(cuenta.id, pct, bloquear)
+      onGuardado()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setGuardando(false)
+    }
+  }
+
+  return (
+    <div className="fila-cuenta fila-apilable">
+      <div className="expande-recorta tenue mini-texto">
+        Margen mínimo sobre el coste. Por debajo, el producto entra en la cola de
+        atención y sale un aviso.
+      </div>
+      <div className="grupo-acciones">
+        <input value={margen} onChange={(e) => setMargen(e.target.value)}
+          inputMode="decimal" size={4} aria-label="Margen mínimo en por ciento" />
+        <span className="tenue mini-texto">%</span>
+        <label className="tenue mini-texto">
+          <input type="checkbox" checked={bloquear}
+            onChange={(e) => setBloquear(e.target.checked)} /> No publicar
+        </label>
+        <button onClick={() => void guardar()} disabled={guardando || !sucio}>
+          {guardando ? 'Guardando…' : 'Guardar'}
+        </button>
+      </div>
+      {error && <div className="aviso-caja">{error}</div>}
+    </div>
   )
 }
 

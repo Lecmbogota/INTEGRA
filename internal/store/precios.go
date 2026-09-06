@@ -424,11 +424,17 @@ func (s *Store) GuardarPreciosEfectivos(ctx context.Context, precios []pricing.E
 		// —al eliminar una conexión de Odoo, por ejemplo—: sin esto, una sola
 		// variante desaparecida a mitad tiraba el lote completo y la cuenta se
 		// quedaba con los precios viejos sin que nadie supiera por qué.
+		//
+		// FOR KEY SHARE porque comprobar que existe no basta: la comprobación
+		// de la clave foránea se hace con una lectura posterior, y entre una y
+		// otra cabe un borrado que hacía saltar el mismo error que se quería
+		// evitar. El bloqueo retiene la fila padre hasta que la inserción
+		// termina, y no estorba a nadie: solo impide borrar esa variante.
 		b.Queue(`
 			INSERT INTO effective_prices
 			    (variant_id, channel_account_id, regular_price, sale_price, currency, source, computed_at)
 			SELECT $1, $2, $3, $4, $5, $6, now()
-			WHERE EXISTS (SELECT 1 FROM product_variants WHERE id = $1)
+			WHERE EXISTS (SELECT 1 FROM product_variants WHERE id = $1 FOR KEY SHARE)
 			ON CONFLICT (variant_id, channel_account_id) DO UPDATE
 			SET regular_price = EXCLUDED.regular_price,
 			    sale_price = EXCLUDED.sale_price,
@@ -452,11 +458,11 @@ func (s *Store) GuardarPreciosEfectivos(ctx context.Context, precios []pricing.E
 // RecalcularPreciosCuenta resuelve y guarda los precios efectivos para todas las variantes de una cuenta.
 func (s *Store) RecalcularPreciosCuenta(ctx context.Context, cuentaID int64) (int, error) {
 	var canalCodigo string
-	var comision, costoFijo float64
+	var comision, costoFijo, minMargen float64
 	err := s.pool.QueryRow(ctx, `
-		SELECT ch.code, ch.comision_pct, ch.costo_fijo
+		SELECT ch.code, ch.comision_pct, ch.costo_fijo, a.min_margen_pct
 		FROM channel_accounts a JOIN channels ch ON ch.id = a.channel_id
-		WHERE a.id = $1 AND a.active`, cuentaID).Scan(&canalCodigo, &comision, &costoFijo)
+		WHERE a.id = $1 AND a.active`, cuentaID).Scan(&canalCodigo, &comision, &costoFijo, &minMargen)
 	if err != nil {
 		return 0, fmt.Errorf("no existe o no está activa la cuenta %d: %w", cuentaID, err)
 	}
@@ -465,6 +471,7 @@ func (s *Store) RecalcularPreciosCuenta(ctx context.Context, cuentaID int64) (in
 		CommissionPct: comision,
 		FixedCost:     costoFijo,
 		Currency:      "COP",
+		MinMargenPct:  minMargen,
 	}
 
 	reglas, err := s.ReglasPrecioDeCuenta(ctx, cuentaID)
@@ -493,6 +500,7 @@ func (s *Store) RecalcularPreciosCuenta(ctx context.Context, cuentaID int64) (in
 
 	now := time.Now()
 	var efectivos []pricing.EffectivePrice
+	var bajoCosto []VarianteBajoCosto
 
 	for rows.Next() {
 		var input pricing.VariantPricingInput
@@ -513,6 +521,30 @@ func (s *Store) RecalcularPreciosCuenta(ctx context.Context, cuentaID int64) (in
 		ef := pricing.ResolverPrecio(input, channelInfo, reglas, ovPtr, ofPtr, now)
 		ef.ChannelAccountID = cuentaID
 		efectivos = append(efectivos, ef)
+
+		// El suelo de coste de ResolverPrecio solo alcanza al precio
+		// calculado: un override tecleado con un dígito de menos y una oferta
+		// por debajo del coste lo saltan a propósito, porque son decisiones de
+		// una persona y subirlas a escondidas sería peor. Lo que no puede
+		// pasar es que nadie se entere, así que se comprueba aquí el precio
+		// que de verdad se va a publicar.
+		precio := ef.RegularPrice
+		if ef.SalePrice != nil {
+			precio = *ef.SalePrice
+		}
+		// Sin precio no hay venta a pérdida: eso ya lo dice el motivo
+		// «sin precio asignado» de la cola, y duplicarlo enterraría el aviso
+		// que sí importa bajo cientos de fichas a medio hacer.
+		margen := pricing.MargenExigido(input, channelInfo, reglas)
+		if precio > 0 && !pricing.CubreCosto(precio, input.Cost, margen, channelInfo) {
+			bajoCosto = append(bajoCosto, VarianteBajoCosto{
+				VarianteID: input.VariantID,
+				Precio:     precio,
+				Neto:       pricing.NetoDelCanal(precio, channelInfo),
+				Costo:      input.Cost,
+				MargenPct:  margen,
+			})
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return 0, err
@@ -521,6 +553,81 @@ func (s *Store) RecalcularPreciosCuenta(ctx context.Context, cuentaID int64) (in
 	if err := s.GuardarPreciosEfectivos(ctx, efectivos); err != nil {
 		return 0, err
 	}
+	if err := s.MarcarPreciosBajoCosto(ctx, cuentaID, bajoCosto); err != nil {
+		return 0, err
+	}
 
 	return len(efectivos), nil
+}
+
+// MotivoBajoCosto es el motivo con el que la cola de atención señala una venta
+// a pérdida. Estaba declarado en el comentario de migrations/005_sync.sql
+// desde el principio y no lo generaba nadie.
+const MotivoBajoCosto = "price_below_cost"
+
+// VarianteBajoCosto es una variante cuyo precio publicable no cubre el coste,
+// con las cifras que hacen falta para explicárselo a quien lo tiene que
+// arreglar sin obligarle a rehacer la cuenta.
+type VarianteBajoCosto struct {
+	VarianteID int64
+	Precio     float64
+	Neto       float64
+	Costo      float64
+	MargenPct  float64
+}
+
+// MarcarPreciosBajoCosto deja la cola de atención de la cuenta diciendo
+// exactamente lo que pasa ahora mismo: aparecen las que no cubren coste y
+// desaparecen las que ya lo cubren.
+//
+// Se reconstruye entera en vez de ir marcando altas y bajas porque el recálculo
+// de precios ya recorre el catálogo completo: así una subida de precio hace
+// desaparecer el aviso en la misma pasada, sin esperar a que alguien lo
+// resuelva a mano.
+func (s *Store) MarcarPreciosBajoCosto(ctx context.Context, cuentaID int64, filas []VarianteBajoCosto) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	ids := make([]int64, 0, len(filas))
+	for _, f := range filas {
+		ids = append(ids, f.VarianteID)
+	}
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM attention_queue
+		WHERE channel_account_id = $1 AND reason = $2 AND NOT (variant_id = ANY($3))`,
+		cuentaID, MotivoBajoCosto, ids); err != nil {
+		return fmt.Errorf("limpiando los avisos de precio bajo coste: %w", err)
+	}
+
+	for _, f := range filas {
+		detalle := fmt.Sprintf(
+			"se publica a %.0f, el canal deja %.0f y el coste con el margen mínimo (%.1f%%) es %.0f",
+			f.Precio, f.Neto, f.MargenPct, f.Costo*(1+f.MargenPct/100))
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO attention_queue (variant_id, channel_account_id, reason, detail, severity, last_seen_at)
+			VALUES ($1, $2, $3, $4, 'blocking', now())
+			ON CONFLICT (variant_id, channel_account_id, reason) DO UPDATE
+			SET detail = EXCLUDED.detail, severity = 'blocking',
+			    last_seen_at = now(), resolved_at = NULL, resolved_by = NULL`,
+			f.VarianteID, cuentaID, MotivoBajoCosto, detalle); err != nil {
+			return fmt.Errorf("marcando la variante %d por debajo de coste: %w", f.VarianteID, err)
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+// VariantesBajoCosto cuenta lo que se está publicando a pérdida ahora mismo.
+// Es lo que la vigilancia convierte en aviso por correo.
+func (s *Store) VariantesBajoCosto(ctx context.Context) (int, error) {
+	var n int
+	err := s.pool.QueryRow(ctx, `
+		SELECT count(*) FROM attention_queue
+		WHERE reason = $1 AND resolved_at IS NULL`, MotivoBajoCosto).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("contando precios por debajo de coste: %w", err)
+	}
+	return n, nil
 }

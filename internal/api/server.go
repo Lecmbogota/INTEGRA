@@ -402,6 +402,20 @@ func (s *Server) editarMasivo(w http.ResponseWriter, r *http.Request) {
 	if !res.Simulado && tocaPrecio(cuerpo.Operacion) {
 		s.refrescarPreciosEfectivos(r.Context())
 	}
+
+	// Un simulacro no cambia nada y no se audita. De la ejecución se guarda la
+	// operación exacta y sobre qué variantes cayó: el valor anterior de dos
+	// mil de ellas no cabe en una fila, y la muestra que devuelve el store ya
+	// enseña el «de cuánto a cuánto» de unas cuantas. Con los identificadores
+	// guardados, el precio de antes de cualquiera sigue siendo reconstruible
+	// desde su propia fila de auditoría.
+	if !res.Simulado {
+		s.auditar(r, "bulk_update", "product_variants", "", nil, map[string]any{
+			"variantes": ids,
+			"operacion": cuerpo.Operacion,
+			"resultado": res,
+		})
+	}
 	escribir(w, http.StatusOK, res)
 }
 
@@ -731,6 +745,8 @@ func (s *Server) guardarCuenta(w http.ResponseWriter, r *http.Request) {
 		escribir(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
 		return
 	}
+	s.auditar(r, "update", "channel_accounts", strconv.FormatInt(id, 10), nil,
+		map[string]any{"canal": canal, "nombre": cuerpo.Nombre, "credenciales": sinCredencial})
 	escribir(w, http.StatusOK, map[string]any{"estado": "guardada", "id": id})
 }
 
@@ -814,11 +830,15 @@ func (s *Server) editarCanal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	codigo := r.PathValue("codigo")
+	antes, _ := s.st.CanalPorCodigo(r.Context(), codigo)
 	if err := s.st.ActualizarCanal(r.Context(), codigo,
 		cuerpo.ComisionPct, cuerpo.CostoFijo); err != nil {
 		escribir(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
 		return
 	}
+	// La comisión entra directa en el precio publicado: cambiarla reprecifica
+	// el canal entero, así que se audita como el cambio de precio que es.
+	s.auditar(r, "update", "channels", codigo, antes, cuerpo)
 	// La comisión nueva no vale de nada mientras effective_prices siga
 	// calculada con la vieja: CandidatosPublicacion prefiere ese valor, así
 	// que el catálogo entero seguiría publicado al precio anterior y cada
@@ -906,6 +926,10 @@ func (s *Server) editarProducto(w http.ResponseWriter, r *http.Request) {
 		escribir(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 		return
 	}
+
+	// La foto de antes se toma aquí, antes de escribir nada: después ya no hay
+	// forma de saber a qué precio estaba ni si estaba excluido.
+	previo, _ := s.st.EstadoPrevioVariante(r.Context(), varianteID)
 
 	malCampo := func(clave string) {
 		escribir(w, http.StatusBadRequest, map[string]string{"error": "valor inválido para " + clave})
@@ -1038,6 +1062,15 @@ func (s *Server) editarProducto(w http.ResponseWriter, r *http.Request) {
 	// seguiría vendiendo al precio anterior.
 	if _, hay := campos["precio"]; hay {
 		s.refrescarPreciosEfectivos(r.Context())
+	}
+
+	// Se auditan el precio y la exclusión, que son las dos ediciones con
+	// consecuencia comercial directa; el resto de campos de la ficha se
+	// arreglan mirándola.
+	if ahora, err := s.st.EstadoPrevioVariante(r.Context(), varianteID); err == nil {
+		if cambioAuditable(previo, ahora) {
+			s.auditar(r, "update", "product_variants", strconv.FormatInt(varianteID, 10), previo, ahora)
+		}
 	}
 	escribir(w, http.StatusOK, map[string]string{"estado": "guardado"})
 }

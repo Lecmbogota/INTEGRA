@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -14,6 +15,7 @@ func (s *Server) registrarPrecios(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/cuentas/{id}/reglas-precio", s.reglasPrecioCuenta)
 	mux.HandleFunc("POST /api/cuentas/{id}/reglas-precio", s.guardarReglaPrecio)
 	mux.HandleFunc("POST /api/cuentas/{id}/recalcular-precios", s.recalcularPreciosCuenta)
+	mux.HandleFunc("PATCH /api/cuentas/{id}/suelo-costo", s.guardarSueloCosto)
 	mux.HandleFunc("PUT /api/variantes/{id}/override-precio", s.guardarOverridePrecio)
 	mux.HandleFunc("DELETE /api/variantes/{id}/override-precio", s.eliminarOverridePrecio)
 	mux.HandleFunc("POST /api/variantes/{id}/ofertas", s.guardarOferta)
@@ -54,10 +56,13 @@ func (s *Server) cancelarOferta(w http.ResponseWriter, r *http.Request) {
 		escribir(w, http.StatusBadRequest, map[string]string{"error": "identificador inválido"})
 		return
 	}
+	antes, _ := s.st.OfertaPorID(r.Context(), id)
 	if err := s.st.CancelarOferta(r.Context(), id); err != nil {
 		escribir(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
 		return
 	}
+	s.auditar(r, "cancel", "offers", strconv.FormatInt(id, 10), antes,
+		map[string]any{"active": false})
 	escribir(w, http.StatusOK, map[string]string{"estado": "cancelada"})
 }
 
@@ -106,6 +111,15 @@ func (s *Server) guardarReglaPrecio(w http.ResponseWriter, r *http.Request) {
 	}
 	req.ChannelAccountID = cuentaID
 
+	var antes any
+	accion := "create"
+	if req.ID != 0 {
+		accion = "update"
+		if previa, err := s.st.ReglaPrecioPorID(r.Context(), req.ID); err == nil && previa != nil {
+			antes = previa
+		}
+	}
+
 	id, err := s.st.GuardarReglaPrecioCanal(r.Context(), req)
 	if err != nil {
 		s.fallo(w, err)
@@ -114,6 +128,7 @@ func (s *Server) guardarReglaPrecio(w http.ResponseWriter, r *http.Request) {
 	// La regla ya está escrita, pero el canal publica effective_prices: sin
 	// rehacerlos, «+8% en la marca X» no sale nunca de la base.
 	s.refrescarPreciosDeCuenta(r.Context(), cuentaID)
+	s.auditar(r, accion, "channel_price_rules", strconv.FormatInt(id, 10), antes, req)
 
 	escribir(w, http.StatusOK, map[string]any{
 		"ok": true,
@@ -141,6 +156,46 @@ func (s *Server) recalcularPreciosCuenta(w http.ResponseWriter, r *http.Request)
 	})
 }
 
+// guardarSueloCosto fija el margen mínimo de la cuenta y si publicar por
+// debajo de él frena el envío.
+//
+// Al guardar se recalculan los precios de la cuenta en el acto, porque es el
+// recálculo el que aplica el suelo y el que rehace la lista de lo que está por
+// debajo de coste: sin él, subir el margen sería un número en una pantalla que
+// no cambia lo que sale a los canales hasta la siguiente pasada.
+func (s *Server) guardarSueloCosto(w http.ResponseWriter, r *http.Request) {
+	cuentaID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "id de cuenta inválido", http.StatusBadRequest)
+		return
+	}
+
+	var req store.SueloCosto
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "cuerpo json inválido", http.StatusBadRequest)
+		return
+	}
+
+	antes, err := s.st.SueloCostoDeCuenta(r.Context(), cuentaID)
+	if err != nil {
+		escribir(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := s.st.ActualizarSueloCosto(r.Context(), cuentaID, req); err != nil {
+		escribir(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+		return
+	}
+	s.auditar(r, "update", "channel_accounts", strconv.FormatInt(cuentaID, 10), antes, req)
+
+	total, err := s.st.RecalcularPreciosCuenta(r.Context(), cuentaID)
+	if err != nil {
+		s.fallo(w, err)
+		return
+	}
+
+	escribir(w, http.StatusOK, map[string]any{"ok": true, "total": total})
+}
+
 type reqOverridePrecio struct {
 	ChannelAccountID int64   `json:"channel_account_id"`
 	Price            float64 `json:"price"`
@@ -160,13 +215,22 @@ func (s *Server) guardarOverridePrecio(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.st.GuardarOverridePrecio(r.Context(), varianteID, req.ChannelAccountID, req.Price, req.Reason, nil); err != nil {
+	antes, _ := s.st.OverridePrecioDe(r.Context(), varianteID, req.ChannelAccountID)
+	if err := s.st.GuardarOverridePrecio(r.Context(), varianteID, req.ChannelAccountID, req.Price, req.Reason, usuarioDe(r)); err != nil {
 		s.fallo(w, err)
 		return
 	}
 	s.refrescarPreciosDeCuenta(r.Context(), req.ChannelAccountID)
+	s.auditar(r, "update", "price_overrides", refOverride(varianteID, req.ChannelAccountID), antes, req)
 
 	escribir(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// refOverride identifica el override en la auditoría: un precio manual es de
+// una variante EN una cuenta, así que la clave tiene que llevar las dos o el
+// registro no dice en qué canal se cambió el precio.
+func refOverride(varianteID, cuentaID int64) string {
+	return fmt.Sprintf("%d:%d", varianteID, cuentaID)
 }
 
 func (s *Server) eliminarOverridePrecio(w http.ResponseWriter, r *http.Request) {
@@ -183,6 +247,7 @@ func (s *Server) eliminarOverridePrecio(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	antes, _ := s.st.OverridePrecioDe(r.Context(), varianteID, cuentaID)
 	if err := s.st.EliminarOverridePrecio(r.Context(), varianteID, cuentaID); err != nil {
 		s.fallo(w, err)
 		return
@@ -190,6 +255,7 @@ func (s *Server) eliminarOverridePrecio(w http.ResponseWriter, r *http.Request) 
 	// Retirar el override también mueve el precio: sin rehacerlo, el canal se
 	// queda con el precio pactado después de haberlo quitado.
 	s.refrescarPreciosDeCuenta(r.Context(), cuentaID)
+	s.auditar(r, "delete", "price_overrides", refOverride(varianteID, cuentaID), antes, nil)
 
 	escribir(w, http.StatusOK, map[string]any{"ok": true})
 }
@@ -234,11 +300,12 @@ func (s *Server) guardarOferta(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, err := s.st.GuardarOferta(r.Context(), varianteID, req.ChannelAccountID, req.OfferPrice, req.StartsAt, req.EndsAt, nil)
+	id, err := s.st.GuardarOferta(r.Context(), varianteID, req.ChannelAccountID, req.OfferPrice, req.StartsAt, req.EndsAt, usuarioDe(r))
 	if err != nil {
 		s.fallo(w, err)
 		return
 	}
+	s.auditar(r, "create", "offers", strconv.FormatInt(id, 10), nil, req)
 
 	escribir(w, http.StatusOK, map[string]any{
 		"ok": true,

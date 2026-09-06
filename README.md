@@ -293,6 +293,49 @@ efectivos de esa cuenta y encola el envío al canal
 encola la reversión — desactivarla en la base sin más dejaría el precio
 rebajado publicado para siempre.
 
+## Suelo de coste
+
+Ningún precio sale a un canal si no cubre el coste de Odoo con el margen mínimo
+de esa cuenta. El suelo se configura en *Cuentas de canal*, bajo cada cuenta:
+
+| Campo | Qué hace |
+|---|---|
+| Margen mínimo | Porcentaje sobre el coste que hay que ganar. `0` = que al menos lo cubra |
+| No publicar | Marcado, el envío se retiene; sin marcar, solo se avisa |
+
+El margen se mide sobre lo que **queda tras la comisión del canal**, no sobre
+el precio de escaparate: publicar a $100.000 donde el canal cobra el 20 % deja
+$80.000, y comparar los $100.000 contra el coste daría por bueno vender a
+pérdida.
+
+Cuando el precio no llega al suelo pasan tres cosas: el producto entra en la
+cola de atención con el motivo *Precio por debajo del coste* y el detalle de
+las cifras, la vigilancia levanta la alerta `precio_bajo_costo` (sale por
+correo como cualquier otra), y —si la cuenta lo pide— el envío se retiene. En
+una publicación que ya existe se retiene solo el precio, así que el canal se
+queda con el precio bueno anterior en lugar de que lo pise el malo; el stock se
+sigue sincronizando, porque dejar de hacerlo por un problema de precio haría
+vender lo que no hay. Un alta nueva se retiene entera: el alta lleva el precio
+dentro.
+
+El precio **calculado** nunca baja del suelo, se ajusta solo. Los precios
+manuales y las promociones no se tocan —son decisiones de una persona— pero sí
+avisan y sí se retienen.
+
+Un coste desconocido (cero en Odoo, lo normal mientras el producto no se haya
+comprado nunca) no cuenta como pérdida y no frena nada.
+
+## Registro de auditoría
+
+Toda escritura sobre dinero o acceso queda en `audit_logs` con el usuario, la
+IP, el valor anterior y el nuevo: precios de ficha, ediciones masivas, cargas
+de plantilla, reglas de canal, precios manuales, promociones, comisiones de
+canal, credenciales de canal y conexiones a Odoo. Se consulta en
+`GET /api/auditoria` (solo administradores).
+
+Las credenciales y las API keys nunca se copian ahí: queda constancia de que se
+cambiaron, nunca de cuáles son.
+
 ## Actualización masiva por plantilla
 
 Para cambiar cientos de precios o programar muchas promociones a la vez, en

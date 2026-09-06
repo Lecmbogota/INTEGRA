@@ -97,6 +97,9 @@ func (s *Server) crearIntegracion(w http.ResponseWriter, r *http.Request) {
 		s.fallo(w, err)
 		return
 	}
+	s.auditar(r, "create", "odoo_connections", strconv.FormatInt(id, 10), nil,
+		map[string]any{"nombre": cuerpo.Nombre, "url": cuerpo.URL, "database": cuerpo.Database,
+			"usuario": cuerpo.Usuario, "timezone": cuerpo.Timezone, "api_key": sinCredencial})
 	escribir(w, http.StatusOK, map[string]any{
 		"estado": "conectada y guardada como activa", "id": id, "uid": cli.UID(),
 	})
@@ -190,6 +193,13 @@ func (s *Server) editarIntegracion(w http.ResponseWriter, r *http.Request) {
 		s.fallo(w, err)
 		return
 	}
+	despues := map[string]any{"nombre": nombre, "url": base, "database": db,
+		"usuario": usuario, "timezone": tz}
+	if claveNueva != "" {
+		despues["api_key"] = sinCredencial
+	}
+	s.auditar(r, "update", "odoo_connections", strconv.FormatInt(id, 10),
+		datosConexion(actual), despues)
 	escribir(w, http.StatusOK, map[string]string{"estado": "guardada"})
 }
 
@@ -251,6 +261,9 @@ func (s *Server) activarIntegracion(w http.ResponseWriter, r *http.Request) {
 		s.fallo(w, err)
 		return
 	}
+	// Cambiar de Odoo cambia el catálogo entero de debajo de los canales: es
+	// lo más gordo que se puede hacer desde la interfaz.
+	s.auditar(r, "activate", "odoo_connections", strconv.FormatInt(id, 10), nil, datosConexion(c))
 	escribir(w, http.StatusOK, map[string]string{"estado": "activada"})
 }
 
@@ -262,11 +275,16 @@ func (s *Server) borrarIntegracion(w http.ResponseWriter, r *http.Request) {
 		escribir(w, http.StatusBadRequest, map[string]string{"error": "identificador inválido"})
 		return
 	}
+	antes, _ := s.st.ConexionOdooPorID(r.Context(), id)
 	n, err := s.st.BorrarConexion(r.Context(), id)
 	if err != nil {
 		escribir(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
 		return
 	}
+	// Borrar una conexión se lleva por delante su catálogo: el número de
+	// productos arrastrados forma parte de lo que hay que poder explicar.
+	s.auditar(r, "delete", "odoo_connections", strconv.FormatInt(id, 10),
+		datosConexion(antes), map[string]any{"productos_borrados": n})
 	escribir(w, http.StatusOK, map[string]any{
 		"estado": "borrada", "productos_borrados": n,
 	})
@@ -290,4 +308,16 @@ func nombrePorDefecto(baseURL, db string) string {
 		return u.Host + " · " + db
 	}
 	return db
+}
+
+// datosConexion arma lo que de una conexión se puede guardar en la auditoría:
+// todo menos la API key, que está cifrada en la base y ahí se queda.
+func datosConexion(c *store.ConexionOdoo) map[string]any {
+	if c == nil {
+		return nil
+	}
+	return map[string]any{
+		"nombre": c.Nombre, "url": c.BaseURL, "database": c.Database,
+		"usuario": c.Username, "timezone": c.Timezone,
+	}
 }

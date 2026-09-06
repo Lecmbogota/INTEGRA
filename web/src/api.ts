@@ -324,6 +324,10 @@ export interface CuentaCanal {
   probada_msg: string
   // Bodegas asignadas. Con cero la cuenta no publica nada.
   bodegas: number
+  // Suelo de coste: margen mínimo exigido y si publicar por debajo frena el
+  // envío al canal o solo levanta el aviso.
+  min_margen_pct: number
+  bloquear_bajo_costo: boolean
 }
 
 // BodegaCuenta es una bodega de Odoo vista desde una cuenta: si la alimenta
@@ -823,12 +827,19 @@ export const api = {
   // Devuelve a la cola de montaje un pedido que agotó sus intentos. Cuando no
   // procede (ya está en Odoo, lo canceló el canal, le falta un SKU) el
   // servidor responde 409 con el motivo, que `pedir` convierte en el error.
+  guardarSueloCosto: (id: number, min_margen_pct: number, bloquear_bajo_costo: boolean) =>
+    pedir<{ ok: boolean; total: number }>(`/api/cuentas/${id}/suelo-costo`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ min_margen_pct, bloquear_bajo_costo }),
+    }),
+
   reintentarOrden: (ordenId: number) =>
     pedir<{ estado: string; numero: string }>(`/api/ordenes/${ordenId}/reintentar`, { method: 'POST' }),
 
   publicaciones: () => pedir<ResumenPublicacion[]>('/api/publicaciones'),
   planificar: (cuentaId: number) =>
-    pedir<{ publicar: number; precio: number; stock: number; sin_cambios: number; no_listos: number }>(
+    pedir<{ publicar: number; precio: number; stock: number; sin_cambios: number; no_listos: number; bajo_costo: number }>(
       `/api/cuentas/${cuentaId}/planificar`, { method: 'POST' }),
 
   cuentas: () => pedir<CuentaCanal[]>('/api/cuentas'),
@@ -920,6 +931,7 @@ export function fecha(iso: string | null): string {
 // estables del dominio; aquí se traducen para mostrarlos.
 export const MOTIVOS: Record<string, string> = {
   missing_sku: 'Sin referencia interna',
+  price_below_cost: 'Precio por debajo del coste',
   duplicate_sku: 'Referencia repetida en otro producto',
   missing_description: 'Sin descripción',
   missing_price: 'Sin precio asignado',

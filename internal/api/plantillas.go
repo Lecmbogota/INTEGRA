@@ -148,6 +148,18 @@ func (s *Server) cargarPlantilla(w http.ResponseWriter, r *http.Request) {
 		s.fallo(w, err)
 		return
 	}
+
+	// Solo la carga que escribió. Cada cambio va con su precio de antes y el
+	// de después, que es lo que la hoja ya trae resuelto: una subida de
+	// cuatrocientas filas queda explicada fila a fila y con nombre y hora.
+	if res.Aplicado {
+		s.auditar(r, "bulk_upload", "product_variants", "", nil, map[string]any{
+			"archivo":     cab.Filename,
+			"precios":     res.Precios,
+			"promociones": res.Promociones,
+			"cambios":     res.Cambios,
+		})
+	}
 	escribir(w, http.StatusOK, res)
 }
 
