@@ -256,7 +256,23 @@ func (s *Store) RecalcularAtencion(ctx context.Context) error {
 		   'warning',
 		   EXISTS (SELECT 1 FROM producto_imagenes pi
 		           WHERE pi.product_id = p.id AND pi.principal
-		             AND pi.verificacion = 'no_corresponde'))
+		             AND pi.verificacion = 'no_corresponde')),
+		  -- El canal se queda con el SKU con el que se publicó: ningún Update
+		  -- se lo cambia y en Falabella no se puede. Pedidos y envíos siguen
+		  -- funcionando por el SKU publicado; lo que queda es una ficha en el
+		  -- marketplace con una referencia que Odoo ya no tiene.
+		  ('sku_renombrado',
+		   'el SKU cambió en Odoo; ' || (
+		       SELECT string_agg(ch.code || ' sigue con «' || vcl.channel_sku || '»', ', ' ORDER BY ch.code)
+		       FROM variant_channel_listings vcl
+		       JOIN channel_accounts a ON a.id = vcl.channel_account_id
+		       JOIN channels ch ON ch.id = a.channel_id
+		       WHERE vcl.variant_id = v.id AND vcl.channel_sku IS NOT NULL
+		         AND lower(vcl.channel_sku) <> lower(v.sku)),
+		   'warning',
+		   EXISTS (SELECT 1 FROM variant_channel_listings vcl
+		           WHERE vcl.variant_id = v.id AND vcl.channel_sku IS NOT NULL
+		             AND lower(vcl.channel_sku) <> lower(v.sku)))
 		) AS m(reason, detail, severity, aplica)
 		WHERE v.active AND p.active AND p.excluded_reason IS NULL AND m.aplica`)
 	if err != nil {

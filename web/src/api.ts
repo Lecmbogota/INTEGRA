@@ -913,6 +913,7 @@ export const MOTIVOS: Record<string, string> = {
   missing_brand: 'Sin marca',
   no_stock: 'Sin existencias',
   image_mismatch: 'Portada dudosa',
+  sku_renombrado: 'SKU renombrado en Odoo',
 }
 
 export const motivo = (k: string) => MOTIVOS[k] ?? k

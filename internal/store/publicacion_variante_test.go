@@ -146,3 +146,37 @@ func TestLaReferenciaUsaElSKUConElQueSePublico(t *testing.T) {
 		t.Errorf("la referencia devolvió %q; tiene que ser el SKU publicado, no el actual", ref.SKU)
 	}
 }
+
+// La ventana que cubre la prueba anterior se cerraba sola: el SKU entra en el
+// hash de contenido, así que el renombrado dispara una republicación, y al
+// anotarla se volvía a tomar el SKU de la variante. Desde ahí la referencia
+// era el nuevo, que el canal no conoce, y en Falabella ningún envío de precio
+// ni de stock volvía a llegar.
+func TestRepublicarLaFichaNoPisaElSKUConElQueSePublico(t *testing.T) {
+	ctx := context.Background()
+	st := abrirStore(t)
+	cuentaID, prodID, varA, _ := fixturePublicacion(t, st)
+
+	if err := st.GuardarPublicacion(ctx, cuentaID, prodID, varA,
+		"EXT-1", "", "VAR-A", "h", "ph", "sh", 1000, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.pool.Exec(ctx,
+		`UPDATE product_variants SET sku = 'CAM-M-RENOMBRADO' WHERE id = $1`, varA); err != nil {
+		t.Fatal(err)
+	}
+	// El motor republica la ficha con el hash nuevo. Update no manda el SKU
+	// en ningún canal, así que el canal sigue con el viejo.
+	if err := st.GuardarContenidoPublicado(ctx, cuentaID, prodID, varA,
+		"EXT-1", "", "VAR-A", "hash-con-el-sku-nuevo"); err != nil {
+		t.Fatal(err)
+	}
+
+	ref, err := st.RefDePublicacion(ctx, cuentaID, varA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ref.SKU != "CAM-M-TEST" {
+		t.Errorf("tras republicar, la referencia devolvió %q; el canal sigue conociendo el publicado", ref.SKU)
+	}
+}

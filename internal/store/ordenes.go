@@ -129,23 +129,37 @@ func (s *Store) GuardarOrden(ctx context.Context, d DatosOrden) (id int64, nuevo
 	// guarda igual con variant_id nulo: perder el pedido sería peor que
 	// tenerlo incompleto, y así se ve qué hay que arreglar.
 	//
-	// Sin pareja también cuando el SKU está en más de una variante viva: con
-	// LIMIT 1 se elegía una al azar y el pedido se montaba en Odoo contra ese
-	// producto, o sea, se despachaba otra mercancía. El HAVING solo empareja
-	// cuando la respuesta es única; la colisión la señala la cola de atención
-	// y el rescate vuelve a intentarlo cuando se corrija en Odoo.
+	// El SKU que manda el canal es el que tenía cuando se publicó, y ese no
+	// cambia cuando alguien lo renombra en Odoo: ningún Update se lo lleva al
+	// canal y en Falabella ni siquiera se puede. Por eso se mira primero lo que
+	// esta cuenta publicó (channel_sku), que es lo que el comprador vio, y solo
+	// después el SKU actual de la variante. Mirar solo el actual dejaba sin
+	// variante cada pedido de un producto renombrado, y el montaje en Odoo lo
+	// agotaba en cinco intentos: una venta cobrada que nunca llegaba.
+	//
+	// En los dos casos se exige que la respuesta sea única. Con LIMIT 1 sobre
+	// un SKU repetido en dos variantes vivas se elegía una al azar y el pedido
+	// se montaba contra el producto equivocado, o sea, se despachaba otra
+	// mercancía. La colisión la señala la cola de atención y el rescate vuelve
+	// a intentarlo cuando se corrija en Odoo.
 	for _, l := range d.Lineas {
 		_, err = tx.Exec(ctx, `
 			INSERT INTO channel_order_lines
 			    (channel_order_id, external_line_id, external_variant_id, channel_sku,
 			     variant_id, title, quantity, unit_price, total_price)
 			VALUES ($1,$2,$3,$4,
-			        (SELECT min(v.id) FROM product_variants v
-			         WHERE lower(v.sku) = lower($4) AND v.active
-			         HAVING count(*) = 1),
+			        COALESCE(
+			          (SELECT min(vcl.variant_id) FROM variant_channel_listings vcl
+			           JOIN product_variants v ON v.id = vcl.variant_id AND v.active
+			           WHERE vcl.channel_account_id = $9
+			             AND lower(vcl.channel_sku) = lower($4)
+			           HAVING count(DISTINCT vcl.variant_id) = 1),
+			          (SELECT min(v.id) FROM product_variants v
+			           WHERE lower(v.sku) = lower($4) AND v.active
+			           HAVING count(*) = 1)),
 			        $5,$6,$7,$8)`,
 			id, nulo(l.ExternalID), nulo(l.VarianteExt), nulo(l.SKU),
-			nulo(l.Titulo), l.Cantidad, l.PrecioUnit, l.Total)
+			nulo(l.Titulo), l.Cantidad, l.PrecioUnit, l.Total, d.CuentaID)
 		if err != nil {
 			return 0, false, fmt.Errorf("guardando línea de %s: %w", d.ExternalID, err)
 		}
@@ -215,19 +229,28 @@ func (s *Store) ReemparejarLineasHuerfanas(ctx context.Context) (lineas, pedidos
 	}
 	defer tx.Rollback(ctx)
 
-	// Solo con la variante que responde en exclusiva a ese SKU: con dos vivas,
-	// UPDATE ... FROM tomaría una cualquiera, que es la elección al azar que
-	// la ingesta acaba de negarse a hacer.
+	// El mismo criterio que al insertar la línea (ver GuardarOrden): primero el
+	// SKU con el que esta cuenta publicó la variante, después el actual, y
+	// ninguno de los dos si responde más de una variante viva.
 	tag, err := tx.Exec(ctx, `
 		UPDATE channel_order_lines l
-		SET variant_id = u.id
-		FROM (SELECT lower(v.sku) AS sku, min(v.id) AS id
-		      FROM product_variants v
-		      WHERE v.active AND v.sku IS NOT NULL
-		      GROUP BY lower(v.sku) HAVING count(*) = 1) u
-		WHERE l.variant_id IS NULL
-		  AND l.channel_sku IS NOT NULL
-		  AND u.sku = lower(l.channel_sku)`)
+		SET variant_id = e.variant_id
+		FROM (
+		    SELECT h.id,
+		           COALESCE(
+		             (SELECT min(vcl.variant_id) FROM variant_channel_listings vcl
+		              JOIN product_variants v ON v.id = vcl.variant_id AND v.active
+		              WHERE vcl.channel_account_id = o.channel_account_id
+		                AND lower(vcl.channel_sku) = lower(h.channel_sku)
+		              HAVING count(DISTINCT vcl.variant_id) = 1),
+		             (SELECT min(v.id) FROM product_variants v
+		              WHERE v.active AND lower(v.sku) = lower(h.channel_sku)
+		              HAVING count(*) = 1)) AS variant_id
+		    FROM channel_order_lines h
+		    JOIN channel_orders o ON o.id = h.channel_order_id
+		    WHERE h.variant_id IS NULL AND h.channel_sku IS NOT NULL
+		) e
+		WHERE e.id = l.id AND e.variant_id IS NOT NULL`)
 	if err != nil {
 		return 0, 0, fmt.Errorf("reemparejando líneas de pedido: %w", err)
 	}
