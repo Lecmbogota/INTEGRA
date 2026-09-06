@@ -174,7 +174,7 @@ func TestElRefrescoRehaceLosPreciosDeTodasLasCuentasActivas(t *testing.T) {
 		{ID: 3, CanalCodigo: "falabella", Activa: false},
 	}}
 
-	if err := refrescarPreciosEfectivos(context.Background(), rc); err != nil {
+	if err := refrescarPreciosEfectivos(context.Background(), rc, ""); err != nil {
 		t.Fatalf("no debía fallar: %v", err)
 	}
 	if len(rc.hechas) != 2 || rc.hechas[0] != 1 || rc.hechas[1] != 2 {
@@ -192,12 +192,29 @@ func TestUnaCuentaQueFallaNoImpideRefrescarLasDemas(t *testing.T) {
 		fallan: map[int64]bool{1: true},
 	}
 
-	err := refrescarPreciosEfectivos(context.Background(), rc)
+	err := refrescarPreciosEfectivos(context.Background(), rc, "")
 	if err == nil {
 		t.Fatal("el fallo de la cuenta 1 tenía que llegar al log")
 	}
 	if len(rc.hechas) != 2 {
 		t.Fatalf("se recalcularon %v; la cuenta 2 también tenía que intentarse", rc.hechas)
+	}
+}
+
+// Cambiar la comisión de MercadoLibre no mueve ningún precio de Shopify: al
+// editar un canal se rehacen solo las cuentas activas de ese canal.
+func TestEditarUnCanalRehaceSoloLosPreciosDeSusCuentas(t *testing.T) {
+	rc := &recalculadorFalso{cuentas: []store.CuentaCanal{
+		{ID: 1, CanalCodigo: "mercadolibre", Activa: true},
+		{ID: 2, CanalCodigo: "shopify", Activa: true},
+		{ID: 3, CanalCodigo: "mercadolibre", Activa: false},
+	}}
+
+	if err := refrescarPreciosEfectivos(context.Background(), rc, "mercadolibre"); err != nil {
+		t.Fatalf("no debía fallar: %v", err)
+	}
+	if len(rc.hechas) != 1 || rc.hechas[0] != 1 {
+		t.Fatalf("se recalcularon %v; se esperaba solo la cuenta activa de mercadolibre", rc.hechas)
 	}
 }
 

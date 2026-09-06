@@ -800,11 +800,18 @@ func (s *Server) editarCanal(w http.ResponseWriter, r *http.Request) {
 		escribir(w, http.StatusBadRequest, map[string]string{"error": "cuerpo JSON inválido"})
 		return
 	}
-	if err := s.st.ActualizarCanal(r.Context(), r.PathValue("codigo"),
+	codigo := r.PathValue("codigo")
+	if err := s.st.ActualizarCanal(r.Context(), codigo,
 		cuerpo.ComisionPct, cuerpo.CostoFijo); err != nil {
 		escribir(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
 		return
 	}
+	// La comisión nueva no vale de nada mientras effective_prices siga
+	// calculada con la vieja: CandidatosPublicacion prefiere ese valor, así
+	// que el catálogo entero seguiría publicado al precio anterior y cada
+	// venta dejaría la diferencia en el canal hasta que alguien pulsara
+	// «recalcular» cuenta por cuenta.
+	s.refrescarPreciosDelCanal(r.Context(), codigo)
 	escribir(w, http.StatusOK, map[string]string{"estado": "guardado"})
 }
 
@@ -1053,12 +1060,23 @@ type recalculadorPrecios interface {
 // edición fue correcta. Queda en el log y en la siguiente pasada del
 // planificador, que recalcula igualmente.
 func (s *Server) refrescarPreciosEfectivos(ctx context.Context) {
-	if err := refrescarPreciosEfectivos(ctx, s.st); err != nil {
+	if err := refrescarPreciosEfectivos(ctx, s.st, ""); err != nil {
 		s.log.Error("recalculando los precios efectivos tras editar el precio", "error", err)
 	}
 }
 
-func refrescarPreciosEfectivos(ctx context.Context, rp recalculadorPrecios) error {
+// refrescarPreciosDelCanal hace lo mismo tras cambiar la comisión o el costo
+// fijo de un canal, pero solo para sus cuentas: ese cambio no mueve el precio
+// de ningún otro canal.
+func (s *Server) refrescarPreciosDelCanal(ctx context.Context, canal string) {
+	if err := refrescarPreciosEfectivos(ctx, s.st, canal); err != nil {
+		s.log.Error("recalculando los precios efectivos tras editar el canal", "canal", canal, "error", err)
+	}
+}
+
+// Con canal vacío se rehacen todas las cuentas activas; con uno, solo las
+// suyas.
+func refrescarPreciosEfectivos(ctx context.Context, rp recalculadorPrecios, canal string) error {
 	cuentas, err := rp.ListarCuentas(ctx)
 	if err != nil {
 		return err
@@ -1067,7 +1085,7 @@ func refrescarPreciosEfectivos(ctx context.Context, rp recalculadorPrecios) erro
 	// con todos y se devuelve lo que haya fallado.
 	var fallos []error
 	for _, c := range cuentas {
-		if !c.Activa {
+		if !c.Activa || (canal != "" && c.CanalCodigo != canal) {
 			continue
 		}
 		if _, err := rp.RecalcularPreciosCuenta(ctx, c.ID); err != nil {
