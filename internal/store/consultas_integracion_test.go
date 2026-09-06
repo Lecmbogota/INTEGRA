@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 )
@@ -113,6 +114,13 @@ func TestCandidatosPublicacionEjecuta(t *testing.T) {
 		t.Skip("sin cuentas de canal configuradas")
 	}
 	if _, err := st.CandidatosPublicacion(ctx, cuentas[0].ID); err != nil {
+		// Una cuenta sin bodegas asignadas no llega a ejecutar la consulta, y
+		// eso es lo correcto: es configuración pendiente, no una consulta
+		// rota. Esta prueba mide que la consulta funcione contra datos reales,
+		// así que se salta en vez de fallar.
+		if errors.Is(err, ErrCuentaSinBodegas) {
+			t.Skip("la primera cuenta no tiene bodegas asignadas todavía")
+		}
 		t.Fatalf("CandidatosPublicacion falló: %v", err)
 	}
 }

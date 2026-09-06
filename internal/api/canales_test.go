@@ -63,6 +63,22 @@ func canalConCuentaYVariante(t *testing.T, st *store.Store, ctx context.Context,
 		VALUES ('conexion-comision-test','http://x','x','x','\x00'::bytea,false) RETURNING id`).Scan(&conexionID); err != nil {
 		t.Fatalf("creando la conexión de prueba: %v", err)
 	}
+
+	// La cuenta necesita al menos una bodega asignada: desde que se exige la
+	// asignación, una cuenta sin bodegas no publica nada y esta prueba dejaría
+	// de medir lo suyo para medir eso otro.
+	var bodegaID int64
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO odoo_warehouses (odoo_connection_id, odoo_id, code, name)
+		VALUES ($1, 778901, 'COMIS', 'Bodega de la prueba de comisión') RETURNING id`,
+		conexionID).Scan(&bodegaID); err != nil {
+		t.Fatalf("creando la bodega de prueba: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO channel_account_warehouses (channel_account_id, odoo_warehouse_id)
+		VALUES ($1, $2)`, cuentaID, bodegaID); err != nil {
+		t.Fatalf("asignando la bodega a la cuenta: %v", err)
+	}
 	if err := pool.QueryRow(ctx, `
 		INSERT INTO products (odoo_connection_id, odoo_template_id, name)
 		VALUES ($1, 778001, 'Audífonos de la prueba de comisión') RETURNING id`, conexionID).Scan(&prodID); err != nil {

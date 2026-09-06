@@ -11,44 +11,44 @@ import (
 
 // ReglaPrecioCanal representa una regla en channel_price_rules.
 type ReglaPrecioCanal struct {
-	ID                 int64     `json:"id"`
-	ChannelAccountID   int64     `json:"channel_account_id"`
-	BrandID            *int64    `json:"brand_id,omitempty"`
-	CategPathPrefix    *string   `json:"categ_path_prefix,omitempty"`
-	AdjustmentType     string    `json:"adjustment_type"` // 'percent' | 'fixed'
-	AdjustmentValue    float64   `json:"adjustment_value"`
-	RoundTo            *float64  `json:"round_to,omitempty"`
-	MinMarginPercent   *float64  `json:"min_margin_percent,omitempty"`
-	Priority           int       `json:"priority"`
-	Active             bool      `json:"active"`
-	CreatedAt          time.Time `json:"created_at"`
-	UpdatedAt          time.Time `json:"updated_at"`
+	ID               int64     `json:"id"`
+	ChannelAccountID int64     `json:"channel_account_id"`
+	BrandID          *int64    `json:"brand_id,omitempty"`
+	CategPathPrefix  *string   `json:"categ_path_prefix,omitempty"`
+	AdjustmentType   string    `json:"adjustment_type"` // 'percent' | 'fixed'
+	AdjustmentValue  float64   `json:"adjustment_value"`
+	RoundTo          *float64  `json:"round_to,omitempty"`
+	MinMarginPercent *float64  `json:"min_margin_percent,omitempty"`
+	Priority         int       `json:"priority"`
+	Active           bool      `json:"active"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 // OverridePrecio representa una excepción fijada a mano en price_overrides.
 type OverridePrecio struct {
-	ID                 int64     `json:"id"`
-	VariantID          int64     `json:"variant_id"`
-	ChannelAccountID   int64     `json:"channel_account_id"`
-	Price              float64   `json:"price"`
-	Reason             string    `json:"reason"`
-	CreatedBy          *int64    `json:"created_by,omitempty"`
-	CreatedAt          time.Time `json:"created_at"`
+	ID               int64     `json:"id"`
+	VariantID        int64     `json:"variant_id"`
+	ChannelAccountID int64     `json:"channel_account_id"`
+	Price            float64   `json:"price"`
+	Reason           string    `json:"reason"`
+	CreatedBy        *int64    `json:"created_by,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
 }
 
 // OfertaCanal representa una oferta temporal en offers.
 type OfertaCanal struct {
-	ID                 int64      `json:"id"`
-	VariantID          int64      `json:"variant_id"`
-	ChannelAccountID   int64      `json:"channel_account_id"`
-	OfferPrice         float64    `json:"offer_price"`
-	StartsAt           time.Time  `json:"starts_at"`
-	EndsAt             *time.Time `json:"ends_at,omitempty"`
-	AppliedAt          *time.Time `json:"applied_at,omitempty"`
-	RevertedAt         *time.Time `json:"reverted_at,omitempty"`
-	Active             bool       `json:"active"`
-	CreatedBy          *int64     `json:"created_by,omitempty"`
-	CreatedAt          time.Time  `json:"created_at"`
+	ID               int64      `json:"id"`
+	VariantID        int64      `json:"variant_id"`
+	ChannelAccountID int64      `json:"channel_account_id"`
+	OfferPrice       float64    `json:"offer_price"`
+	StartsAt         time.Time  `json:"starts_at"`
+	EndsAt           *time.Time `json:"ends_at,omitempty"`
+	AppliedAt        *time.Time `json:"applied_at,omitempty"`
+	RevertedAt       *time.Time `json:"reverted_at,omitempty"`
+	Active           bool       `json:"active"`
+	CreatedBy        *int64     `json:"created_by,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
 }
 
 // PrecioEfectivo representa una fila en effective_prices.
@@ -227,17 +227,17 @@ func (s *Store) GuardarOferta(ctx context.Context, varianteID, cuentaID int64, p
 
 // OfertaVista es una promoción tal como se muestra en la interfaz.
 type OfertaVista struct {
-	ID          int64      `json:"id"`
-	VarianteID  int64      `json:"variante_id"`
-	CuentaID    int64      `json:"cuenta_id"`
-	Canal       string     `json:"canal"`
-	Precio      float64    `json:"precio"`
-	Inicia      time.Time  `json:"inicia"`
-	Termina     *time.Time `json:"termina"`
-	Activa      bool       `json:"activa"`
+	ID         int64      `json:"id"`
+	VarianteID int64      `json:"variante_id"`
+	CuentaID   int64      `json:"cuenta_id"`
+	Canal      string     `json:"canal"`
+	Precio     float64    `json:"precio"`
+	Inicia     time.Time  `json:"inicia"`
+	Termina    *time.Time `json:"termina"`
+	Activa     bool       `json:"activa"`
 	// Estado resuelto contra el reloj: programada | vigente | terminada | cancelada.
-	Estado      string     `json:"estado"`
-	AplicadaAt  *time.Time `json:"aplicada_at"`
+	Estado     string     `json:"estado"`
+	AplicadaAt *time.Time `json:"aplicada_at"`
 }
 
 // OfertasDeVariante lista todas las promociones de un producto, con su estado
@@ -418,10 +418,17 @@ func (s *Store) GuardarPreciosEfectivos(ctx context.Context, precios []pricing.E
 
 	b := &pgx.Batch{}
 	for _, p := range precios {
+		// El SELECT ... WHERE EXISTS, en vez de VALUES, salta la variante que
+		// ya no está en vez de romper la inserción entera. El recálculo de una
+		// cuenta recorre cientos de variantes y puede solaparse con un borrado
+		// —al eliminar una conexión de Odoo, por ejemplo—: sin esto, una sola
+		// variante desaparecida a mitad tiraba el lote completo y la cuenta se
+		// quedaba con los precios viejos sin que nadie supiera por qué.
 		b.Queue(`
 			INSERT INTO effective_prices
 			    (variant_id, channel_account_id, regular_price, sale_price, currency, source, computed_at)
-			VALUES ($1, $2, $3, $4, $5, $6, now())
+			SELECT $1, $2, $3, $4, $5, $6, now()
+			WHERE EXISTS (SELECT 1 FROM product_variants WHERE id = $1)
 			ON CONFLICT (variant_id, channel_account_id) DO UPDATE
 			SET regular_price = EXCLUDED.regular_price,
 			    sale_price = EXCLUDED.sale_price,
