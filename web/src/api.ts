@@ -884,6 +884,7 @@ export function fecha(iso: string | null): string {
 // estables del dominio; aquí se traducen para mostrarlos.
 export const MOTIVOS: Record<string, string> = {
   missing_sku: 'Sin referencia interna',
+  duplicate_sku: 'Referencia repetida en otro producto',
   missing_description: 'Sin descripción',
   missing_price: 'Sin precio asignado',
   title_too_long: 'Título demasiado largo',
