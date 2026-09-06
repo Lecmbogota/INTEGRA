@@ -49,6 +49,14 @@ func esPublica(ruta string) bool {
 	if rutasPublicas[ruta] {
 		return true
 	}
+	// Los archivos de la interfaz (HTML, JavaScript y hojas de estilo) se
+	// sirven sin sesion: son justo lo que hay que cargar para poder iniciarla.
+	// No llevan ningun dato; todo lo que muestran lo piden despues a /api/,
+	// que si exige sesion. Se reconocen por descarte: cualquier ruta que no
+	// empiece por /api/ y no sea de las de arriba es la interfaz.
+	if !strings.HasPrefix(ruta, "/api/") {
+		return true
+	}
 	for _, p := range prefijosPublicos {
 		if strings.HasPrefix(ruta, p) {
 			return true

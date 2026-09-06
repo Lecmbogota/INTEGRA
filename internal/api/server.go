@@ -45,6 +45,9 @@ type Server struct {
 	// sesiones recuerda por unos segundos si el usuario de cada token sigue
 	// existiendo y activo, para no consultar la base en cada petición.
 	sesiones *cacheSesiones
+	// interfaz sirve el frontend ya compilado. Nulo en desarrollo, donde lo
+	// sirve Vite en otro puerto.
+	interfaz http.Handler
 
 	// masivo es el estado del barrido de imágenes en curso, en memoria.
 	masivoMu sync.Mutex
@@ -57,6 +60,11 @@ func Nuevo(st *store.Store, log *slog.Logger, addr string, alm *imagen.Almacen, 
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.salud)
+	// Comodín: lo que no case con ninguna ruta de la API es la interfaz. Se
+	// registra sin método a propósito: con "GET /", un POST a una ruta
+	// inexistente pasaría a responder 405 en vez de 404, porque el enrutador
+	// vería que el camino existe para otro método.
+	mux.HandleFunc("/", s.servirEstatico)
 	mux.HandleFunc("GET /api/resumen", s.resumen)
 	mux.HandleFunc("GET /api/productos", s.productos)
 	mux.HandleFunc("GET /api/marcas", s.marcas)
@@ -115,6 +123,37 @@ func Nuevo(st *store.Store, log *slog.Logger, addr string, alm *imagen.Almacen, 
 		IdleTimeout:       120 * time.Second,
 	}
 	return s
+}
+
+// ConInterfaz hace que el servidor sirva también el frontend ya compilado.
+//
+// Va aparte del constructor, que ya tiene siete parámetros, y porque en
+// desarrollo no se usa: allí lo sirve Vite. En producción evita montar un
+// segundo servidor y publicar dos dominios.
+func (s *Server) ConInterfaz(dir string) *Server {
+	if h := servirInterfaz(dir); h != nil {
+		s.interfaz = h
+		s.log.Info("sirviendo la interfaz", "dir", dir)
+	} else if dir != "" {
+		s.log.Warn("no hay interfaz compilada que servir; se sirve solo la API", "dir", dir)
+	}
+	return s
+}
+
+func (s *Server) servirEstatico(w http.ResponseWriter, r *http.Request) {
+	// Una ruta de API que no existe es un 404, no la interfaz: devolver el
+	// index a una llamada de la API haría que el error llegara al cliente
+	// como HTML y se diagnosticara mal.
+	if strings.HasPrefix(r.URL.Path, "/api/") ||
+		(r.Method != http.MethodGet && r.Method != http.MethodHead) {
+		http.NotFound(w, r)
+		return
+	}
+	if s.interfaz == nil {
+		http.NotFound(w, r)
+		return
+	}
+	s.interfaz.ServeHTTP(w, r)
 }
 
 // Escuchar arranca el servidor y lo apaga con orden al cancelarse el contexto.

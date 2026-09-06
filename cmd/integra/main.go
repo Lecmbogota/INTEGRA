@@ -1166,7 +1166,9 @@ func cmdServe(ctx context.Context) error {
 		log.Info("banco de imágenes listo", "dir", cfg.ImageDir)
 	}
 
-	return api.Nuevo(st, log, cfg.HTTPAddr, alm, cif, jobs.NuevaCola(st.Pool()), sincronizar).Escuchar(ctx)
+	return api.Nuevo(st, log, cfg.HTTPAddr, alm, cif, jobs.NuevaCola(st.Pool()), sincronizar).
+		ConInterfaz(cfg.WebDir).
+		Escuchar(ctx)
 }
 
 func cmdWorker(ctx context.Context) error {

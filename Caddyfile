@@ -1,0 +1,38 @@
+# Caddy delante de Integra.
+#
+# Caddy pide y renueva el certificado solo con Let's Encrypt, así que no hay
+# que acordarse de renovarlo ni montar certbot. Para que funcione, el dominio
+# tiene que apuntar ya a esta máquina y los puertos 80 y 443 estar abiertos:
+# la validación llega por el 80.
+
+{$INTEGRA_DOMINIO} {
+	# Un solo origen para la interfaz y la API: la cookie de sesión no cruza
+	# dominios y CORS no llega a activarse.
+	reverse_proxy api:8080
+
+	encode gzip zstd
+
+	header {
+		# El navegador solo habla por HTTPS con este dominio a partir de la
+		# primera visita.
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		# La interfaz no se embebe en ningún sitio.
+		X-Frame-Options "DENY"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "same-origin"
+		# Caddy ya se anuncia solo; no hace falta decir qué versión corre.
+		-Server
+	}
+
+	# El cuerpo más grande que recibe la aplicación es la plantilla de
+	# actualización masiva. 32 MB deja holgura sobre el catálogo entero y
+	# corta cualquier intento de saturar el disco con una subida.
+	request_body {
+		max_size 32MB
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

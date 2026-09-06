@@ -39,6 +39,10 @@ type Config struct {
 	// API responde 503 en esas rutas en vez de impedir el arranque.
 	ImageDir string
 
+	// WebDir es el directorio con la interfaz ya compilada. Vacio en
+	// desarrollo, donde la sirve Vite en otro puerto.
+	WebDir string
+
 	// PublicBaseURL es el origen desde el que los canales descargan las
 	// imágenes de producto. En desarrollo apunta al localhost; en producción
 	// debe ser una URL pública o los canales publicarán fichas sin fotos.
@@ -59,6 +63,7 @@ func Load() (*Config, error) {
 		SchedulerTick:        envDuration("INTEGRA_SCHEDULER_TICK", time.Minute),
 		APICallRetentionDays: envInt("INTEGRA_API_CALL_RETENTION_DAYS", 30),
 		ImageDir:             env("INTEGRA_IMAGE_DIR", "./datos/imagenes"),
+		WebDir:               env("INTEGRA_WEB_DIR", ""),
 		PublicBaseURL:        strings.TrimSuffix(env("INTEGRA_PUBLIC_BASE_URL", "http://localhost:8080"), "/"),
 	}
 	if err := c.validar(); err != nil {

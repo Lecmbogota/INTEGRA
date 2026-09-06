@@ -1,0 +1,108 @@
+# Despliegue de producción.
+#
+# Se usa junto al compose base, que define postgres, api y worker:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Lo que añade y por qué:
+#   - Caddy delante, con certificado automático. Sin HTTPS, la contraseña de
+#     acceso y las credenciales de los cuatro canales viajan en claro.
+#   - Copias de seguridad diarias de PostgreSQL. El catálogo comercial
+#     —precios, marcas, descripciones, atributos— es propiedad de Integra y no
+#     está en Odoo: sin copia, se pierde y hay que rehacerlo a mano.
+#   - La API deja de publicar su puerto al exterior: solo habla con Caddy.
+
+services:
+  postgres:
+    # Deja de estar expuesto: en producción nadie se conecta desde fuera, y
+    # publicarlo con una contraseña fija es la forma más rápida de perder la
+    # base entera.
+    ports: !override []
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?define POSTGRES_PASSWORD en .env}
+
+  api:
+    # El puerto solo se ve dentro de la red de Docker; Caddy es la única
+    # puerta.
+    ports: !override []
+    environment:
+      INTEGRA_DATABASE_URL: postgres://integra:${POSTGRES_PASSWORD}@postgres:5432/integra?sslmode=disable
+      INTEGRA_LOG_LEVEL: info
+      # La interfaz compilada viaja dentro de la imagen y la sirve la propia
+      # API: un solo origen, sin CORS y sin segundo dominio.
+      INTEGRA_WEB_DIR: /srv/integra/web
+      # Los canales descargan las fotos desde aquí con un cliente anónimo.
+      # Tiene que ser el dominio público real o publicarán fichas sin imagen.
+      INTEGRA_PUBLIC_BASE_URL: https://${INTEGRA_DOMINIO:?define INTEGRA_DOMINIO en .env}
+
+  worker:
+    environment:
+      INTEGRA_DATABASE_URL: postgres://integra:${POSTGRES_PASSWORD}@postgres:5432/integra?sslmode=disable
+      INTEGRA_LOG_LEVEL: info
+      INTEGRA_PUBLIC_BASE_URL: https://${INTEGRA_DOMINIO}
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: integra-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      INTEGRA_DOMINIO: ${INTEGRA_DOMINIO}
+    depends_on:
+      - api
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+
+  # Copias de seguridad de PostgreSQL.
+  #
+  # Un contenedor que duerme y vuelca una vez al día. No usa cron del sistema
+  # para no depender de la configuración del host: si el compose está arriba,
+  # las copias se hacen.
+  backup:
+    image: postgres:16-alpine
+    container_name: integra-backup
+    restart: unless-stopped
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      # Cuántos días se conservan. Treinta cubre el tiempo que se tarda en
+      # notar que algo se corrompió hace semanas.
+      RETENCION_DIAS: ${BACKUP_RETENCION_DIAS:-30}
+    volumes:
+      - ./datos/backups:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "copias de seguridad activas; destino /backups, retencion $${RETENCION_DIAS} dias"
+        while true; do
+          archivo="/backups/integra-$$(date +%Y%m%d-%H%M%S).sql.gz"
+          if pg_dump -h postgres -U integra -d integra | gzip > "$$archivo"; then
+            # Un volcado vacio o truncado es peor que ninguno, porque da
+            # sensacion de estar cubierto: se comprueba que se puede leer
+            # entero antes de darlo por bueno.
+            if gzip -t "$$archivo"; then
+              echo "copia hecha: $$archivo ($$(du -h "$$archivo" | cut -f1))"
+              find /backups -name 'integra-*.sql.gz' -mtime +$${RETENCION_DIAS} -delete
+            else
+              echo "ERROR: la copia $$archivo esta corrupta, se descarta"
+              rm -f "$$archivo"
+            fi
+          else
+            echo "ERROR: fallo el volcado de PostgreSQL"
+            rm -f "$$archivo"
+          fi
+          sleep 86400
+        done
+
+volumes:
+  caddy_data:
+  caddy_config:

@@ -1,3 +1,17 @@
+# Interfaz
+#
+# Se compila dentro de la imagen para que desplegar sea "docker compose up" y
+# no dependa de que quien despliegue tenga Node instalado ni de que se acuerde
+# de construirla antes. La API la sirve desde el mismo origen, asi que no hay
+# segundo servidor, ni segundo dominio, ni CORS en produccion.
+FROM node:22-alpine AS web
+
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web/ ./
+RUN npm run build
+
 # Compilación
 FROM golang:1.25-alpine AS build
 
@@ -33,6 +47,7 @@ RUN apk add --no-cache ca-certificates tzdata && \
 
 COPY --from=build /out/integra        /usr/local/bin/integra
 COPY --from=build /out/odoo-explorer  /usr/local/bin/odoo-explorer
+COPY --from=web   /web/dist           /srv/integra/web
 
 USER integra
 WORKDIR /home/integra
