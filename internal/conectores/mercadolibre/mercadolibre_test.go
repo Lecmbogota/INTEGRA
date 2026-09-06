@@ -32,6 +32,13 @@ type servidorFalso struct {
 	cabeceraEnvio string
 	queryOrdenes  string
 
+	// Como en ML, un refresh token vale una sola vez: canjeados recuerda los
+	// que ya se usaron y reusos cuenta los intentos de volver a canjearlos,
+	// que es lo que hacen ocho trabajos de la misma cuenta si nadie los
+	// serializa.
+	canjeados map[string]bool
+	reusos    int
+
 	// Inventario del vendedor para /users/{id}/items/search. topeOffset imita
 	// el corte que ML aplica a la paginación por offset (1000 en producción;
 	// aquí un número chico para no tener que sembrar mil ítems) y scrollPos
@@ -55,19 +62,27 @@ type servidorFalso struct {
 func nuevoServidor(t *testing.T) *servidorFalso {
 	t.Helper()
 	s := &servidorFalso{
-		t: t, automatizados: map[string]bool{},
+		t: t, automatizados: map[string]bool{}, canjeados: map[string]bool{},
 		envios: map[string][]map[string]any{}, detalleEnvio: map[string]map[string]any{},
 	}
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("POST /oauth/token", func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
+		rt := r.Form.Get("refresh_token")
 		s.mu.Lock()
-		s.canjes++
-		s.refreshVisto = r.Form.Get("refresh_token")
+		s.refreshVisto = rt
+		muerto := rt == "TG-muerto" || s.canjeados[rt]
+		if s.canjeados[rt] {
+			s.reusos++
+		}
+		if !muerto {
+			s.canjes++
+			s.canjeados[rt] = true
+		}
 		n := s.canjes
 		s.mu.Unlock()
-		if r.Form.Get("refresh_token") == "TG-muerto" {
+		if muerto {
 			w.WriteHeader(400)
 			_, _ = io.WriteString(w, `{"error":"invalid_grant","error_description":"Error validating grant"}`)
 			return
@@ -292,13 +307,50 @@ func responder(w http.ResponseWriter, v any) {
 
 func itoa(n int) string { return strconv.Itoa(n) }
 
-func adaptadorDe(t *testing.T, s *servidorFalso, cred map[string]string, persistir func(context.Context, map[string]string) error) *Adaptador {
+// baseFalsa hace de channel_accounts: el juego de credenciales de la cuenta
+// con un candado delante, que es lo que el store aporta en producción con
+// la fila bloqueada. Los adaptadores se construyen con una copia, como el
+// worker los construye con lo que lee al empezar cada trabajo.
+type baseFalsa struct {
+	mu         sync.Mutex
+	guardadas  map[string]string
+	escrituras int
+}
+
+func (b *baseFalsa) copia() map[string]string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	c := make(map[string]string, len(b.guardadas))
+	for k, v := range b.guardadas {
+		c[k] = v
+	}
+	return c
+}
+
+func (b *baseFalsa) rotar(ctx context.Context, fn func(context.Context, map[string]string) (map[string]string, error)) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	c := make(map[string]string, len(b.guardadas))
+	for k, v := range b.guardadas {
+		c[k] = v
+	}
+	nuevas, err := fn(ctx, c)
+	if err != nil || nuevas == nil {
+		return err
+	}
+	b.guardadas = nuevas
+	b.escrituras++
+	return nil
+}
+
+func adaptadorDe(t *testing.T, s *servidorFalso, cred map[string]string,
+	rotar func(context.Context, func(context.Context, map[string]string) (map[string]string, error)) error) *Adaptador {
 	t.Helper()
 	viejo := conectores.URLBaseML
 	conectores.URLBaseML = s.URL
 	t.Cleanup(func() { conectores.URLBaseML = viejo })
 	ad, err := channel.New(channel.MercadoLibre, channel.Config{
-		Credentials: cred, PersistCredentials: persistir,
+		Credentials: cred, RotateCredentials: rotar,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -376,13 +428,11 @@ func tieneAtributo(attrs []any, id, valor string) bool {
 
 func TestRefrescaElTokenUnaVezYGuardaElRefreshNuevo(t *testing.T) {
 	s := nuevoServidor(t)
-	var guardadas []map[string]string
-	ad := adaptadorDe(t, s, map[string]string{
+	base := &baseFalsa{guardadas: map[string]string{
 		"app_id": "1", "app_secret": "s", "refresh_token": "TG-inicial",
-	}, func(_ context.Context, cred map[string]string) error {
-		guardadas = append(guardadas, cred)
-		return nil
-	})
+		"url_seguimiento": "https://envios.example/{guia}",
+	}}
+	ad := adaptadorDe(t, s, base.copia(), base.rotar)
 
 	refs := []channel.ExternalRef{{ListingID: "MCO1"}, {ListingID: "MCO2"}}
 	for i := 0; i < 2; i++ {
@@ -396,31 +446,99 @@ func TestRefrescaElTokenUnaVezYGuardaElRefreshNuevo(t *testing.T) {
 	if s.refreshVisto != "TG-inicial" {
 		t.Errorf("se canjeó con %q", s.refreshVisto)
 	}
-	if len(guardadas) != 1 {
-		t.Fatalf("la credencial rotada se guardó %d veces, quería 1", len(guardadas))
+	if base.escrituras != 1 {
+		t.Fatalf("la credencial rotada se guardó %d veces, quería 1", base.escrituras)
 	}
-	g := guardadas[0]
+	g := base.guardadas
 	if g["refresh_token"] != "TG-nuevo-1" || g["access_token"] != "APP_USR-nuevo-1" {
 		t.Errorf("se guardó %v: debía llevar el refresh y el access token nuevos", g)
 	}
 	if g["app_id"] != "1" || g["app_secret"] != "s" {
 		t.Error("al guardar hay que conservar app_id y app_secret")
 	}
+	if g["url_seguimiento"] != "https://envios.example/{guia}" {
+		t.Error("el canje borró la plantilla de seguimiento: lo que no rota tiene que sobrevivir")
+	}
 }
 
 func TestAccessTokenCaducadoSeRenuevaYRepiteLaLlamada(t *testing.T) {
 	s := nuevoServidor(t)
-	var guardadas int
-	ad := adaptadorDe(t, s, map[string]string{
+	base := &baseFalsa{guardadas: map[string]string{
 		"app_id": "1", "app_secret": "s", "refresh_token": "TG-inicial",
 		"access_token": "caducado", // el servidor solo acepta APP_USR-*
-	}, func(context.Context, map[string]string) error { guardadas++; return nil })
+	}}
+	ad := adaptadorDe(t, s, base.copia(), base.rotar)
 
 	if err := ad.perfil(context.Background()); err != nil {
 		t.Fatalf("tras un 401 con refresh disponible la llamada debía repetirse: %v", err)
 	}
-	if s.canjes != 1 || guardadas != 1 {
-		t.Errorf("canjes=%d guardadas=%d; quería 1 y 1", s.canjes, guardadas)
+	if s.canjes != 1 || base.escrituras != 1 {
+		t.Errorf("canjes=%d guardadas=%d; quería 1 y 1", s.canjes, base.escrituras)
+	}
+}
+
+// Cada trabajo construye su propio adaptador, así que ocho trabajos de la
+// misma cuenta son ocho adaptadores con el mismo refresh token caducando a
+// la vez, y ML solo honra el primer canje: los otros siete recibirían
+// invalid_grant y, si uno de ellos guardara último, la cuenta quedaría con
+// un token muerto. Con la rotación bajo candado el segundo ve el token que
+// dejó el primero y lo adopta.
+func TestOchoAdaptadoresDeLaMismaCuentaCanjeanUnaSolaVez(t *testing.T) {
+	s := nuevoServidor(t)
+	base := &baseFalsa{guardadas: map[string]string{
+		"app_id": "1", "app_secret": "s", "refresh_token": "TG-inicial",
+		"access_token": "caducado", "url_seguimiento": "https://envios.example/{guia}",
+	}}
+	const trabajos = 8
+	adaptadores := make([]*Adaptador, trabajos)
+	for i := range adaptadores {
+		adaptadores[i] = adaptadorDe(t, s, base.copia(), base.rotar)
+	}
+
+	errs := make([]error, trabajos)
+	var wg sync.WaitGroup
+	for i, ad := range adaptadores {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs[i] = ad.perfil(context.Background())
+		}()
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("trabajo %d: %v", i, err)
+		}
+	}
+	if s.canjes != 1 || s.reusos != 0 {
+		t.Errorf("canjes=%d reusos=%d; ocho adaptadores de la misma cuenta debían canjear una sola vez",
+			s.canjes, s.reusos)
+	}
+	if g := base.guardadas; g["refresh_token"] != "TG-nuevo-1" || g["access_token"] != "APP_USR-nuevo-1" {
+		t.Errorf("quedó guardado %v: debía ser el juego del único canje", g)
+	}
+}
+
+// El panel puede reautorizar la cuenta mientras un trabajo está en vuelo:
+// pega un refresh token nuevo sin access token. El adaptador que llega a
+// rotar tiene que canjear ese, no el suyo, que la reautorización dejó muerto.
+func TestUnRefreshTokenRecienPegadoSeCanjeaEnVezDelPropio(t *testing.T) {
+	s := nuevoServidor(t)
+	base := &baseFalsa{guardadas: map[string]string{
+		"app_id": "1", "app_secret": "s", "refresh_token": "TG-inicial", "access_token": "caducado",
+	}}
+	ad := adaptadorDe(t, s, base.copia(), base.rotar)
+	base.guardadas = map[string]string{"app_id": "1", "app_secret": "s", "refresh_token": "TG-repegado"}
+
+	if err := ad.perfil(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if s.refreshVisto != "TG-repegado" {
+		t.Errorf("se canjeó %q; debía canjear el refresh token que dejó el panel", s.refreshVisto)
+	}
+	if base.guardadas["refresh_token"] != "TG-nuevo-1" {
+		t.Errorf("quedó guardado %v", base.guardadas)
 	}
 }
 

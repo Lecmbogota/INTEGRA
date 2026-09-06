@@ -733,45 +733,50 @@ func (s *Server) probarCuenta(w http.ResponseWriter, r *http.Request) {
 		escribir(w, http.StatusBadRequest, map[string]string{"error": "identificador inválido"})
 		return
 	}
-	canal, cifrada, err := s.st.CredencialesDeCuenta(r.Context(), id)
+	canal, _, err := s.st.CredencialesDeCuenta(r.Context(), id)
 	if err != nil {
 		escribir(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 		return
 	}
-	claro, err := s.cif.DescifrarTexto(cifrada)
-	if err != nil {
-		s.fallo(w, err)
-		return
-	}
-	var cred conectores.Credenciales
-	if err := json.Unmarshal([]byte(claro), &cred); err != nil {
-		s.fallo(w, err)
-		return
-	}
 
-	msg, rotadas, err := conectores.Probar(r.Context(), canal, cred)
-	ok := err == nil
+	// La prueba corre con la cuenta bloqueada y sobre la credencial que hay
+	// en la base en ese instante, no sobre una leída antes: el worker
+	// también canjea el refresh token de MercadoLibre, y probar con el que
+	// él acaba de quemar diría «hay que volver a autorizar» a un vendedor
+	// que acaba de hacerlo, además de dejar dos tokens compitiendo.
+	var msg string
+	var ok bool
+	err = s.st.RotarCredenciales(r.Context(), id, func(cifrada []byte) ([]byte, error) {
+		claro, err := s.cif.DescifrarTexto(cifrada)
+		if err != nil {
+			return nil, err
+		}
+		var cred conectores.Credenciales
+		if err := json.Unmarshal([]byte(claro), &cred); err != nil {
+			return nil, err
+		}
+		var rotadas *conectores.Credenciales
+		msg, rotadas, err = conectores.Probar(r.Context(), canal, cred)
+		ok = err == nil
+		if err != nil {
+			msg = err.Error()
+		}
+		// Si probar rotó una credencial (el refresh token de MercadoLibre se
+		// invalida al canjearlo), se guarda la nueva aunque la prueba haya
+		// fallado después: lo que no se puede es dejar guardado un token
+		// muerto.
+		if rotadas == nil {
+			return nil, nil
+		}
+		j, err := json.Marshal(rotadas)
+		if err != nil {
+			return nil, err
+		}
+		return s.cif.CifrarTexto(string(j))
+	})
 	if err != nil {
-		msg = err.Error()
-	}
-	// Si probar rotó una credencial (el refresh token de MercadoLibre se
-	// invalida al canjearlo), se guarda la nueva aunque la prueba haya
-	// fallado después: lo que no se puede es dejar guardado un token muerto.
-	if rotadas != nil {
-		claro, err := json.Marshal(rotadas)
-		if err != nil {
-			s.fallo(w, err)
-			return
-		}
-		cifrada, err := s.cif.CifrarTexto(string(claro))
-		if err != nil {
-			s.fallo(w, err)
-			return
-		}
-		if err := s.st.ActualizarCredenciales(r.Context(), id, cifrada); err != nil {
-			s.fallo(w, err)
-			return
-		}
+		s.fallo(w, err)
+		return
 	}
 	if err := s.st.AnotarPrueba(r.Context(), id, ok, msg); err != nil {
 		s.fallo(w, err)

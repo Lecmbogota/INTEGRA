@@ -18,12 +18,23 @@ type Config struct {
 	// Sandbox apunta el adaptador al entorno de pruebas del canal.
 	Sandbox bool
 
-	// PersistCredentials lo llama el adaptador cuando el canal rota una
+	// RotateCredentials lo llama el adaptador cuando el canal rota una
 	// credencial en mitad del trabajo: MercadoLibre devuelve un refresh token
 	// nuevo en cada canje e invalida el anterior, así que si el nuevo no se
-	// guarda, el siguiente proceso arranca con uno muerto. Recibe el juego
-	// completo ya actualizado. Nulo = no hay dónde guardarlo (pruebas).
-	PersistCredentials func(ctx context.Context, cred map[string]string) error
+	// guarda, el siguiente proceso arranca con uno muerto.
+	//
+	// No es un simple "guarda esto" porque el canje tiene que ser uno solo
+	// por cuenta: cada trabajo construye su propio adaptador, y con ocho
+	// corriendo a la vez —más el panel, que también canjea al probar la
+	// conexión— habría ocho canjes del mismo refresh token, de los que ML
+	// solo honra el primero. Quien lo implementa ejecuta fn con la cuenta
+	// bloqueada, también frente a otros procesos, y le pasa el juego tal
+	// como está guardado en ese instante, para que el adaptador que llega
+	// segundo vea el token que acaba de dejar el primero y lo adopte en vez
+	// de quemar el viejo; lo que fn devuelva se guarda (nulo = nada cambió).
+	// Nulo = no hay dónde guardar ni con quién competir (pruebas).
+	RotateCredentials func(ctx context.Context,
+		fn func(ctx context.Context, guardadas map[string]string) (map[string]string, error)) error
 }
 
 // Factory construye un adaptador para una cuenta concreta.
