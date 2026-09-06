@@ -533,6 +533,148 @@ func TestFetchOrdersFallaSiNoPuedeLeerLasLineas(t *testing.T) {
 	}
 }
 
+// ------------------------------------------------------------- despacho
+
+// itemsPedido arma la respuesta de GetOrderItems con las líneas que se le den.
+func itemsPedido(items ...string) string {
+	return `{"SuccessResponse":{"Body":{"OrderItems":{"OrderItem":[` +
+		strings.Join(items, ",") + `]}}}}`
+}
+
+// TestAckOrderMarcaListoParaEnvioConElPaqueteYNoConElSKU: el adaptador llamaba a
+// SetStatusToShipped, acción que no existe en esta API (E008), y le pasaba
+// ref.ListingID —que en Falabella es el SKU del producto— donde va la lista de
+// OrderItemId. El flujo vigente es SetStatusToReadyToShip con los OrderItemId
+// del pedido y el PackageId que devuelve GetOrderItems.
+func TestAckOrderMarcaListoParaEnvioConElPaqueteYNoConElSKU(t *testing.T) {
+	s := nuevoServidor(t)
+	s.respondeCon("GetOrderItems", func(r *http.Request) string {
+		if r.URL.Query().Get("OrderId") != "1001" {
+			t.Errorf("se pidieron las líneas de otro pedido: %q", r.URL.Query().Get("OrderId"))
+		}
+		return itemsPedido(
+			`{"OrderItemId":"101311982","Sku":"AO-NU-1001","Status":"pending",
+			  "ShippingType":"Dropshipping","PackageId":"MPDS-200131783-9800"}`,
+			`{"OrderItemId":"101311983","Sku":"AO-NU-1002","Status":"pending",
+			  "ShippingType":"Dropshipping","PackageId":"MPDS-200131783-9800"}`)
+	})
+	s.responde("SetStatusToReadyToShip",
+		`{"SuccessResponse":{"Body":{"PurchaseOrderId":"123456","PurchaseOrderNumber":"ABC-123456"}}}`)
+
+	err := s.adaptador().AckOrder(context.Background(),
+		channel.ExternalRef{ListingID: "1001", SKU: "AO-NU-1001"},
+		channel.Fulfillment{TrackingNumber: "ABC123", Carrier: "Servientrega Express",
+			ShippedAt: time.Date(2026, 9, 2, 13, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatalf("AckOrder: %v", err)
+	}
+
+	llamadas := s.llamadasDe("SetStatusToReadyToShip")
+	if len(llamadas) != 1 {
+		t.Fatalf("se esperaba una llamada a SetStatusToReadyToShip y hubo %d", len(llamadas))
+	}
+	q := llamadas[0].Query
+	if q.Get("OrderItemIds") != "[101311982,101311983]" {
+		t.Errorf("OrderItemIds = %q: van los OrderItemId del pedido, no el SKU de la publicación",
+			q.Get("OrderItemIds"))
+	}
+	if q.Get("PackageId") != "MPDS-200131783-9800" {
+		t.Errorf("PackageId = %q: sin él Seller Center responde E020", q.Get("PackageId"))
+	}
+	// E091: el vendedor no puede fijar la guía ni la transportadora. La guía
+	// la genera Falabella y mandar la propia hace que rechacen la llamada.
+	if q.Get("TrackingNumber") != "" || q.Get("ShippingProvider") != "" {
+		t.Errorf("se mandó la guía propia y Falabella la rechaza con E091: %v", q)
+	}
+	// El empaquetado no hacía falta: el PackageId ya venía en GetOrderItems.
+	if len(s.llamadasDe("SetStatusToPackedByMarketplace")) != 0 {
+		t.Error("se empaquetó un pedido que ya traía PackageId")
+	}
+}
+
+// TestAckOrderEmpaquetaCuandoElPedidoNoTraePackageId: sin PackageId no se puede
+// marcar listo para envío, y la única acción documentada que lo crea es
+// SetStatusToPackedByMarketplace.
+func TestAckOrderEmpaquetaCuandoElPedidoNoTraePackageId(t *testing.T) {
+	s := nuevoServidor(t)
+	s.responde("GetOrderItems", itemsPedido(
+		`{"OrderItemId":"101311982","Sku":"AO-NU-1001","Status":"Ready To Ship","ShippingType":"Dropshipping"}`))
+	s.responde("SetStatusToPackedByMarketplace",
+		`{"SuccessResponse":{"Body":{"OrderItems":{"OrderItem":{"OrderItemId":"101311982",
+		  "PurchaseOrderId":"123456","PurchaseOrderNumber":"ABC-123456","PackageId":"PKG0000003530"}}}}}`)
+	s.responde("SetStatusToReadyToShip", `{"SuccessResponse":{"Body":{}}}`)
+
+	if err := s.adaptador().AckOrder(context.Background(),
+		channel.ExternalRef{ListingID: "1001"}, channel.Fulfillment{}); err != nil {
+		t.Fatalf("AckOrder: %v", err)
+	}
+
+	empaque := s.llamadasDe("SetStatusToPackedByMarketplace")
+	if len(empaque) != 1 {
+		t.Fatalf("se esperaba un empaquetado y hubo %d", len(empaque))
+	}
+	if empaque[0].Query.Get("DeliveryType") != "dropship" {
+		t.Errorf("DeliveryType = %q: sin él la acción responde E024",
+			empaque[0].Query.Get("DeliveryType"))
+	}
+	listo := s.llamadasDe("SetStatusToReadyToShip")
+	if len(listo) != 1 || listo[0].Query.Get("PackageId") != "PKG0000003530" {
+		t.Fatalf("el PackageId recién creado no se usó para marcar listo: %+v", listo)
+	}
+}
+
+// TestAckOrderNoRepiteLoQueYaSalio: el trabajo de despacho se reintenta con
+// backoff. Un pedido ya despachado tiene que terminar bien —sus líneas están en
+// "shipped", y E073 rechazaría volver a marcarlas— en vez de fallar para siempre.
+func TestAckOrderNoRepiteLoQueYaSalio(t *testing.T) {
+	s := nuevoServidor(t)
+	s.responde("GetOrderItems", itemsPedido(
+		`{"OrderItemId":"101311982","Status":"shipped","ShippingType":"Dropshipping","PackageId":"PKG1"}`,
+		`{"OrderItemId":"101311983","Status":"delivered","ShippingType":"Dropshipping","PackageId":"PKG1"}`))
+
+	if err := s.adaptador().AckOrder(context.Background(),
+		channel.ExternalRef{ListingID: "1001"}, channel.Fulfillment{}); err != nil {
+		t.Fatalf("el reintento sobre un pedido ya despachado tiene que terminar bien: %v", err)
+	}
+	if len(s.llamadasDe("SetStatusToReadyToShip")) != 0 {
+		t.Error("se volvió a marcar listo para envío un pedido ya despachado")
+	}
+}
+
+// TestAckOrderNoTocaLosPedidosQueDespachaFalabella: en los pedidos FBF el
+// inventario y el envío son de Falabella y SetStatusToReadyToShip está prohibido.
+func TestAckOrderNoTocaLosPedidosQueDespachaFalabella(t *testing.T) {
+	s := nuevoServidor(t)
+	s.responde("GetOrderItems", itemsPedido(
+		`{"OrderItemId":"101311982","Status":"pending","ShippingType":"Own Warehouse"}`))
+
+	if err := s.adaptador().AckOrder(context.Background(),
+		channel.ExternalRef{ListingID: "1001"}, channel.Fulfillment{}); err != nil {
+		t.Fatalf("un pedido FBF no es un fallo, es que no hay nada que confirmar: %v", err)
+	}
+	if len(s.llamadasDe("SetStatusToReadyToShip")) != 0 {
+		t.Error("se marcó listo para envío un pedido que despacha Falabella")
+	}
+}
+
+// TestAckOrderReportaElPedidoCancelado: si no queda ninguna línea despachable y
+// tampoco hay nada ya despachado, se despachó algo que el canal no da por
+// vendido. Callarlo dejaría el pedido cerrado en Integra y abierto en Falabella.
+func TestAckOrderReportaElPedidoCancelado(t *testing.T) {
+	s := nuevoServidor(t)
+	s.responde("GetOrderItems", itemsPedido(
+		`{"OrderItemId":"101311982","Status":"canceled","ShippingType":"Dropshipping"}`))
+
+	err := s.adaptador().AckOrder(context.Background(),
+		channel.ExternalRef{ListingID: "1001"}, channel.Fulfillment{})
+	if err == nil {
+		t.Fatal("un pedido sin líneas despachables no se puede dar por confirmado")
+	}
+	if !strings.Contains(err.Error(), "1001") {
+		t.Errorf("el error no dice de qué pedido habla: %v", err)
+	}
+}
+
 // TestAtributosDeCategoriaAceptaLaFormaAnidada: Seller Center entrega los
 // atributos bajo Body.Attribute, las opciones bajo Options.Option y isMandatory
 // unas veces como número y otras como cadena.

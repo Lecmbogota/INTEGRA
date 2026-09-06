@@ -48,6 +48,7 @@ type almacen interface {
 	UpsertIdentidad(ctx context.Context, conexionID int64, ident store.Identidad) (int64, int64, error)
 	VariantesPorOdooID(ctx context.Context, conexionID int64) (map[int64]int64, error)
 	ReemplazarStock(ctx context.Context, conexionID int64, filas []store.FilaStock) error
+	ReaplicarReservasDeStock(ctx context.Context) (int, error)
 	RecalcularAtencion(ctx context.Context) error
 	ActualizarWatermark(ctx context.Context, conexionID int64, hasta time.Time) error
 	AjustarActividad(ctx context.Context, conexionID int64, activas, inactivas []int64) (altas, bajas int, err error)
@@ -233,6 +234,17 @@ func (s *Sincronizador) Catalogo(ctx context.Context, conexionID int64, desde ti
 	}
 	if err := s.st.ReemplazarStock(ctx, conexionID, filasStock); err != nil {
 		return nil, err
+	}
+
+	// La foto que acaba de llegar de Odoo no sabe nada de lo vendido en los
+	// canales y todavía sin despachar: el pedido se crea en borrador, así que
+	// Odoo aún no ha bajado esas unidades. Sin volver a apartarlas aquí, cada
+	// sincronización las resucitaría y la ventana de sobreventa se abriría
+	// sola cada pocas horas.
+	if n, err := s.st.ReaplicarReservasDeStock(ctx); err != nil {
+		return nil, err
+	} else if n > 0 {
+		s.log.Info("stock apartado por ventas pendientes de despachar", "variantes", n)
 	}
 
 	// La cola de atención mezcla datos de Odoo con datos de Integra, así que

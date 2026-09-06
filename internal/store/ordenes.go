@@ -354,12 +354,15 @@ func (s *Store) ListarOrdenes(ctx context.Context, limite int) ([]Orden, error) 
 
 // ResumenOrdenes cuenta el estado de la ingesta para el panel.
 type ResumenOrdenes struct {
-	Total     int     `json:"total"`
-	Recibidos int     `json:"recibidos"`
-	EnOdoo    int     `json:"en_odoo"`
-	Fallidos  int     `json:"fallidos"`
-	SinMapear int     `json:"lineas_sin_mapear"`
-	MontoHoy  float64 `json:"monto_hoy"`
+	Total     int `json:"total"`
+	Recibidos int `json:"recibidos"`
+	EnOdoo    int `json:"en_odoo"`
+	Fallidos  int `json:"fallidos"`
+	// Cancelados por el canal. Sin este contador, un pedido cancelado
+	// desaparecía del desglose: contaba en el total y en ningún estado.
+	Cancelados int     `json:"cancelados"`
+	SinMapear  int     `json:"lineas_sin_mapear"`
+	MontoHoy   float64 `json:"monto_hoy"`
 }
 
 func (s *Store) ResumenOrdenes(ctx context.Context) (*ResumenOrdenes, error) {
@@ -370,10 +373,11 @@ func (s *Store) ResumenOrdenes(ctx context.Context) (*ResumenOrdenes, error) {
 		  (SELECT count(*) FROM channel_orders WHERE status IN ('received','mapped')),
 		  (SELECT count(*) FROM channel_orders WHERE status = 'created_in_odoo'),
 		  (SELECT count(*) FROM channel_orders WHERE status = 'failed'),
+		  (SELECT count(*) FROM channel_orders WHERE status = 'ignored'),
 		  (SELECT count(*) FROM channel_order_lines WHERE variant_id IS NULL),
 		  (SELECT COALESCE(sum(total_amount),0) FROM channel_orders
 		     WHERE ordered_at >= date_trunc('day', now()))
-	`).Scan(&r.Total, &r.Recibidos, &r.EnOdoo, &r.Fallidos, &r.SinMapear, &r.MontoHoy)
+	`).Scan(&r.Total, &r.Recibidos, &r.EnOdoo, &r.Fallidos, &r.Cancelados, &r.SinMapear, &r.MontoHoy)
 	if err != nil {
 		return nil, fmt.Errorf("resumen de pedidos: %w", err)
 	}
@@ -440,4 +444,389 @@ func (s *Store) ActualizarWatermarkOrdenes(ctx context.Context, cuentaID int64, 
 		    last_error = EXCLUDED.last_error, updated_at = now()`,
 		cuentaID, hasta.Add(-time.Minute), nulo(errMsg))
 	return err
+}
+
+// ------------------------------------------------------ bodega de la cuenta
+
+// BodegaCuenta es una bodega de Odoo asignada a una cuenta de canal.
+type BodegaCuenta struct {
+	ID     int64  `json:"id"`      // id local en odoo_warehouses
+	OdooID int64  `json:"odoo_id"` // id en Odoo: el que va en warehouse_id
+	Codigo string `json:"codigo"`
+	Nombre string `json:"nombre"`
+}
+
+// BodegaDeOrden elige de qué bodega debe salir un pedido.
+//
+// channel_account_warehouses existe desde el primer esquema y hasta ahora solo
+// la leía la publicación (para no ofrecer en Falabella stock que no está en
+// sus bodegas). El pedido, en cambio, se creaba sin warehouse_id, así que Odoo
+// lo despachaba de la bodega por defecto: una venta de Falabella descontaba de
+// la principal y dejaba el stock consignado en FB intacto, que es justo la
+// mentira que la tabla existe para evitar.
+//
+// Cuando la cuenta tiene varias bodegas (Falabella tiene tres) Odoo solo
+// acepta una en el pedido, así que se prefiere la que más unidades del pedido
+// puede cubrir; a igualdad, la que más existencias tenga, y como último
+// desempate el código, para que la elección sea reproducible.
+//
+// Devuelve nil sin error si la cuenta no tiene bodegas asignadas: entonces el
+// pedido va sin warehouse_id y decide Odoo, que es lo que pasa hoy y no una
+// regresión.
+func (s *Store) BodegaDeOrden(ctx context.Context, ordenID int64) (*BodegaCuenta, error) {
+	var b BodegaCuenta
+	err := s.pool.QueryRow(ctx, `
+		SELECT w.id, w.odoo_id, w.code, w.name
+		FROM channel_orders o
+		JOIN channel_account_warehouses caw ON caw.channel_account_id = o.channel_account_id
+		JOIN odoo_warehouses w ON w.id = caw.odoo_warehouse_id AND w.active
+		LEFT JOIN LATERAL (
+		    -- Unidades del pedido que esta bodega cubre, y existencias totales.
+		    -- GREATEST(...,0) descarta el stock negativo: una bodega en números
+		    -- rojos no debe ganar el desempate.
+		    SELECT COALESCE(sum(LEAST(l.quantity, GREATEST(COALESCE(vs.qty_on_hand,0),0))),0) AS cubre,
+		           COALESCE(sum(GREATEST(COALESCE(vs.qty_on_hand,0),0)),0) AS total
+		    FROM channel_order_lines l
+		    LEFT JOIN variant_stock vs
+		           ON vs.variant_id = l.variant_id AND vs.odoo_warehouse_id = w.id
+		    WHERE l.channel_order_id = o.id
+		) c ON TRUE
+		WHERE o.id = $1
+		ORDER BY c.cubre DESC, c.total DESC, w.code
+		LIMIT 1`, ordenID).Scan(&b.ID, &b.OdooID, &b.Codigo, &b.Nombre)
+	if err == pgx.ErrNoRows {
+		return nil, nil // sin bodegas asignadas: decide Odoo
+	}
+	if err != nil {
+		return nil, fmt.Errorf("eligiendo bodega del pedido %d: %w", ordenID, err)
+	}
+	return &b, nil
+}
+
+// ------------------------------------- descuento inmediato del stock vendido
+
+// ReservaStock es una cantidad apartada por un pedido ya ingerido y todavía no
+// reflejado en el stock que Odoo reporta.
+type ReservaStock struct {
+	VarianteID int64   `json:"variante_id"`
+	BodegaID   int64   `json:"bodega_id"`
+	Cantidad   float64 `json:"cantidad"`
+}
+
+// DescontarStockPublicado baja el stock de las variantes vendidas en el acto,
+// sin esperar al siguiente sync con Odoo, y deja asiento de lo descontado.
+//
+// El problema que resuelve es una ventana de sobreventa: entre la venta en un
+// canal y el siguiente sync, los otros tres canales siguen ofreciendo unidades
+// que ya no existen. El pedido además se crea en Odoo en borrador a propósito,
+// así que Odoo tampoco baja su stock hasta que una persona lo confirma y lo
+// despacha: la ventana no dura minutos, puede durar días.
+//
+// Se descuenta sobre variant_stock porque es de donde sale el stock publicable
+// (CandidatosPublicacion) y por tanto lo único que hace que el motor de diff
+// mande la cantidad nueva a los demás canales. Y como el sync reemplaza esa
+// tabla entera, el descuento se asienta aparte en order_stock_reservations:
+// ese libro es lo que permite volver a aplicarlo después de cada sync
+// (ReaplicarReservasDeStock) y devolverlo exacto si el canal cancela.
+//
+// Es idempotente: un pedido que ya tiene asientos no se descuenta dos veces.
+// Devuelve las unidades efectivamente descontadas.
+func (s *Store) DescontarStockPublicado(ctx context.Context, ordenID int64) (float64, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+
+	var cuentaID int64
+	var estado string
+	err = tx.QueryRow(ctx,
+		`SELECT channel_account_id, status::text FROM channel_orders WHERE id = $1 FOR UPDATE`,
+		ordenID).Scan(&cuentaID, &estado)
+	if err == pgx.ErrNoRows {
+		return 0, fmt.Errorf("no existe el pedido %d", ordenID)
+	}
+	if err != nil {
+		return 0, err
+	}
+	// Un pedido que llegó ya cancelado no aparta nada: no hay venta viva.
+	if estado == "ignored" {
+		return 0, tx.Commit(ctx)
+	}
+
+	var asientos int
+	if err := tx.QueryRow(ctx,
+		`SELECT count(*) FROM order_stock_reservations WHERE channel_order_id = $1`,
+		ordenID).Scan(&asientos); err != nil {
+		return 0, fmt.Errorf("leyendo reservas del pedido %d: %w", ordenID, err)
+	}
+	if asientos > 0 {
+		return 0, tx.Commit(ctx) // ya se descontó en una pasada anterior
+	}
+
+	type lineaPendiente struct {
+		id       int64
+		variante int64
+		cantidad float64
+	}
+	filas, err := tx.Query(ctx, `
+		SELECT id, variant_id, quantity FROM channel_order_lines
+		WHERE channel_order_id = $1 AND variant_id IS NOT NULL ORDER BY id`, ordenID)
+	if err != nil {
+		return 0, err
+	}
+	var lineas []lineaPendiente
+	for filas.Next() {
+		var l lineaPendiente
+		if err := filas.Scan(&l.id, &l.variante, &l.cantidad); err != nil {
+			filas.Close()
+			return 0, err
+		}
+		lineas = append(lineas, l)
+	}
+	filas.Close()
+	if err := filas.Err(); err != nil {
+		return 0, err
+	}
+
+	var total float64
+	for _, l := range lineas {
+		if l.cantidad <= 0 {
+			continue
+		}
+		// Solo las bodegas que alimentan esta cuenta, y todas si no tiene
+		// ninguna asignada: es el mismo criterio con el que se calculó el
+		// stock que se publicó, así que se descuenta de donde se ofreció.
+		// FOR UPDATE serializa dos pedidos simultáneos de la misma variante.
+		bodegas, err := tx.Query(ctx, `
+			SELECT vs.odoo_warehouse_id, vs.qty_on_hand
+			FROM variant_stock vs
+			WHERE vs.variant_id = $1
+			  AND vs.qty_on_hand > 0
+			  AND (NOT EXISTS (SELECT 1 FROM channel_account_warehouses w
+			                   WHERE w.channel_account_id = $2)
+			       OR vs.odoo_warehouse_id IN (
+			           SELECT w.odoo_warehouse_id FROM channel_account_warehouses w
+			           WHERE w.channel_account_id = $2))
+			ORDER BY vs.qty_on_hand DESC, vs.odoo_warehouse_id
+			FOR UPDATE`, l.variante, cuentaID)
+		if err != nil {
+			return 0, err
+		}
+		type existencia struct {
+			bodega int64
+			qty    float64
+		}
+		var disponibles []existencia
+		for bodegas.Next() {
+			var e existencia
+			if err := bodegas.Scan(&e.bodega, &e.qty); err != nil {
+				bodegas.Close()
+				return 0, err
+			}
+			disponibles = append(disponibles, e)
+		}
+		bodegas.Close()
+		if err := bodegas.Err(); err != nil {
+			return 0, err
+		}
+
+		// Se reparte de mayor a menor y nunca por debajo de cero: si el canal
+		// vendió más de lo que había, lo que sobra ya se sobrevendió y bajar a
+		// negativo solo lograría publicar cantidades negativas.
+		restante := l.cantidad
+		for _, e := range disponibles {
+			if restante <= 0 {
+				break
+			}
+			toma := e.qty
+			if toma > restante {
+				toma = restante
+			}
+			if _, err := tx.Exec(ctx, `
+				UPDATE variant_stock SET qty_on_hand = qty_on_hand - $3, updated_at = now()
+				WHERE variant_id = $1 AND odoo_warehouse_id = $2`,
+				l.variante, e.bodega, toma); err != nil {
+				return 0, fmt.Errorf("descontando stock de la variante %d: %w", l.variante, err)
+			}
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO order_stock_reservations
+				    (channel_order_id, channel_order_line_id, variant_id, odoo_warehouse_id, qty)
+				VALUES ($1,$2,$3,$4,$5)`,
+				ordenID, l.id, l.variante, e.bodega, toma); err != nil {
+				return 0, fmt.Errorf("asentando la reserva de la variante %d: %w", l.variante, err)
+			}
+			restante -= toma
+			total += toma
+		}
+	}
+	return total, tx.Commit(ctx)
+}
+
+// DevolverStockReservado deshace el descuento de un pedido y cierra sus
+// asientos. Se llama cuando el canal cancela: las unidades vuelven a estar a
+// la venta en los cuatro canales sin esperar al sync.
+//
+// El alta usa upsert porque entre el descuento y la devolución puede haber
+// corrido un sync que borró la fila de esa variante y bodega.
+func (s *Store) DevolverStockReservado(ctx context.Context, ordenID int64, motivo string) (float64, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+
+	filas, err := tx.Query(ctx, `
+		UPDATE order_stock_reservations
+		SET released_at = now(), released_reason = $2
+		WHERE channel_order_id = $1 AND released_at IS NULL
+		RETURNING variant_id, odoo_warehouse_id, qty`, ordenID, nulo(motivo))
+	if err != nil {
+		return 0, fmt.Errorf("liberando reservas del pedido %d: %w", ordenID, err)
+	}
+	var reservas []ReservaStock
+	for filas.Next() {
+		var r ReservaStock
+		if err := filas.Scan(&r.VarianteID, &r.BodegaID, &r.Cantidad); err != nil {
+			filas.Close()
+			return 0, err
+		}
+		reservas = append(reservas, r)
+	}
+	filas.Close()
+	if err := filas.Err(); err != nil {
+		return 0, err
+	}
+
+	var total float64
+	for _, r := range reservas {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO variant_stock (variant_id, odoo_warehouse_id, qty_on_hand, updated_at)
+			VALUES ($1,$2,$3, now())
+			ON CONFLICT (variant_id, odoo_warehouse_id) DO UPDATE
+			SET qty_on_hand = variant_stock.qty_on_hand + EXCLUDED.qty_on_hand,
+			    updated_at = now()`, r.VarianteID, r.BodegaID, r.Cantidad); err != nil {
+			return 0, fmt.Errorf("devolviendo stock de la variante %d: %w", r.VarianteID, err)
+		}
+		total += r.Cantidad
+	}
+	return total, tx.Commit(ctx)
+}
+
+// ReaplicarReservasDeStock vuelve a descontar del stock recién traído de Odoo
+// lo que sigue apartado por pedidos vivos.
+//
+// Existe porque el sync reemplaza variant_stock entero: sin esta pasada, cada
+// sincronización resucitaría las unidades vendidas mientras el pedido siga en
+// borrador en Odoo (que es donde se deja a propósito), y la ventana de
+// sobreventa volvería a abrirse sola cada pocas horas.
+//
+// Va justo después de ReemplazarStock, en la misma pasada del sync.
+//
+// Antes de reaplicar cierra los asientos vencidos. Sin ese cierre, un pedido
+// ya despachado seguiría restando por encima del descuento que Odoo ya hizo, y
+// el stock publicado se hundiría una unidad por venta sin retorno. El
+// vencimiento es una válvula de seguridad, no la regla buena: la regla buena
+// es cerrar cuando Odoo mueva la unidad, y eso exige seguir el estado del
+// sale.order, que está pendiente de decidir (ver migración 020).
+func (s *Store) ReaplicarReservasDeStock(ctx context.Context) (int, error) {
+	if _, err := s.pool.Exec(ctx, `
+		UPDATE order_stock_reservations
+		SET released_at = now(), released_reason = 'vencida: se supone despachada en Odoo'
+		WHERE released_at IS NULL AND expires_at <= now()`); err != nil {
+		return 0, fmt.Errorf("cerrando reservas vencidas: %w", err)
+	}
+
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE variant_stock vs
+		SET qty_on_hand = GREATEST(vs.qty_on_hand - r.total, 0), updated_at = now()
+		FROM (SELECT variant_id, odoo_warehouse_id, sum(qty) AS total
+		      FROM order_stock_reservations
+		      WHERE released_at IS NULL
+		      GROUP BY variant_id, odoo_warehouse_id) r
+		WHERE vs.variant_id = r.variant_id AND vs.odoo_warehouse_id = r.odoo_warehouse_id`)
+	if err != nil {
+		return 0, fmt.Errorf("reaplicando reservas de stock: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+// ReservasAbiertasDeOrden lista lo que un pedido tiene apartado.
+func (s *Store) ReservasAbiertasDeOrden(ctx context.Context, ordenID int64) ([]ReservaStock, error) {
+	filas, err := s.pool.Query(ctx, `
+		SELECT variant_id, odoo_warehouse_id, qty
+		FROM order_stock_reservations
+		WHERE channel_order_id = $1 AND released_at IS NULL
+		ORDER BY variant_id, odoo_warehouse_id`, ordenID)
+	if err != nil {
+		return nil, err
+	}
+	defer filas.Close()
+
+	var out []ReservaStock
+	for filas.Next() {
+		var r ReservaStock
+		if err := filas.Scan(&r.VarianteID, &r.BodegaID, &r.Cantidad); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, filas.Err()
+}
+
+// ------------------------------------------------------------ cancelaciones
+
+// Cancelacion es el resultado de marcar cancelado un pedido.
+type Cancelacion struct {
+	// Cambio es falso si el pedido ya estaba cancelado: evita repetir la
+	// devolución de stock y la alerta en cada pasada del sondeo.
+	Cambio       bool
+	Numero       string
+	Canal        string
+	CuentaID     int64
+	OdooPedidoID *int64
+}
+
+// MarcarOrdenCancelada refleja que el canal canceló un pedido ya ingerido.
+//
+// Hasta ahora un pedido cancelado después de ingerido seguía contando como
+// venta viva: si aún no se había montado, se creaba igual en Odoo, y si ya
+// estaba montado nadie se enteraba.
+//
+// A propósito NO se toca el sale.order de Odoo. Cancelarlo mueve reservas y,
+// si alguien ya lo confirmó o facturó, contabilidad: esa decisión es de una
+// persona, igual que la confirmación. Lo que hace esta función es sacarlo de
+// la cola de montaje, dejar el motivo en sync_error y devolver el id de Odoo
+// para que quien avise pueda nombrarlo.
+func (s *Store) MarcarOrdenCancelada(ctx context.Context, ordenID int64, estadoCanal string) (Cancelacion, error) {
+	var c Cancelacion
+	err := s.pool.QueryRow(ctx, `
+		UPDATE channel_orders o
+		SET status = 'ignored',
+		    channel_status = COALESCE($2, o.channel_status),
+		    sync_error = $3,
+		    updated_at = now()
+		WHERE o.id = $1 AND o.status <> 'ignored'
+		RETURNING o.channel_account_id, COALESCE(o.external_number, o.external_order_id),
+		          o.odoo_sale_order_id,
+		          (SELECT ch.code FROM channel_accounts a
+		             JOIN channels ch ON ch.id = a.channel_id
+		            WHERE a.id = o.channel_account_id)`,
+		ordenID, nulo(estadoCanal), "cancelado en el canal"+entreParentesis(estadoCanal)).
+		Scan(&c.CuentaID, &c.Numero, &c.OdooPedidoID, &c.Canal)
+	if err == pgx.ErrNoRows {
+		return Cancelacion{}, nil // ya estaba cancelado
+	}
+	if err != nil {
+		return Cancelacion{}, fmt.Errorf("cancelando el pedido %d: %w", ordenID, err)
+	}
+	c.Cambio = true
+	return c, nil
+}
+
+func entreParentesis(s string) string {
+	if s == "" {
+		return ""
+	}
+	return " (" + s + ")"
 }

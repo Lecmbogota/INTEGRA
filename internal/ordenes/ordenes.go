@@ -29,6 +29,11 @@ const (
 	TrabajoAOdoo   = "orden_a_odoo"
 )
 
+// AlertaPedidoCancelado avisa de un pedido que el canal canceló después de
+// haberlo ingerido. Integra no cancela el sale.order de Odoo: la decisión
+// contable es de una persona, así que lo único automático es enterarse.
+const AlertaPedidoCancelado = "pedido_cancelado"
+
 type payloadIngerir struct {
 	CuentaID int64 `json:"cuenta_id"`
 }
@@ -166,11 +171,32 @@ func (s *Servicio) ingerir(ctx context.Context, t jobs.Trabajo) error {
 		if o.UpdatedAt.After(maxFecha) {
 			maxFecha = o.UpdatedAt
 		}
+
+		// Un pedido que el canal canceló se atiende llegue como llegue: si es
+		// nuevo, para no montarlo en Odoo; si ya estaba, porque GuardarOrden
+		// acaba de refrescarle el estado del canal y esta es la única pasada
+		// en la que ese cambio se puede notar. Va antes del corte por `nuevo`.
+		if esCancelado(o.Status) {
+			s.cancelar(ctx, ordenID, o)
+			continue
+		}
+
 		if !nuevo {
 			continue
 		}
 		nuevos++
 		s.log.Info("pedido nuevo", "canal", ad.Kind(), "numero", o.Number, "total", o.Total)
+
+		// El stock baja aquí mismo, no en el siguiente sync: mientras tanto
+		// los otros tres canales seguirían ofreciendo unidades ya vendidas.
+		// Un fallo descontando no puede tumbar la ingesta: el pedido ya está
+		// guardado y perderlo sería mucho peor que publicar stock de más.
+		if n, err := s.st.DescontarStockPublicado(ctx, ordenID); err != nil {
+			s.log.Error("no se pudo descontar el stock vendido",
+				"pedido", o.Number, "orden_id", ordenID, "error", err)
+		} else if n > 0 {
+			s.log.Info("stock descontado por venta", "pedido", o.Number, "unidades", n)
+		}
 		// El montaje va en su propio trabajo: si Odoo está caído, se
 		// reintenta con backoff sin arrastrar a la ingesta, que ya hizo su
 		// parte y no debe repetir la llamada al canal.
@@ -189,6 +215,72 @@ func (s *Servicio) ingerir(ctx context.Context, t jobs.Trabajo) error {
 		s.log.Info("ingesta de pedidos", "cuenta", p.CuentaID, "nuevos", nuevos)
 	}
 	return nil
+}
+
+// cancelar refleja una cancelación del canal sobre un pedido ya ingerido.
+//
+// Son tres cosas: devolver el stock que se apartó al ingerirlo (o esas
+// unidades quedarían sin vender para siempre), sacarlo de la cola de montaje
+// (para que no acabe en Odoo un pedido que ya no existe) y dejar constancia.
+// El sale.order que ya esté creado NO se toca: cancelarlo mueve reservas y
+// contabilidad, y eso lo decide una persona.
+func (s *Servicio) cancelar(ctx context.Context, ordenID int64, o channel.Order) {
+	// La devolución va antes de marcar, y no al revés: si se marcara primero
+	// y la devolución fallara, la marca impediría reintentarla en la
+	// siguiente pasada y esas unidades quedarían apartadas para siempre.
+	// Devolver dos veces no puede pasar: los asientos ya liberados no
+	// vuelven a entrar.
+	devueltas, err := s.st.DevolverStockReservado(ctx, ordenID, "cancelado en el canal")
+	if err != nil {
+		s.log.Error("no se pudo devolver el stock del pedido cancelado",
+			"pedido", o.Number, "orden_id", ordenID, "error", err)
+	}
+
+	c, err := s.st.MarcarOrdenCancelada(ctx, ordenID, o.Status)
+	if err != nil {
+		s.log.Error("no se pudo marcar el pedido como cancelado",
+			"pedido", o.Number, "orden_id", ordenID, "error", err)
+		return
+	}
+	if !c.Cambio {
+		return // ya estaba cancelado: no se repite el aviso
+	}
+	s.log.Warn("pedido cancelado en el canal", "canal", c.Canal, "numero", c.Numero,
+		"unidades_devueltas", devueltas, "odoo_pedido", c.OdooPedidoID)
+
+	// La alerta solo tiene sentido si hay algo que decidir. Si el pedido
+	// nunca llegó a Odoo, cancelarlo no deja nada pendiente para nadie.
+	if c.OdooPedidoID == nil {
+		return
+	}
+	cuenta := c.CuentaID
+	mensaje := fmt.Sprintf(
+		"El canal canceló el pedido %s (%s) y ya estaba montado en Odoo como sale.order %d: "+
+			"hay que decidir a mano qué se hace con él", c.Numero, c.Canal, *c.OdooPedidoID)
+	if err := s.st.CrearAlerta(ctx, AlertaPedidoCancelado, "warning", &cuenta, mensaje,
+		map[string]any{
+			"orden_id": ordenID, "numero": c.Numero, "canal": c.Canal,
+			"odoo_sale_order_id": *c.OdooPedidoID, "estado_canal": o.Status,
+		}); err != nil {
+		s.log.Error("no se pudo crear la alerta de cancelación", "orden_id", ordenID, "error", err)
+	}
+}
+
+// esCancelado dice si el estado que reporta el canal significa que la venta
+// murió. Cada canal lo nombra a su manera y ninguno normaliza:
+// MercadoLibre usa cancelled e invalid (fraude), WooCommerce cancelled y
+// refunded, y Shopify manda su financial_status, donde una cancelación
+// aparece como voided (nunca se cobró) o refunded (se devolvió el dinero).
+//
+// Deliberadamente fuera: WooCommerce 'failed' (pago rechazado que el
+// comprador suele reintentar, no una cancelación) y los reembolsos parciales,
+// que devuelven dinero pero no necesariamente la mercancía entera.
+func esCancelado(estado string) bool {
+	switch strings.ToLower(strings.TrimSpace(estado)) {
+	case "cancelled", "canceled", "invalid", "refunded", "voided":
+		return true
+	}
+	return false
 }
 
 // montarEnOdoo crea el pedido de venta. Es idempotente por partida doble:
@@ -264,13 +356,19 @@ func (s *Servicio) CrearPedido(ctx context.Context, o store.Orden) error {
 		}})
 	}
 
-	valores := map[string]interface{}{
-		"partner_id":       partnerID,
-		"client_order_ref": ref,
-		"origin":           strings.ToUpper(o.Canal),
-		"date_order":       o.FechaPedido.UTC().Format("2006-01-02 15:04:05"),
-		"order_line":       lineas,
+	// La bodega sale de las que tenga asignadas la cuenta: una venta de
+	// Falabella tiene que descontar de las bodegas FB, no de la principal.
+	bodega, err := s.st.BodegaDeOrden(ctx, o.ID)
+	if err != nil {
+		_ = s.st.MarcarOrdenFallida(ctx, o.ID, err.Error())
+		return err
 	}
+	var bodegaOdooID int64
+	if bodega != nil {
+		bodegaOdooID = bodega.OdooID
+	}
+
+	valores := valoresPedido(o, partnerID, ref, lineas, bodegaOdooID)
 
 	// Se crea en borrador a propósito: confirmar reserva stock y dispara
 	// contabilidad, y esa decisión es de quien lleva las cuentas de MDV.
@@ -280,9 +378,39 @@ func (s *Servicio) CrearPedido(ctx context.Context, o store.Orden) error {
 		return err
 	}
 
+	nombreBodega := "(por defecto de Odoo)"
+	if bodega != nil {
+		nombreBodega = bodega.Codigo
+	}
 	s.log.Info("pedido creado en Odoo", "canal", o.Canal, "numero", o.Numero,
-		"odoo_id", pedidoID, "total", o.Total)
+		"odoo_id", pedidoID, "total", o.Total, "bodega", nombreBodega)
 	return s.st.MarcarOrdenCreada(ctx, o.ID, pedidoID, partnerID)
+}
+
+// valoresPedido arma el sale.order que se manda a Odoo.
+//
+// Está aparte y sin dependencias para poder comprobar sin Odoo delante lo que
+// se envía, que es donde vivía el hueco: el pedido salía sin warehouse_id y
+// Odoo lo despachaba de la bodega por defecto.
+//
+// Con bodegaOdooID en cero la clave no se manda: una cuenta sin bodegas
+// asignadas debe seguir dejando que Odoo decida, no fallar.
+//
+// Nada de impuestos aquí a propósito: los pone Odoo con su localización.
+func valoresPedido(o store.Orden, partnerID int64, ref string,
+	lineas []interface{}, bodegaOdooID int64) map[string]interface{} {
+
+	valores := map[string]interface{}{
+		"partner_id":       partnerID,
+		"client_order_ref": ref,
+		"origin":           strings.ToUpper(o.Canal),
+		"date_order":       o.FechaPedido.UTC().Format("2006-01-02 15:04:05"),
+		"order_line":       lineas,
+	}
+	if bodegaOdooID > 0 {
+		valores["warehouse_id"] = bodegaOdooID
+	}
+	return valores
 }
 
 // resolverCliente busca el comprador por correo y, si no está, lo crea.

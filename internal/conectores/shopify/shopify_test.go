@@ -38,6 +38,8 @@ type tienda struct {
 	inventarioVariante int64
 	// estadoProducto responde a GET /products/{id}.json: código y cuerpo.
 	estadoProducto func(id string) (int, map[string]any)
+	// ordenesDespacho son los fulfillment orders por pedido.
+	ordenesDespacho map[string][]map[string]any
 }
 
 type llamada struct {
@@ -54,6 +56,7 @@ func nuevaTienda(t *testing.T) *tienda {
 		t:                  t,
 		ubicaciones:        []map[string]any{{"id": 111, "active": true}},
 		inventarioVariante: 888,
+		ordenesDespacho:    map[string][]map[string]any{},
 	}
 	s.Server = httptest.NewServer(http.HandlerFunc(s.manejar))
 	t.Cleanup(s.Close)
@@ -103,6 +106,18 @@ func (s *tienda) manejar(w http.ResponseWriter, r *http.Request) {
 		responder(w, resp)
 	case r.Method == http.MethodGet && ruta == "/orders.json":
 		s.pagina(w, r, "orders", s.paginasPedidos)
+	case r.Method == http.MethodGet && strings.HasPrefix(ruta, "/orders/") &&
+		strings.HasSuffix(ruta, "/fulfillment_orders.json"):
+		id := strings.TrimSuffix(strings.TrimPrefix(ruta, "/orders/"), "/fulfillment_orders.json")
+		fos, hay := s.ordenesDespacho[id]
+		if !hay {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, `{"errors":"Not Found"}`)
+			return
+		}
+		responder(w, map[string]any{"fulfillment_orders": fos})
+	case r.Method == http.MethodPost && ruta == "/fulfillments.json":
+		responder(w, map[string]any{"fulfillment": map[string]any{"id": 5001, "status": "success"}})
 	case r.Method == http.MethodGet && ruta == "/locations.json":
 		responder(w, map[string]any{"locations": s.ubicaciones})
 	case r.Method == http.MethodPost && ruta == "/inventory_levels/set.json":
@@ -196,6 +211,20 @@ func (s *tienda) buscarLlamada(metodo, ruta string) *llamada {
 		}
 	}
 	return nil
+}
+
+// llamadasDe devuelve todas las peticiones a una ruta, en orden: un pedido
+// repartido entre ubicaciones produce varios POST y hay que verlos todos.
+func (s *tienda) llamadasDe(metodo, ruta string) []llamada {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []llamada
+	for _, l := range s.llamadas {
+		if l.Metodo == metodo && l.Ruta == ruta {
+			out = append(out, l)
+		}
+	}
+	return out
 }
 
 func (s *tienda) contar(metodo, ruta string) int {
@@ -744,5 +773,191 @@ func TestFetchStatusReportaLaPublicacionBorradaYElFalloDelCanal(t *testing.T) {
 	}
 	if out[1].Status != "no_encontrado" {
 		t.Errorf("la publicación borrada quedó como %q", out[1].Status)
+	}
+}
+
+// ------------------------------------------------------ despacho (AckOrder)
+
+func guia() channel.Fulfillment {
+	return channel.Fulfillment{
+		TrackingNumber: "SERV-99887", Carrier: "Servientrega",
+		ShippedAt: time.Date(2026, 9, 4, 15, 30, 0, 0, time.UTC),
+	}
+}
+
+// despacho saca el objeto fulfillment del cuerpo de un POST /fulfillments.json.
+func despacho(t *testing.T, l llamada) map[string]any {
+	t.Helper()
+	f, ok := l.Cuerpo["fulfillment"].(map[string]any)
+	if !ok {
+		t.Fatalf("el cuerpo no lleva fulfillment: %v", l.Cuerpo)
+	}
+	return f
+}
+
+// ordenesDeUn saca los fulfillment_order_id que viajaron en un despacho.
+func ordenesDeUn(t *testing.T, f map[string]any) []float64 {
+	t.Helper()
+	lista, ok := f["line_items_by_fulfillment_order"].([]any)
+	if !ok {
+		t.Fatalf("falta line_items_by_fulfillment_order: %v", f)
+	}
+	var out []float64
+	for _, e := range lista {
+		m, _ := e.(map[string]any)
+		id, _ := m["fulfillment_order_id"].(float64)
+		out = append(out, id)
+	}
+	return out
+}
+
+func TestAckOrderCreaElFulfillmentConLaGuiaYLaTransportadora(t *testing.T) {
+	s := nuevaTienda(t)
+	s.ordenesDespacho["1001"] = []map[string]any{
+		{"id": 10, "status": "open", "assigned_location_id": 111,
+			"supported_actions": []string{"create_fulfillment"}},
+	}
+
+	ad := s.adaptador(t, nil)
+	if err := ad.AckOrder(context.Background(), channel.ExternalRef{ListingID: "1001"}, guia()); err != nil {
+		t.Fatal(err)
+	}
+	// El alta cuelga del fulfillment order, no del pedido: el endpoint viejo
+	// (POST /orders/{id}/fulfillments.json) ya no existe.
+	if s.buscarLlamada(http.MethodGet, "/orders/1001/fulfillment_orders.json") == nil {
+		t.Fatal("hay que leer los fulfillment orders antes de despachar")
+	}
+	posts := s.llamadasDe(http.MethodPost, "/fulfillments.json")
+	if len(posts) != 1 {
+		t.Fatalf("se crearon %d fulfillments, quería 1", len(posts))
+	}
+	f := despacho(t, posts[0])
+	if ids := ordenesDeUn(t, f); len(ids) != 1 || ids[0] != 10 {
+		t.Errorf("fulfillment orders = %v, quería [10]", ids)
+	}
+	info, _ := f["tracking_info"].(map[string]any)
+	if info["number"] != "SERV-99887" || info["company"] != "Servientrega" {
+		t.Errorf("tracking_info = %v; sin guía ni transportadora el comprador no ve nada", info)
+	}
+	// Sin notify_customer no sale el correo de «pedido enviado», que es el
+	// único sitio donde el comprador lee la guía.
+	if f["notify_customer"] != true {
+		t.Errorf("notify_customer = %v", f["notify_customer"])
+	}
+}
+
+func TestAckOrderCreaUnFulfillmentPorUbicacion(t *testing.T) {
+	s := nuevaTienda(t)
+	// Shopify solo deja agrupar fulfillment orders de la misma ubicación:
+	// mandar bodega y punto de venta en el mismo POST es un 422.
+	s.ordenesDespacho["1002"] = []map[string]any{
+		{"id": 10, "status": "open", "assigned_location_id": 111,
+			"supported_actions": []string{"create_fulfillment"}},
+		{"id": 11, "status": "open", "assigned_location_id": 222,
+			"supported_actions": []string{"create_fulfillment"}},
+		{"id": 12, "status": "open", "assigned_location_id": 111,
+			"supported_actions": []string{"create_fulfillment"}},
+	}
+
+	ad := s.adaptador(t, nil)
+	if err := ad.AckOrder(context.Background(), channel.ExternalRef{ListingID: "1002"}, guia()); err != nil {
+		t.Fatal(err)
+	}
+	posts := s.llamadasDe(http.MethodPost, "/fulfillments.json")
+	if len(posts) != 2 {
+		t.Fatalf("se crearon %d fulfillments, quería uno por ubicación (2)", len(posts))
+	}
+	if ids := ordenesDeUn(t, despacho(t, posts[0])); len(ids) != 2 || ids[0] != 10 || ids[1] != 12 {
+		t.Errorf("primera ubicación = %v, quería [10 12]", ids)
+	}
+	if ids := ordenesDeUn(t, despacho(t, posts[1])); len(ids) != 1 || ids[0] != 11 {
+		t.Errorf("segunda ubicación = %v, quería [11]", ids)
+	}
+}
+
+func TestAckOrderIgnoraLasPartesQueShopifyNoDejaDespachar(t *testing.T) {
+	s := nuevaTienda(t)
+	s.ordenesDespacho["1003"] = []map[string]any{
+		{"id": 10, "status": "open", "assigned_location_id": 111,
+			"supported_actions": []string{"create_fulfillment"}},
+		// Asignada a un servicio de fulfillment externo: no lleva
+		// create_fulfillment y mandarla igual es un 422 que tumba el despacho
+		// entero, incluida la parte que sí se podía enviar.
+		{"id": 11, "status": "open", "assigned_location_id": 111,
+			"supported_actions": []string{"request_fulfillment", "hold"}},
+	}
+
+	ad := s.adaptador(t, nil)
+	if err := ad.AckOrder(context.Background(), channel.ExternalRef{ListingID: "1003"}, guia()); err != nil {
+		t.Fatal(err)
+	}
+	posts := s.llamadasDe(http.MethodPost, "/fulfillments.json")
+	if len(posts) != 1 {
+		t.Fatalf("posts = %d", len(posts))
+	}
+	if ids := ordenesDeUn(t, despacho(t, posts[0])); len(ids) != 1 || ids[0] != 10 {
+		t.Errorf("fulfillment orders = %v, quería solo la despachable [10]", ids)
+	}
+}
+
+func TestAckOrderDeUnPedidoYaDespachadoNoDuplicaElFulfillment(t *testing.T) {
+	s := nuevaTienda(t)
+	s.ordenesDespacho["1004"] = []map[string]any{
+		{"id": 10, "status": "closed", "assigned_location_id": 111, "supported_actions": []string{}},
+	}
+
+	ad := s.adaptador(t, nil)
+	// El trabajo se reintenta: fallar por llegar dos veces dejaría el pedido
+	// en error para siempre aunque el despacho sí se hubiera informado.
+	if err := ad.AckOrder(context.Background(), channel.ExternalRef{ListingID: "1004"}, guia()); err != nil {
+		t.Fatalf("el pedido ya estaba despachado, no es un fallo: %v", err)
+	}
+	if n := s.contar(http.MethodPost, "/fulfillments.json"); n != 0 {
+		t.Errorf("se crearon %d fulfillments sobre un pedido ya despachado", n)
+	}
+}
+
+func TestAckOrderConTodoRetenidoDaUnErrorAccionableYNoReintentable(t *testing.T) {
+	s := nuevaTienda(t)
+	s.ordenesDespacho["1005"] = []map[string]any{
+		{"id": 10, "status": "on_hold", "assigned_location_id": 111,
+			"supported_actions": []string{"release_hold"}},
+	}
+
+	ad := s.adaptador(t, nil)
+	err := ad.AckOrder(context.Background(), channel.ExternalRef{ListingID: "1005"}, guia())
+	if err == nil {
+		t.Fatal("no se despachó nada: darlo por bueno sería marcar el pedido como enviado sin estarlo")
+	}
+	if !strings.Contains(err.Error(), "retenidas") {
+		t.Errorf("error = %v; debía decir por qué no se pudo", err)
+	}
+	if channel.EsReintentable(err) {
+		t.Error("reintentarlo no libera la retención: no debe ser reintentable")
+	}
+}
+
+func TestAckOrderSinFulfillmentOrdersLoDice(t *testing.T) {
+	s := nuevaTienda(t)
+	s.ordenesDespacho["1006"] = []map[string]any{}
+
+	ad := s.adaptador(t, nil)
+	err := ad.AckOrder(context.Background(), channel.ExternalRef{ListingID: "1006"}, guia())
+	if err == nil || !strings.Contains(err.Error(), "no tiene fulfillment orders") {
+		t.Fatalf("error = %v", err)
+	}
+	if n := s.contar(http.MethodPost, "/fulfillments.json"); n != 0 {
+		t.Errorf("no había nada que despachar y se hicieron %d POST", n)
+	}
+}
+
+func TestAckOrderSinPedidoNoLlamaANadie(t *testing.T) {
+	s := nuevaTienda(t)
+	ad := s.adaptador(t, nil)
+	if err := ad.AckOrder(context.Background(), channel.ExternalRef{}, guia()); err == nil {
+		t.Fatal("sin id de pedido no hay fulfillment orders que buscar")
+	}
+	if len(s.llamadas) != 0 {
+		t.Errorf("se llamó a la tienda igual: %+v", s.llamadas)
 	}
 }

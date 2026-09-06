@@ -302,10 +302,21 @@ func TestFetchOrdersPaginaConLaCabeceraDeTotalDePaginas(t *testing.T) {
 	}
 }
 
-func TestAckOrderDejaLaGuiaComoNotaAntesDeCompletar(t *testing.T) {
-	td := nuevaTienda(t, func(w http.ResponseWriter, r *http.Request) {
+// tiendaDeDespacho imita el pedido 77: la lista de notas del comprador que ya
+// tiene y una respuesta cualquiera para lo que se escriba.
+func tiendaDeDespacho(t *testing.T, notas []map[string]any) *tienda {
+	t.Helper()
+	return nuevaTienda(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/notes") {
+			responder(w, notas)
+			return
+		}
 		responder(w, map[string]any{"id": 77})
 	})
+}
+
+func TestAckOrderDejaLaGuiaComoNotaAntesDeCompletar(t *testing.T) {
+	td := tiendaDeDespacho(t, nil)
 	err := td.adaptador().AckOrder(context.Background(),
 		channel.ExternalRef{ListingID: "77"},
 		channel.Fulfillment{TrackingNumber: "ABC123", Carrier: "Servientrega",
@@ -325,13 +336,66 @@ func TestAckOrderDejaLaGuiaComoNotaAntesDeCompletar(t *testing.T) {
 	if nota.Cuerpo["customer_note"] != true {
 		t.Error("la nota no es visible para el comprador, que es quien necesita la guía")
 	}
+
+	// El orden importa: si el pedido se completara primero y la nota fallara,
+	// quedaría despachado sin rastro de la guía y el trabajo no se reintenta.
 	td.mu.Lock()
 	defer td.mu.Unlock()
-	if td.peticiones[0].Ruta != "/wp-json/wc/v3/orders/77/notes" {
+	var iNota, iEstado = -1, -1
+	for i, p := range td.peticiones {
+		switch {
+		case p.Metodo == http.MethodPost && strings.HasSuffix(p.Ruta, "/notes"):
+			iNota = i
+		case p.Metodo == http.MethodPut && p.Cuerpo["status"] == "completed":
+			iEstado = i
+		}
+	}
+	if iEstado < 0 {
+		t.Fatal("el pedido no se marcó como completado: el ciclo de venta queda abierto en la tienda")
+	}
+	if iNota > iEstado {
 		t.Error("el pedido se completó antes de dejar la guía")
 	}
-	if td.peticiones[len(td.peticiones)-1].Cuerpo["status"] != "completed" {
-		t.Error("el pedido no se marcó como completado")
+}
+
+// TestAckOrderNoRepiteLaNotaDeGuiaEnElReintento: el trabajo de despacho se
+// reintenta con backoff (por ejemplo si el paso a "completed" devuelve 500), y
+// la nota lleva customer_note, así que WooCommerce le manda un correo al
+// comprador por cada una. Sin comprobar lo que ya está puesto, cada reintento
+// le avisa otra vez del mismo despacho.
+func TestAckOrderNoRepiteLaNotaDeGuiaEnElReintento(t *testing.T) {
+	td := tiendaDeDespacho(t, []map[string]any{
+		{"id": 1, "note": "Transportadora: Servientrega &middot; Gu&iacute;a: ABC123", "customer_note": true},
+	})
+	err := td.adaptador().AckOrder(context.Background(),
+		channel.ExternalRef{ListingID: "77"},
+		channel.Fulfillment{TrackingNumber: "ABC123", Carrier: "Servientrega"})
+	if err != nil {
+		t.Fatalf("AckOrder: %v", err)
+	}
+
+	if nota := td.buscar(http.MethodPost, "/wp-json/wc/v3/orders/77/notes"); nota != nil {
+		t.Error("se repitió la nota de la guía: el comprador recibe dos correos del mismo despacho")
+	}
+	// El reintento sí tiene que volver a intentar lo que faltaba.
+	if td.buscar(http.MethodPut, "/wp-json/wc/v3/orders/77") == nil {
+		t.Error("el reintento no completó el pedido, que es lo que había quedado sin hacer")
+	}
+}
+
+// TestAckOrderSinIdDePedidoNoEscribeEnLaTienda: con ListingID vacío la ruta
+// queda en /orders/ y el PUT cae sobre el endpoint de listado.
+func TestAckOrderSinIdDePedidoNoEscribeEnLaTienda(t *testing.T) {
+	td := tiendaDeDespacho(t, nil)
+	err := td.adaptador().AckOrder(context.Background(),
+		channel.ExternalRef{SKU: "MDV-1"}, channel.Fulfillment{TrackingNumber: "ABC123"})
+	if err == nil {
+		t.Fatal("sin id de pedido no hay nada que despachar")
+	}
+	td.mu.Lock()
+	defer td.mu.Unlock()
+	if len(td.peticiones) != 0 {
+		t.Errorf("se llamó a la tienda sin saber a qué pedido: %+v", td.peticiones)
 	}
 }
 

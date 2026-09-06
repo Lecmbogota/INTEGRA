@@ -328,6 +328,10 @@ export interface CredencialesCanal {
   app_secret?: string
   access_token?: string
   refresh_token?: string
+  // Valida que un aviso entrante venga de verdad del canal. Sin guardarlo, el
+  // endpoint de webhooks rechaza todos los avisos legitimos.
+  webhook_secret?: string
+  url_seguimiento?: string
 }
 
 export interface Canal {

@@ -13,6 +13,7 @@ const CANALES: { codigo: string; nombre: string; campos: { clave: keyof Credenci
       { clave: 'app_secret', etiqueta: 'App Secret', secreto: true },
       { clave: 'refresh_token', etiqueta: 'Refresh token', secreto: true, ayuda: 'del flujo OAuth; se renueva solo en cada uso' },
       { clave: 'access_token', etiqueta: 'Access token (opcional)', secreto: true, ayuda: 'si pegas uno vigente, sirve sin refresh' },
+      { clave: 'url_seguimiento', etiqueta: 'URL de rastreo (opcional)', ayuda: 'plantilla de tu transportadora con {guia}; solo para envios por tu cuenta' },
     ],
   },
   {
@@ -20,6 +21,7 @@ const CANALES: { codigo: string; nombre: string; campos: { clave: keyof Credenci
     campos: [
       { clave: 'user_id', etiqueta: 'User ID', ayuda: 'el correo del usuario API del Seller Center' },
       { clave: 'api_key', etiqueta: 'API Key', secreto: true },
+      { clave: 'webhook_secret', etiqueta: 'Token de webhook', secreto: true, ayuda: 'lo eliges tu: va en la URL de callback que registres (?token=...)' },
     ],
   },
   {
@@ -28,6 +30,7 @@ const CANALES: { codigo: string; nombre: string; campos: { clave: keyof Credenci
       { clave: 'url', etiqueta: 'URL de la tienda', ayuda: 'https://mitienda.com' },
       { clave: 'consumer_key', etiqueta: 'Consumer key', secreto: true },
       { clave: 'consumer_secret', etiqueta: 'Consumer secret', secreto: true },
+      { clave: 'webhook_secret', etiqueta: 'Secreto del webhook (opcional)', secreto: true, ayuda: 'si lo dejas vacio, WooCommerce firma con el consumer secret' },
     ],
   },
   {
@@ -35,6 +38,7 @@ const CANALES: { codigo: string; nombre: string; campos: { clave: keyof Credenci
     campos: [
       { clave: 'tienda', etiqueta: 'Tienda', ayuda: 'mitienda.myshopify.com' },
       { clave: 'token', etiqueta: 'Admin API token', secreto: true, ayuda: 'app personalizada → shpat_…' },
+      { clave: 'webhook_secret', etiqueta: 'Client secret', secreto: true, ayuda: 'firma los webhooks; NO es el token shpat_, esta en los datos de la app' },
     ],
   },
 ]

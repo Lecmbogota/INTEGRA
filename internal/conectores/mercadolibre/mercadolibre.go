@@ -40,6 +40,12 @@ func init() {
 			persistir: cfg.PersistCredentials,
 			base:      conectores.URLBaseML,
 			cli:       &http.Client{Timeout: 30 * time.Second},
+			// Plantilla de la URL pública de rastreo de la transportadora
+			// propia. Solo hace falta en ME1, donde ML exige tracking_number
+			// y tracking_url juntos y channel.Fulfillment solo trae el
+			// número. Sin ella la guía viaja igual, pero en el comentario del
+			// evento y sin enlace.
+			plantillaSeguimiento: cfg.Credentials["url_seguimiento"],
 		}
 		if a.token == "" && (a.refresh == "" || a.appID == "" || a.appSecret == "") {
 			return nil, fmt.Errorf("hace falta un access token, o app_id + app_secret + refresh_token")
@@ -54,12 +60,23 @@ const tamPagina = 50
 // tamMultiget es el máximo de ids que acepta GET /items?ids= por llamada.
 const tamMultiget = 20
 
+// serviciosME1 es el service_id que exige la notificación de estado de
+// Mercado Envíos 1, uno por sitio. ML rechaza la notificación sin él, y no
+// hay forma de deducirlo: es una tabla fija de la documentación. Colombia
+// (MCO) es 282579.
+var serviciosME1 = map[string]int{
+	"MLB": 11, "MLA": 154, "MLM": 231876,
+	"MLC": 282578, "MCO": 282579, "MLU": 282604, "MPE": 361180,
+}
+
 type Adaptador struct {
 	appID     string
 	appSecret string
 	cli       *http.Client
 	base      string
 	persistir func(context.Context, map[string]string) error
+
+	plantillaSeguimiento string
 
 	mu      sync.Mutex
 	token   string
@@ -70,6 +87,7 @@ type Adaptador struct {
 	perfilCargado bool
 	userID        int64
 	upSeller      bool
+	siteID        string
 }
 
 func (a *Adaptador) Kind() channel.Kind { return channel.MercadoLibre }
@@ -505,9 +523,36 @@ type ordenML struct {
 }
 
 // envioML es lo que interesa de GET /shipments/{id}: la dirección de
-// entrega, que no viaja en la orden, y el costo del envío.
+// entrega, que no viaja en la orden, el costo del envío y la unidad de
+// negocio, que es lo que decide qué se puede informar al despachar.
+//
+// Conviven dos vistas del mismo recurso y ML sirve una u otra según la
+// cabecera: la clásica (X-Api-Version: 2) trae mode, logistic_type y
+// receiver_id en la raíz, y la nueva (X-New-Domain: true) los mete en
+// logistic{} y destination{}. Se declaran las dos formas y se lee la que
+// venga rellena, para no depender de cuál conteste el endpoint.
 type envioML struct {
-	Status          string `json:"status"`
+	ID           int64  `json:"id"`
+	Status       string `json:"status"`
+	Substatus    string `json:"substatus"`
+	Mode         string `json:"mode"`
+	LogisticType string `json:"logistic_type"`
+	// Type distingue el envío de ida de las devoluciones ("return").
+	Type string `json:"type"`
+	// Speed es la promesa de entrega en horas de los envíos personalizados.
+	Speed    int `json:"speed"`
+	Logistic struct {
+		Direction string `json:"direction"`
+		Mode      string `json:"mode"`
+		Type      string `json:"type"`
+	} `json:"logistic"`
+	Source struct {
+		SiteID string `json:"site_id"`
+	} `json:"source"`
+	ReceiverID  int64 `json:"receiver_id"`
+	Destination struct {
+		ReceiverID int64 `json:"receiver_id"`
+	} `json:"destination"`
 	ReceiverAddress struct {
 		ReceiverName  string `json:"receiver_name"`
 		ReceiverPhone string `json:"receiver_phone"`
@@ -533,6 +578,39 @@ type envioML struct {
 	LeadTime struct {
 		Cost float64 `json:"cost"`
 	} `json:"lead_time"`
+}
+
+// modo devuelve la unidad de negocio del envío ("me1", "me2", "custom").
+func (e *envioML) modo() string {
+	return strings.ToLower(strings.TrimSpace(primeroNoVacio(e.Mode, e.Logistic.Mode)))
+}
+
+// tipoLogistico devuelve el sabor de Mercado Envíos ("drop_off",
+// "cross_docking", "self_service", "xd_drop_off", "fulfillment").
+func (e *envioML) tipoLogistico() string {
+	return strings.ToLower(strings.TrimSpace(primeroNoVacio(e.LogisticType, e.Logistic.Type)))
+}
+
+// direccion distingue el envío de ida ("forward") de las devoluciones.
+func (e *envioML) direccion() string {
+	return strings.ToLower(strings.TrimSpace(primeroNoVacio(e.Type, e.Logistic.Direction)))
+}
+
+// receptor es el id del comprador, que el PUT de envíos personalizados exige.
+func (e *envioML) receptor() int64 {
+	if e.ReceiverID != 0 {
+		return e.ReceiverID
+	}
+	return e.Destination.ReceiverID
+}
+
+func primeroNoVacio(valores ...string) string {
+	for _, v := range valores {
+		if s := strings.TrimSpace(v); s != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 // FetchOrders trae los pedidos del vendedor modificados desde `desde`.
@@ -659,11 +737,264 @@ func (a *Adaptador) volcarEnvio(ord *channel.Order, env *envioML) {
 	}
 }
 
+// AckOrder informa a MercadoLibre que el pedido salió.
+//
+// ML no tiene un "acknowledge" de orden, y lo que se puede informar depende
+// de quién opera la logística. Esa es la decisión que toma este método, tras
+// resolver el envío del pedido (channel.ExternalRef solo trae el id del
+// pedido, no el del envío):
+//
+//   - custom — el vendedor publicó sus propios costos de envío y despacha con
+//     su transportadora: PUT /shipments/{id} con status shipped y la guía.
+//   - me1 — Mercado Envíos 1, el vendedor opera con su contrato: la guía y el
+//     estado se informan con POST /shipments/{id}/seller_notifications
+//     (documentado en «Estados de órdenes y seguimiento» de developers, sin
+//     prefijo de versión), que además es obligatorio y penalizado si no se
+//     manda.
+//   - me2 (drop_off, xd_drop_off, cross_docking, self_service) y fulfillment —
+//     la guía y la etiqueta son de ML. No existe API para mandar una guía
+//     propia, así que se devuelve un error que dice qué hay que hacer en vez
+//     de dar el despacho por informado.
+//   - not_specified — el pedido ni siquiera tiene envío: la entrega se acuerda
+//     con el comprador y no hay recurso donde anotar nada.
+//
+// Los casos que ML no permite se devuelven como channel.Error 409, que
+// EsReintentable declara no reintentable: reintentarlos no los arregla y solo
+// quema cupo de la API.
 func (a *Adaptador) AckOrder(ctx context.Context, ref channel.ExternalRef, f channel.Fulfillment) error {
-	// El despacho de MercadoLibre va por su propio recurso de envíos y
-	// depende de si es Mercado Envíos o logística propia. Se implementa junto
-	// con el resto del despacho.
-	return fmt.Errorf("confirmación de despacho aún no implementada para MercadoLibre")
+	if ref.ListingID == "" {
+		return fmt.Errorf("falta el identificador del pedido de MercadoLibre")
+	}
+	env, err := a.envioDeOrden(ctx, ref.ListingID)
+	if err != nil {
+		return err
+	}
+	if env == nil {
+		return noProcede("envio_inexistente",
+			"el pedido %s no tiene envío en MercadoLibre (modo «no especificado»): la entrega se "+
+				"acuerda con el comprador y la API no ofrece dónde registrar la guía; hay que "+
+				"pasársela por la mensajería del pedido", ref.ListingID)
+	}
+
+	modo, tipo := env.modo(), env.tipoLogistico()
+	switch {
+	case tipo == "fulfillment":
+		return noProcede("fulfillment",
+			"el envío %d del pedido %s lo despacha MercadoLibre desde Full: el paquete ya está en su "+
+				"bodega y no hay guía propia que informar", env.ID, ref.ListingID)
+	case modo == "me1":
+		return a.notificarME1(ctx, env, f)
+	case modo == "custom":
+		return a.despacharPersonalizado(ctx, ref.ListingID, env, f)
+	case modo == "me2" || esLogisticaME2(tipo):
+		return noProcede("mercado_envios",
+			"el envío %d del pedido %s va por Mercado Envíos (%s): la guía y la etiqueta las genera "+
+				"MercadoLibre y la API no acepta una guía propia. Hay que imprimir la etiqueta "+
+				"(GET /shipment_labels?shipment_ids=%d&response_type=pdf) y entregar el paquete; el "+
+				"comprador ve el seguimiento de ML, no el %q",
+			env.ID, ref.ListingID, primeroNoVacio(tipo, modo), env.ID, f.TrackingNumber)
+	default:
+		return noProcede("modo_desconocido",
+			"el envío %d del pedido %s llegó con modo %q y logística %q, que este conector no sabe "+
+				"despachar; revisa el envío en Seller Central", env.ID, ref.ListingID, modo, tipo)
+	}
+}
+
+// esLogisticaME2 reconoce los sabores de Mercado Envíos por su logistic_type,
+// para los envíos que traen el tipo pero no el modo.
+func esLogisticaME2(tipo string) bool {
+	switch tipo {
+	case "drop_off", "xd_drop_off", "cross_docking", "self_service":
+		return true
+	}
+	return false
+}
+
+// noProcede arma un error que el núcleo no debe reintentar: no es un fallo
+// pasajero del canal, es algo que MercadoLibre no permite hacer nunca.
+func noProcede(codigo, formato string, args ...any) error {
+	return &channel.Error{
+		Kind: channel.MercadoLibre, StatusCode: http.StatusConflict,
+		Code: codigo, Message: fmt.Sprintf(formato, args...),
+	}
+}
+
+// envioDeOrden resuelve el envío de ida del pedido.
+//
+// El identificador del envío no viaja en channel.ExternalRef, así que hay que
+// pedirlo. Se usa la vista nueva (X-New-Domain: true), que siempre devuelve
+// array —la vieja se retira a finales de septiembre de 2026— y se descarta lo
+// que no sea "forward": las devoluciones cuelgan del mismo pedido y marcar una
+// devolución como despachada sería mentirle al comprador.
+func (a *Adaptador) envioDeOrden(ctx context.Context, ordenID string) (*envioML, error) {
+	var lista []envioML
+	if err := a.llamarCon(ctx, http.MethodGet, "/orders/"+ordenID+"/shipments", nil,
+		map[string]string{"X-New-Domain": "true"}, nil, &lista); err != nil {
+		return nil, err
+	}
+	for i := range lista {
+		e := &lista[i]
+		if e.ID == 0 {
+			continue
+		}
+		if d := e.direccion(); d != "" && d != "forward" {
+			continue
+		}
+		// El detalle es el que trae receiver_id y la promesa de entrega; el
+		// listado puede venir recortado. Si el detalle no dijera la unidad de
+		// negocio, se conserva la del listado.
+		det, err := a.envio(ctx, e.ID)
+		if err != nil {
+			return nil, err
+		}
+		det.ID = e.ID
+		if det.modo() == "" {
+			det.Mode = e.modo()
+		}
+		if det.tipoLogistico() == "" {
+			det.LogisticType = e.tipoLogistico()
+		}
+		if det.receptor() == 0 {
+			det.ReceiverID = e.receptor()
+		}
+		if det.Source.SiteID == "" {
+			det.Source.SiteID = e.Source.SiteID
+		}
+		return det, nil
+	}
+	return nil, nil
+}
+
+// notificarME1 manda la notificación de estado de Mercado Envíos 1.
+//
+// Es la única vía por la que el comprador ve el avance de un envío que opera
+// el vendedor. ML exige service_id (tabla por sitio), fecha del evento y el
+// campo substatus presente aunque sea nulo; y tracking_number y tracking_url
+// van juntos o no va ninguno, de ahí la plantilla de la cuenta.
+func (a *Adaptador) notificarME1(ctx context.Context, env *envioML, f channel.Fulfillment) error {
+	// El sitio suele venir en el propio envío; solo si falta se gasta una
+	// llamada al perfil del vendedor.
+	sitio := strings.ToUpper(strings.TrimSpace(env.Source.SiteID))
+	if sitio == "" {
+		sitio = strings.ToUpper(a.sitio(ctx))
+	}
+	servicio, ok := serviciosME1[sitio]
+	if !ok {
+		return noProcede("sitio_sin_service_id",
+			"MercadoLibre exige un service_id por país para notificar el estado de un envío ME1 y no "+
+				"hay ninguno para el sitio %q del envío %d", sitio, env.ID)
+	}
+	cuando := f.ShippedAt
+	if cuando.IsZero() {
+		cuando = time.Now()
+	}
+	payload := map[string]any{
+		"service_id": servicio,
+		"date":       cuando.UTC().Format("2006-01-02T15:04:05.000Z07:00"),
+	}
+	if c := comentarioDespacho(f); c != "" {
+		payload["comment"] = c
+	}
+	cuerpo := map[string]any{
+		"status": "shipped",
+		// ML pide el campo presente aunque no haya subestado: "en camino" es
+		// justamente el subestado nulo.
+		"substatus": nil,
+		"payload":   payload,
+	}
+	if u := a.urlSeguimiento(f.TrackingNumber); u != "" {
+		cuerpo["tracking_number"] = f.TrackingNumber
+		cuerpo["tracking_url"] = u
+	}
+	return a.llamar(ctx, http.MethodPost,
+		// Sin prefijo de versión: la documentación oficial de «Estados de
+		// órdenes y seguimiento» muestra esta ruta. Con /v2/ delante, ML
+		// responde 404, que se clasifica como no reintentable, así que todo
+		// despacho ME1 quedaba en error permanente sin que nadie lo notara.
+		"/shipments/"+strconv.FormatInt(env.ID, 10)+"/seller_notifications", nil, cuerpo, nil)
+}
+
+// despacharPersonalizado marca como enviado un envío "custom", el de los
+// vendedores que publican sus propios costos y entregan por su cuenta.
+func (a *Adaptador) despacharPersonalizado(ctx context.Context, ordenID string, env *envioML, f channel.Fulfillment) error {
+	if strings.TrimSpace(f.TrackingNumber) == "" {
+		return noProcede("guia_obligatoria",
+			"MercadoLibre exige el número de guía para marcar como enviado el envío personalizado %d "+
+				"del pedido %s", env.ID, ordenID)
+	}
+	receptor := env.receptor()
+	if receptor == 0 {
+		// El PUT no se puede armar sin el comprador; si el envío no lo trae,
+		// se saca del pedido antes de rendirse.
+		var err error
+		if receptor, err = a.compradorDe(ctx, ordenID); err != nil {
+			return err
+		}
+	}
+	cuerpo := map[string]any{
+		"status":          "shipped",
+		"tracking_number": f.TrackingNumber,
+		"receiver_id":     receptor,
+	}
+	// speed es la promesa de entrega en horas y el comprador la ve. Solo se
+	// reenvía la que el envío ya tiene: inventar una sería comprometerse a
+	// una fecha que nadie prometió.
+	if env.Speed > 0 {
+		cuerpo["speed"] = env.Speed
+	}
+	if c := comentarioDespacho(f); c != "" {
+		cuerpo["comments"] = c
+	}
+	return a.llamar(ctx, http.MethodPut, "/shipments/"+strconv.FormatInt(env.ID, 10), nil, cuerpo, nil)
+}
+
+// compradorDe saca el id del comprador del pedido, que es el receiver_id que
+// exigen los envíos personalizados.
+func (a *Adaptador) compradorDe(ctx context.Context, ordenID string) (int64, error) {
+	var resp struct {
+		Buyer struct {
+			ID int64 `json:"id"`
+		} `json:"buyer"`
+	}
+	if err := a.llamar(ctx, http.MethodGet, "/orders/"+ordenID, nil, nil, &resp); err != nil {
+		return 0, err
+	}
+	if resp.Buyer.ID == 0 {
+		return 0, noProcede("sin_receptor",
+			"el pedido %s no trae el id del comprador y MercadoLibre lo exige como receiver_id para "+
+				"marcar el envío como despachado", ordenID)
+	}
+	return resp.Buyer.ID, nil
+}
+
+// comentarioDespacho arma el texto libre del evento: la transportadora y la
+// guía. En ME1 es además el único sitio donde cabe el número cuando la cuenta
+// no tiene plantilla de URL de rastreo.
+func comentarioDespacho(f channel.Fulfillment) string {
+	var partes []string
+	if c := strings.TrimSpace(f.Carrier); c != "" {
+		partes = append(partes, "Transportadora: "+c)
+	}
+	if g := strings.TrimSpace(f.TrackingNumber); g != "" {
+		partes = append(partes, "Guía: "+g)
+	}
+	return strings.Join(partes, " · ")
+}
+
+// urlSeguimiento compone la URL pública de la guía con la plantilla de la
+// cuenta ({guia} donde va el número; si no hay marca, se concatena al final).
+// Devuelve vacío si falta cualquiera de las dos piezas, porque ML rechaza
+// tracking_number y tracking_url por separado.
+func (a *Adaptador) urlSeguimiento(guia string) string {
+	p := strings.TrimSpace(a.plantillaSeguimiento)
+	guia = strings.TrimSpace(guia)
+	if p == "" || guia == "" {
+		return ""
+	}
+	if strings.Contains(p, "{guia}") {
+		return strings.ReplaceAll(p, "{guia}", url.QueryEscape(guia))
+	}
+	return p + url.QueryEscape(guia)
 }
 
 // ------------------------------------------------------------- auxiliares
@@ -678,8 +1009,9 @@ func (a *Adaptador) perfil(ctx context.Context) error {
 	}
 
 	var resp struct {
-		ID   int64    `json:"id"`
-		Tags []string `json:"tags"`
+		ID     int64    `json:"id"`
+		SiteID string   `json:"site_id"`
+		Tags   []string `json:"tags"`
 	}
 	if err := a.llamar(ctx, http.MethodGet, "/users/me", nil, nil, &resp); err != nil {
 		return err
@@ -692,8 +1024,20 @@ func (a *Adaptador) perfil(ctx context.Context) error {
 	}
 	a.mu.Lock()
 	a.userID, a.upSeller, a.perfilCargado = resp.ID, up, true
+	a.siteID = strings.ToUpper(strings.TrimSpace(resp.SiteID))
 	a.mu.Unlock()
 	return nil
+}
+
+// sitio devuelve el site_id del vendedor (MCO en Colombia). Es lo que decide
+// el service_id de las notificaciones de estado de ME1.
+func (a *Adaptador) sitio(ctx context.Context) string {
+	if err := a.perfil(ctx); err != nil {
+		return ""
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.siteID
 }
 
 func (a *Adaptador) esUserProductSeller() bool {
@@ -873,7 +1217,10 @@ func (a *Adaptador) llamarUnaVez(ctx context.Context, metodo, ruta string, q url
 		}
 		return e
 	}
-	if out == nil {
+	// Un 2xx sin cuerpo es respuesta válida en ML: /orders/{id}/shipments
+	// contesta 204 mientras el envío todavía no se asoció al pedido. Intentar
+	// decodificarlo sería un "unexpected end of JSON input" que no dice nada.
+	if out == nil || len(bytes.TrimSpace(datos)) == 0 {
 		return nil
 	}
 	return json.Unmarshal(datos, out)

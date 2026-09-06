@@ -11,6 +11,7 @@ import (
 
 	"github.com/mdv/integra/internal/jobs"
 	"github.com/mdv/integra/internal/odoo"
+	"github.com/mdv/integra/internal/store"
 )
 
 // El fallo que estas pruebas vigilan: durante meses el manejador de
@@ -96,5 +97,69 @@ func TestEncolarMontajeNoDuplica(t *testing.T) {
 	}
 	if n != 1 {
 		t.Errorf("se encolaron %d trabajos para el mismo pedido; la clave única debe dejar 1", n)
+	}
+}
+
+// El sale.order se creaba sin warehouse_id, así que Odoo lo despachaba
+// siempre de la bodega por defecto: una venta de Falabella descontaba de la
+// bodega principal mientras el stock consignado en las bodegas FB seguía
+// intacto. channel_account_warehouses existía desde el primer esquema y no la
+// leía nadie en el camino del pedido.
+func TestValoresPedidoLlevaLaBodegaDeLaCuenta(t *testing.T) {
+	o := store.Orden{Canal: "falabella", Numero: "FB-1",
+		FechaPedido: time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)}
+
+	valores := valoresPedido(o, 42, "FALABELLA-FB-1", nil, 7)
+
+	if valores["warehouse_id"] != int64(7) {
+		t.Errorf("el pedido debe salir de la bodega de la cuenta, warehouse_id = %v",
+			valores["warehouse_id"])
+	}
+	if valores["partner_id"] != int64(42) {
+		t.Errorf("partner_id = %v", valores["partner_id"])
+	}
+	if valores["client_order_ref"] != "FALABELLA-FB-1" {
+		t.Errorf("client_order_ref = %v", valores["client_order_ref"])
+	}
+}
+
+// Una cuenta sin bodegas asignadas tiene que seguir dejando que decida Odoo:
+// mandar warehouse_id 0 crearía el pedido contra una bodega inexistente, que
+// es peor que el comportamiento de hoy.
+func TestValoresPedidoSinBodegaNoMandaLaClave(t *testing.T) {
+	valores := valoresPedido(store.Orden{Canal: "shopify"}, 1, "SHOPIFY-1", nil, 0)
+
+	if _, hay := valores["warehouse_id"]; hay {
+		t.Error("sin bodegas asignadas no se debe mandar warehouse_id: decide Odoo")
+	}
+}
+
+// Ningún canal normaliza el estado del pedido: cada uno manda su vocabulario
+// tal cual. Sin este mapeo, una cancelación pasaba por venta viva, el stock
+// apartado no volvía nunca y el pedido se montaba igual en Odoo.
+func TestEsCancelado(t *testing.T) {
+	casos := []struct {
+		estado    string
+		cancelado bool
+		porque    string
+	}{
+		{"cancelled", true, "MercadoLibre, WooCommerce y Shopify"},
+		{"canceled", true, "la variante con una sola l"},
+		{"CANCELLED", true, "el canal puede mandarlo en mayúsculas"},
+		{" cancelled ", true, "con espacios alrededor"},
+		{"invalid", true, "MercadoLibre marca así el pedido fraudulento"},
+		{"refunded", true, "WooCommerce y el financial_status de Shopify"},
+		{"voided", true, "Shopify: se anuló sin cobrar"},
+		{"paid", false, "una venta viva"},
+		{"delivered", false, "entregado no es cancelado"},
+		{"failed", false, "pago rechazado que el comprador reintenta"},
+		{"partially_refunded", false, "devolvió dinero, no la mercancía entera"},
+		{"", false, "Falabella no reporta estado: no se puede suponer"},
+	}
+	for _, c := range casos {
+		if got := esCancelado(c.estado); got != c.cancelado {
+			t.Errorf("esCancelado(%q) = %v, se esperaba %v: %s",
+				c.estado, got, c.cancelado, c.porque)
+		}
 	}
 }

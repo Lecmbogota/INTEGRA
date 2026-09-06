@@ -3,6 +3,7 @@ package mercadolibre
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -30,11 +31,23 @@ type servidorFalso struct {
 	refreshVisto  string
 	cabeceraEnvio string
 	queryOrdenes  string
+
+	// Despacho: envíos por pedido, detalle por envío y lo que se escribió.
+	envios         map[string][]map[string]any
+	detalleEnvio   map[string]map[string]any
+	cabeceraNuevo  string
+	putEnvio       map[string]any
+	rutaPutEnvio   string
+	notificacion   map[string]any
+	rutaNotificada string
 }
 
 func nuevoServidor(t *testing.T) *servidorFalso {
 	t.Helper()
-	s := &servidorFalso{t: t, automatizados: map[string]bool{}}
+	s := &servidorFalso{
+		t: t, automatizados: map[string]bool{},
+		envios: map[string][]map[string]any{}, detalleEnvio: map[string]map[string]any{},
+	}
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("POST /oauth/token", func(w http.ResponseWriter, r *http.Request) {
@@ -153,6 +166,50 @@ func nuevoServidor(t *testing.T) *servidorFalso {
 			"shipping_option": map[string]any{"cost": 8900.0, "list_cost": 12000.0},
 			"lead_time":       map[string]any{"cost": 8900.0},
 		})
+	})
+	mux.HandleFunc("GET /orders/{id}/shipments", func(w http.ResponseWriter, r *http.Request) {
+		s.mu.Lock()
+		s.cabeceraNuevo = r.Header.Get("X-New-Domain")
+		lista, hay := s.envios[r.PathValue("id")]
+		s.mu.Unlock()
+		if !hay {
+			// Así responde ML mientras el envío todavía no se asoció.
+			w.WriteHeader(204)
+			return
+		}
+		responder(w, lista)
+	})
+	mux.HandleFunc("GET /orders/{id}", func(w http.ResponseWriter, r *http.Request) {
+		responder(w, map[string]any{
+			"id": r.PathValue("id"), "buyer": map[string]any{"id": 89660613},
+		})
+	})
+	mux.HandleFunc("GET /shipments/{id}", func(w http.ResponseWriter, r *http.Request) {
+		s.mu.Lock()
+		det, hay := s.detalleEnvio[r.PathValue("id")]
+		s.mu.Unlock()
+		if !hay {
+			w.WriteHeader(404)
+			_, _ = io.WriteString(w, `{"error":"not_found","message":"shipment not found"}`)
+			return
+		}
+		responder(w, det)
+	})
+	mux.HandleFunc("PUT /shipments/{id}", func(w http.ResponseWriter, r *http.Request) {
+		var cuerpo map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&cuerpo)
+		s.mu.Lock()
+		s.putEnvio, s.rutaPutEnvio = cuerpo, r.URL.Path
+		s.mu.Unlock()
+		responder(w, map[string]any{"id": r.PathValue("id"), "status": "shipped"})
+	})
+	mux.HandleFunc("POST /shipments/{id}/seller_notifications", func(w http.ResponseWriter, r *http.Request) {
+		var cuerpo map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&cuerpo)
+		s.mu.Lock()
+		s.notificacion, s.rutaNotificada = cuerpo, r.URL.Path
+		s.mu.Unlock()
+		w.WriteHeader(201)
 	})
 	s.Server = httptest.NewServer(mux)
 	t.Cleanup(s.Close)
@@ -384,5 +441,210 @@ func TestFetchStatusUsaMultigetYComponeElSubestado(t *testing.T) {
 	}
 	if len(st) != 2 || st[0].Status != "paused/out_of_stock" {
 		t.Errorf("estados = %+v", st)
+	}
+}
+
+// ------------------------------------------------------ despacho (AckOrder)
+
+// despachoDe siembra un pedido con su envío y devuelve el adaptador listo.
+func despachoDe(t *testing.T, s *servidorFalso, orden string, envio map[string]any, cred map[string]string) *Adaptador {
+	t.Helper()
+	id := envio["id"]
+	s.envios[orden] = []map[string]any{{"id": id, "logistic": map[string]any{"direction": "forward"}}}
+	s.detalleEnvio[fmt.Sprint(id)] = envio
+	if cred == nil {
+		cred = map[string]string{}
+	}
+	cred["access_token"] = "APP_USR-fijo"
+	return adaptadorDe(t, s, cred, nil)
+}
+
+func guia() channel.Fulfillment {
+	return channel.Fulfillment{
+		TrackingNumber: "SERV-99887", Carrier: "Servientrega",
+		ShippedAt: time.Date(2026, 9, 4, 15, 30, 0, 0, time.UTC),
+	}
+}
+
+func TestAckOrderEnvioPersonalizadoMarcaEnviadoConLaGuia(t *testing.T) {
+	s := nuevoServidor(t)
+	ad := despachoDe(t, s, "9001", map[string]any{
+		"id": 777, "status": "pending", "mode": "custom", "receiver_id": 42, "speed": 72,
+	}, nil)
+
+	if err := ad.AckOrder(context.Background(), channel.ExternalRef{ListingID: "9001"}, guia()); err != nil {
+		t.Fatal(err)
+	}
+	if s.cabeceraNuevo != "true" {
+		t.Error("los envíos del pedido se piden con X-New-Domain: true; la vista vieja se retira")
+	}
+	if s.rutaPutEnvio != "/shipments/777" {
+		t.Fatalf("se escribió en %q, quería /shipments/777", s.rutaPutEnvio)
+	}
+	if s.putEnvio["status"] != "shipped" {
+		t.Errorf("status = %v", s.putEnvio["status"])
+	}
+	if s.putEnvio["tracking_number"] != "SERV-99887" {
+		t.Errorf("la guía no viajó: %v", s.putEnvio["tracking_number"])
+	}
+	// receiver_id es obligatorio para ML y sale del envío, no de la referencia.
+	if s.putEnvio["receiver_id"] != 42.0 {
+		t.Errorf("receiver_id = %v, quería 42", s.putEnvio["receiver_id"])
+	}
+	// La promesa de entrega se reenvía tal cual: inventarla le prometería al
+	// comprador una fecha que nadie se comprometió a cumplir.
+	if s.putEnvio["speed"] != 72.0 {
+		t.Errorf("speed = %v, quería la que ya tenía el envío (72)", s.putEnvio["speed"])
+	}
+}
+
+func TestAckOrderPersonalizadoSacaElCompradorDelPedidoSiElEnvioNoLoTrae(t *testing.T) {
+	s := nuevoServidor(t)
+	ad := despachoDe(t, s, "9001", map[string]any{
+		"id": 777, "status": "pending", "mode": "custom",
+	}, nil)
+
+	if err := ad.AckOrder(context.Background(), channel.ExternalRef{ListingID: "9001"}, guia()); err != nil {
+		t.Fatal(err)
+	}
+	if s.putEnvio["receiver_id"] != 89660613.0 {
+		t.Errorf("receiver_id = %v, quería el comprador del pedido", s.putEnvio["receiver_id"])
+	}
+}
+
+func TestAckOrderME1NotificaConElServiceIdDelSitioYLaGuiaEnlazada(t *testing.T) {
+	s := nuevoServidor(t)
+	ad := despachoDe(t, s, "9002", map[string]any{
+		"id": 778, "status": "ready_to_ship", "mode": "me1",
+		"source": map[string]any{"site_id": "MCO"},
+	}, map[string]string{"url_seguimiento": "https://rastreo.example/guia/{guia}"})
+
+	if err := ad.AckOrder(context.Background(), channel.ExternalRef{ListingID: "9002"}, guia()); err != nil {
+		t.Fatal(err)
+	}
+	if s.rutaNotificada != "/shipments/778/seller_notifications" {
+		t.Fatalf("se notificó en %q; la v1 está deprecada", s.rutaNotificada)
+	}
+	n := s.notificacion
+	if n["status"] != "shipped" {
+		t.Errorf("status = %v", n["status"])
+	}
+	// ML exige substatus presente aunque sea nulo: nulo es "en camino".
+	if v, hay := n["substatus"]; !hay || v != nil {
+		t.Errorf("substatus: presente=%v valor=%v; ML lo exige presente y nulo", hay, v)
+	}
+	p, _ := n["payload"].(map[string]any)
+	if p["service_id"] != 282579.0 {
+		t.Errorf("service_id = %v, quería 282579 (MCO)", p["service_id"])
+	}
+	if f, _ := p["date"].(string); !strings.HasPrefix(f, "2026-09-04T15:30:00") {
+		t.Errorf("date = %v; debía ser la fecha de despacho", p["date"])
+	}
+	if n["tracking_number"] != "SERV-99887" || n["tracking_url"] != "https://rastreo.example/guia/SERV-99887" {
+		t.Errorf("guía=%v url=%v; ML los exige juntos", n["tracking_number"], n["tracking_url"])
+	}
+}
+
+func TestAckOrderME1SinPlantillaNoMandaGuiaSueltaYLaDejaEnElComentario(t *testing.T) {
+	s := nuevoServidor(t)
+	ad := despachoDe(t, s, "9002", map[string]any{
+		"id": 778, "mode": "me1", "source": map[string]any{"site_id": "MCO"},
+	}, nil)
+
+	if err := ad.AckOrder(context.Background(), channel.ExternalRef{ListingID: "9002"}, guia()); err != nil {
+		t.Fatal(err)
+	}
+	n := s.notificacion
+	// tracking_number y tracking_url van juntos o no va ninguno: mandar el
+	// número solo hace que ML rechace la notificación entera.
+	if _, hay := n["tracking_number"]; hay {
+		t.Error("sin url de rastreo no se puede mandar tracking_number suelto")
+	}
+	if _, hay := n["tracking_url"]; hay {
+		t.Error("no hay url que mandar")
+	}
+	p, _ := n["payload"].(map[string]any)
+	if c, _ := p["comment"].(string); !strings.Contains(c, "SERV-99887") || !strings.Contains(c, "Servientrega") {
+		t.Errorf("comment = %q; la guía y la transportadora tienen que quedar registradas", c)
+	}
+}
+
+func TestAckOrderME1SinServiceIdDelSitioLoDice(t *testing.T) {
+	s := nuevoServidor(t)
+	// Un sitio fuera de la tabla de ML: no hay service_id que mandar.
+	ad := despachoDe(t, s, "9002", map[string]any{
+		"id": 778, "mode": "me1", "source": map[string]any{"site_id": "MLV"},
+	}, nil)
+
+	err := ad.AckOrder(context.Background(), channel.ExternalRef{ListingID: "9002"}, guia())
+	if err == nil || !strings.Contains(err.Error(), "service_id") {
+		t.Fatalf("error = %v; debía explicar que falta el service_id del país", err)
+	}
+	if s.rutaNotificada != "" {
+		t.Error("no se debe notificar sin service_id")
+	}
+}
+
+func TestAckOrderMercadoEnviosExplicaQueLaGuiaEsDeMercadoLibre(t *testing.T) {
+	for _, caso := range []struct{ nombre, modo, tipo string }{
+		{"me2 drop off", "me2", "drop_off"},
+		{"flex sin modo", "", "self_service"},
+		{"colecta", "me2", "cross_docking"},
+	} {
+		t.Run(caso.nombre, func(t *testing.T) {
+			s := nuevoServidor(t)
+			ad := despachoDe(t, s, "9003", map[string]any{
+				"id": 779, "status": "ready_to_ship", "mode": caso.modo, "logistic_type": caso.tipo,
+			}, nil)
+
+			err := ad.AckOrder(context.Background(), channel.ExternalRef{ListingID: "9003"}, guia())
+			if err == nil {
+				t.Fatal("Mercado Envíos no acepta guía propia: darlo por despachado es mentir")
+			}
+			if !strings.Contains(err.Error(), "etiqueta") {
+				t.Errorf("error = %v; debía decir qué hacer (imprimir la etiqueta)", err)
+			}
+			if channel.EsReintentable(err) {
+				t.Error("reintentarlo no lo arregla nunca: no debe ser reintentable")
+			}
+			if s.rutaPutEnvio != "" || s.rutaNotificada != "" {
+				t.Error("no se debe escribir nada en un envío de Mercado Envíos")
+			}
+		})
+	}
+}
+
+func TestAckOrderFulfillmentExplicaQueDespachaMercadoLibre(t *testing.T) {
+	s := nuevoServidor(t)
+	ad := despachoDe(t, s, "9004", map[string]any{
+		"id": 780, "logistic": map[string]any{"mode": "me2", "type": "fulfillment"},
+	}, nil)
+
+	err := ad.AckOrder(context.Background(), channel.ExternalRef{ListingID: "9004"}, guia())
+	if err == nil || !strings.Contains(err.Error(), "Full") {
+		t.Fatalf("error = %v; debía decir que el paquete ya está en la bodega de ML", err)
+	}
+}
+
+func TestAckOrderSinEnvioExplicaQueSeAcuerdaConElComprador(t *testing.T) {
+	s := nuevoServidor(t)
+	// Sin envío sembrado: es el modo "no especificado", donde ML ni siquiera
+	// crea un shipment y el pedido responde 204.
+	ad := adaptadorDe(t, s, map[string]string{"access_token": "APP_USR-fijo"}, nil)
+
+	err := ad.AckOrder(context.Background(), channel.ExternalRef{ListingID: "9005"}, guia())
+	if err == nil || !strings.Contains(err.Error(), "comprador") {
+		t.Fatalf("error = %v; debía explicar que no hay dónde registrar la guía", err)
+	}
+	if channel.EsReintentable(err) {
+		t.Error("no es un fallo pasajero: no debe reintentarse")
+	}
+}
+
+func TestAckOrderSinPedidoNoLlamaANadie(t *testing.T) {
+	s := nuevoServidor(t)
+	ad := adaptadorDe(t, s, map[string]string{"access_token": "APP_USR-fijo"}, nil)
+	if err := ad.AckOrder(context.Background(), channel.ExternalRef{}, guia()); err == nil {
+		t.Fatal("sin id de pedido no hay envío que buscar")
 	}
 }

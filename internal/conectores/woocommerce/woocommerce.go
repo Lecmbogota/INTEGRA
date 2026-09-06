@@ -429,22 +429,77 @@ func esUltimaPagina(cab http.Header, pagina, recibidos int) bool {
 	return recibidos < 100
 }
 
+// AckOrder confirma el despacho en la tienda.
+//
+// ref.ListingID es el ID DEL PEDIDO (channel_orders.external_order_id), no el
+// de una publicación: es lo único que identifica un pedido en la API de Woo.
+//
+// La API base de WooCommerce no tiene guía ni fulfillment —eso lo añaden
+// plugins como Shipment Tracking, que aquí no se pueden suponer instalados—,
+// así que el ciclo se cierra con lo que sí existe: una nota del pedido con la
+// guía y el paso a "completed", que es lo que la tienda entiende por despachado.
 func (a *Adaptador) AckOrder(ctx context.Context, ref channel.ExternalRef, f channel.Fulfillment) error {
-	// Woo no tiene fulfillment nativo: marcar completado es lo que hace la
-	// tienda. El número de guía va como nota del pedido, y visible para el
-	// comprador: es el único sitio del pedido donde puede leerlo, porque el
-	// correo de "pedido completado" no la lleva.
-	//
+	pedido := strings.TrimSpace(ref.ListingID)
+	if pedido == "" {
+		// Sin id, la ruta quedaría en /orders/ y el PUT caería sobre el
+		// endpoint de listado: mejor un error que diga qué falta.
+		return &channel.Error{
+			Kind: channel.WooCommerce, Code: "sin_pedido",
+			Message: "el despacho de WooCommerce necesita el id del pedido en ExternalRef.ListingID",
+		}
+	}
+
 	// La nota va antes del cambio de estado: si fallara después, el pedido
 	// quedaría completado sin rastro de la guía y el trabajo no se reintenta.
 	if nota := notaDeGuia(f); nota != "" {
-		if err := a.llamar(ctx, http.MethodPost, "/orders/"+ref.ListingID+"/notes", nil,
-			map[string]any{"note": nota, "customer_note": true}, nil); err != nil {
+		puesta, err := a.guiaYaAnotada(ctx, pedido, f)
+		if err != nil {
 			return err
 		}
+		// La nota es visible para el comprador (customer_note), y WooCommerce
+		// le manda un correo por cada una: repetirla en el reintento del
+		// trabajo le avisaría dos veces del mismo despacho.
+		if !puesta {
+			if err := a.llamar(ctx, http.MethodPost, "/orders/"+pedido+"/notes", nil,
+				map[string]any{"note": nota, "customer_note": true}, nil); err != nil {
+				return err
+			}
+		}
 	}
-	return a.llamar(ctx, http.MethodPut, "/orders/"+ref.ListingID, nil,
+	return a.llamar(ctx, http.MethodPut, "/orders/"+pedido, nil,
 		map[string]any{"status": "completed"}, nil)
+}
+
+// guiaYaAnotada dice si el despacho ya se le comunicó al comprador.
+//
+// El trabajo de despacho se reintenta con backoff, y el segundo intento vuelve
+// a pasar por aquí: sin esta comprobación cada reintento crea otra nota y otro
+// correo al comprador con la misma guía.
+//
+// Se compara por contenido y no por igualdad exacta porque la tienda devuelve
+// la nota ya renderizada (entidades HTML, saltos de línea): lo que se busca es
+// el número de guía, que es lo que no puede repetirse. Sin guía —solo
+// transportadora— se compara el texto completo, que es todo lo que hay.
+func (a *Adaptador) guiaYaAnotada(ctx context.Context, pedido string, f channel.Fulfillment) (bool, error) {
+	marca := strings.TrimSpace(f.TrackingNumber)
+	if marca == "" {
+		marca = notaDeGuia(f)
+	}
+	var notas []struct {
+		Note string `json:"note"`
+	}
+	// type=customer: las notas internas de la tienda no las escribe Integra y
+	// no dicen nada sobre si el comprador ya fue avisado.
+	if err := a.llamar(ctx, http.MethodGet, "/orders/"+pedido+"/notes",
+		url.Values{"type": {"customer"}}, nil, &notas); err != nil {
+		return false, err
+	}
+	for _, n := range notas {
+		if strings.Contains(n.Note, marca) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func notaDeGuia(f channel.Fulfillment) string {

@@ -223,13 +223,14 @@ func escribirValor(b *strings.Builder, v interface{}) {
 
 // tiendaFalsa sustituye a PostgreSQL: solo anota qué le pidió el sync.
 type tiendaFalsa struct {
-	variantes   map[int64]int64
-	identidades []store.Identidad
-	stock       []store.FilaStock
-	activas     []int64
-	inactivas   []int64
-	ajustes     int
-	siguiente   int64
+	reservasReaplicadas int
+	variantes           map[int64]int64
+	identidades         []store.Identidad
+	stock               []store.FilaStock
+	activas             []int64
+	inactivas           []int64
+	ajustes             int
+	siguiente           int64
 }
 
 func nuevaTienda(variantes map[int64]int64) *tiendaFalsa {
@@ -262,6 +263,14 @@ func (t *tiendaFalsa) VariantesPorOdooID(context.Context, int64) (map[int64]int6
 		copia[k] = v
 	}
 	return copia, nil
+}
+
+// Cuenta las veces que el sync vuelve a apartar lo vendido: sin esa pasada,
+// la foto recién traída de Odoo resucita las unidades que ya se vendieron y
+// aún no se han despachado.
+func (t *tiendaFalsa) ReaplicarReservasDeStock(context.Context) (int, error) {
+	t.reservasReaplicadas++
+	return 0, nil
 }
 
 func (t *tiendaFalsa) ReemplazarStock(_ context.Context, _ int64, filas []store.FilaStock) error {

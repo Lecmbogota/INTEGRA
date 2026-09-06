@@ -41,6 +41,26 @@ type Credenciales struct {
 	AppSecret    string `json:"app_secret,omitempty"`
 	AccessToken  string `json:"access_token,omitempty"`
 	RefreshToken string `json:"refresh_token,omitempty"`
+
+	// WebhookSecret valida que un aviso entrante venga de verdad del canal.
+	//
+	// Sin este campo el endpoint de webhooks era inservible: guardarCuenta
+	// decodifica el cuerpo en esta estructura, así que cualquier clave que no
+	// esté aquí se descarta en silencio y nunca llega al blob cifrado. La
+	// verificación buscaba un secreto que no había forma de guardar y
+	// rechazaba con 401 todos los avisos legítimos.
+	//
+	// En Shopify es el client secret de la aplicación, que NO es el token de
+	// administración. En WooCommerce, el secreto propio del webhook; si se
+	// deja vacío, WooCommerce firma con el consumer_secret. En Falabella es un
+	// token nuestro, porque su callback no viene firmado: se pone en la URL
+	// que se registre. MercadoLibre no firma y no lo usa.
+	WebhookSecret string `json:"webhook_secret,omitempty"`
+
+	// URLSeguimiento es la plantilla de rastreo de la transportadora propia.
+	// MercadoLibre exige número y URL juntos al informar un envío por cuenta
+	// del vendedor, y el contrato de despacho solo transporta el número.
+	URLSeguimiento string `json:"url_seguimiento,omitempty"`
 }
 
 // Probar hace la llamada mínima que confirma que la credencial sirve.

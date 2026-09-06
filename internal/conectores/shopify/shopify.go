@@ -428,10 +428,151 @@ func (a *Adaptador) FetchOrders(ctx context.Context, desde time.Time, cur channe
 	}, nil
 }
 
+// AckOrder crea el fulfillment del pedido con la guía y la transportadora.
+//
+// Shopify ya no deja crear un fulfillment contra el pedido: desde 2022-07 el
+// alta cuelga de los «fulfillment orders», que es como Shopify parte un pedido
+// por ubicación de despacho, y el endpoint viejo
+// (POST /orders/{id}/fulfillments.json) está retirado. El flujo vigente es
+// leer GET /orders/{id}/fulfillment_orders.json y mandar POST
+// /fulfillments.json con line_items_by_fulfillment_order.
+//
+// Un fulfillment solo puede agrupar fulfillment orders de la MISMA ubicación,
+// así que un pedido repartido entre bodega y punto de venta produce uno por
+// ubicación; mandarlas juntas es un 422.
 func (a *Adaptador) AckOrder(ctx context.Context, ref channel.ExternalRef, f channel.Fulfillment) error {
-	// El fulfillment de Shopify exige el fulfillment_order; se implementa con
-	// el resto del despacho en la Fase 5.
-	return fmt.Errorf("confirmación de despacho aún no implementada para Shopify")
+	if ref.ListingID == "" {
+		return fmt.Errorf("falta el identificador del pedido")
+	}
+	ordenes, err := a.ordenesDeDespacho(ctx, ref.ListingID)
+	if err != nil {
+		return err
+	}
+	if len(ordenes) == 0 {
+		return &channel.Error{
+			Kind: channel.Shopify, StatusCode: http.StatusConflict, Code: "sin_fulfillment_orders",
+			Message: "el pedido " + ref.ListingID + " no tiene fulfillment orders en Shopify: no hay " +
+				"nada que despachar (pedido solo digital, cancelado o ya archivado)",
+		}
+	}
+
+	// Se agrupan por ubicación conservando el orden en que Shopify las
+	// devolvió, para que el mismo pedido produzca siempre las mismas llamadas.
+	var ubicaciones []int64
+	porUbicacion := map[int64][]int64{}
+	terminadas := 0
+	for _, o := range ordenes {
+		if o.despachable() {
+			if _, hay := porUbicacion[o.AssignedLocationID]; !hay {
+				ubicaciones = append(ubicaciones, o.AssignedLocationID)
+			}
+			porUbicacion[o.AssignedLocationID] = append(porUbicacion[o.AssignedLocationID], o.ID)
+			continue
+		}
+		if o.terminada() {
+			terminadas++
+		}
+	}
+	if len(ubicaciones) == 0 {
+		// Todo cerrado o cancelado: el pedido ya estaba despachado. AckOrder
+		// se reintenta, así que volver a fallar aquí dejaría el trabajo en
+		// error para siempre por haber llegado dos veces.
+		if terminadas == len(ordenes) {
+			return nil
+		}
+		return &channel.Error{
+			Kind: channel.Shopify, StatusCode: http.StatusConflict, Code: "nada_despachable",
+			Message: fmt.Sprintf("ninguna de las %d partes del pedido %s se puede despachar: están "+
+				"retenidas, programadas o asignadas a un servicio de fulfillment externo, y Shopify "+
+				"no acepta crear el fulfillment desde aquí; hay que liberarlas en el panel",
+				len(ordenes), ref.ListingID),
+		}
+	}
+
+	for _, loc := range ubicaciones {
+		lineas := make([]map[string]any, 0, len(porUbicacion[loc]))
+		for _, id := range porUbicacion[loc] {
+			lineas = append(lineas, map[string]any{"fulfillment_order_id": id})
+		}
+		despacho := map[string]any{
+			"line_items_by_fulfillment_order": lineas,
+			// El correo de «pedido enviado» es lo único que le enseña la guía
+			// al comprador: sin avisar, el fulfillment queda mudo.
+			"notify_customer": true,
+		}
+		if info := seguimientoDe(f); info != nil {
+			despacho["tracking_info"] = info
+		}
+		if err := a.llamar(ctx, http.MethodPost, "/fulfillments.json",
+			map[string]any{"fulfillment": despacho}, nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ordenDespacho es lo que interesa de un fulfillment order.
+type ordenDespacho struct {
+	ID                 int64    `json:"id"`
+	Status             string   `json:"status"`
+	AssignedLocationID int64    `json:"assigned_location_id"`
+	SupportedActions   []string `json:"supported_actions"`
+}
+
+// despachable dice si el vendedor puede crear el fulfillment de esta parte del
+// pedido. Shopify lo anuncia en supported_actions: una parte retenida,
+// programada o asignada a un servicio de fulfillment externo no lleva
+// create_fulfillment, y mandarla igual es un 422.
+func (o ordenDespacho) despachable() bool {
+	for _, acc := range o.SupportedActions {
+		if acc == "create_fulfillment" {
+			return true
+		}
+	}
+	if len(o.SupportedActions) > 0 {
+		return false
+	}
+	// Sin supported_actions (respuesta recortada) se cae al estado.
+	e := strings.ToLower(o.Status)
+	return e == "open" || e == "in_progress"
+}
+
+// terminada dice si esta parte ya no espera despacho: cerrada (o sea,
+// despachada), cancelada o incompleta.
+func (o ordenDespacho) terminada() bool {
+	switch strings.ToLower(o.Status) {
+	case "closed", "cancelled", "incomplete":
+		return true
+	}
+	return false
+}
+
+func (a *Adaptador) ordenesDeDespacho(ctx context.Context, ordenID string) ([]ordenDespacho, error) {
+	var resp struct {
+		FulfillmentOrders []ordenDespacho `json:"fulfillment_orders"`
+	}
+	if err := a.llamar(ctx, http.MethodGet,
+		"/orders/"+ordenID+"/fulfillment_orders.json", nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.FulfillmentOrders, nil
+}
+
+// seguimientoDe arma el tracking_info del fulfillment. Shopify deduce la URL
+// de rastreo a partir de company cuando reconoce la transportadora; si no la
+// reconoce enseña el número sin enlace, que sigue siendo mejor que nada.
+func seguimientoDe(f channel.Fulfillment) map[string]any {
+	info := map[string]any{}
+	if n := strings.TrimSpace(f.TrackingNumber); n != "" {
+		info["number"] = n
+	}
+	if c := strings.TrimSpace(f.Carrier); c != "" {
+		info["company"] = c
+	}
+	if len(info) == 0 {
+		return nil
+	}
+	return info
 }
 
 // --------------------------------------------------------------- pedidos

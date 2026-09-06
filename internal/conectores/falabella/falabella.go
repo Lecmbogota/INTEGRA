@@ -465,6 +465,31 @@ type ordenResp struct {
 }
 
 func (a *Adaptador) lineasDe(ctx context.Context, orderID string) ([]channel.OrderLine, error) {
+	items, err := a.itemsDe(ctx, orderID)
+	if err != nil {
+		return nil, err
+	}
+
+	var out []channel.OrderLine
+	for _, li := range items {
+		precio, _ := strconv.ParseFloat(string(li.ItemPrice), 64)
+		// Falabella entrega una línea por unidad, no una línea con cantidad.
+		out = append(out, channel.OrderLine{
+			ExternalID: string(li.OrderItemId), SKU: li.Sku, Title: li.Name,
+			Quantity: 1, UnitPrice: precio, TotalPrice: precio,
+		})
+	}
+	return out, nil
+}
+
+// itemsDe trae las líneas del pedido tal como las entrega el canal.
+//
+// Está separada de lineasDe porque tiene dos consumidores con necesidades
+// distintas: FetchOrders solo quiere SKU y precio, mientras que AckOrder
+// necesita el OrderItemId, el PackageId y el estado. Esos tres no viajan en la
+// cabecera del pedido ni los transporta el contrato de channel: GetOrderItems
+// es el único sitio donde existen.
+func (a *Adaptador) itemsDe(ctx context.Context, orderID string) ([]itemResp, error) {
 	p := conectores.ParamsFalabella("GetOrderItems", a.userID)
 	p["OrderId"] = orderID
 
@@ -486,17 +511,7 @@ func (a *Adaptador) lineasDe(ctx context.Context, orderID string) ([]channel.Ord
 			Err:     err,
 		}
 	}
-
-	var out []channel.OrderLine
-	for _, li := range items {
-		precio, _ := strconv.ParseFloat(string(li.ItemPrice), 64)
-		// Falabella entrega una línea por unidad, no una línea con cantidad.
-		out = append(out, channel.OrderLine{
-			ExternalID: string(li.OrderItemId), SKU: li.Sku, Title: li.Name,
-			Quantity: 1, UnitPrice: precio, TotalPrice: precio,
-		})
-	}
-	return out, nil
+	return items, nil
 }
 
 type itemResp struct {
@@ -504,19 +519,158 @@ type itemResp struct {
 	Sku         string    `json:"Sku"`
 	Name        string    `json:"Name"`
 	ItemPrice   numOTexto `json:"ItemPrice"`
+	// Los tres siguientes solo los usa el despacho. PackageId llega ya hecho
+	// en el flujo normal, y ShippingType distingue lo que despacha el vendedor
+	// de lo que despacha Falabella con su propio inventario.
+	Status       string    `json:"Status"`
+	ShippingType string    `json:"ShippingType"`
+	PackageId    numOTexto `json:"PackageId"`
 }
 
-func (a *Adaptador) AckOrder(ctx context.Context, ref channel.ExternalRef, f channel.Fulfillment) error {
-	p := conectores.ParamsFalabella("SetStatusToShipped", a.userID)
-	p["OrderItemIds"] = "[" + ref.ListingID + "]"
-	p["DeliveryType"] = "dropship"
-	if f.TrackingNumber != "" {
-		p["TrackingNumber"] = f.TrackingNumber
+// AckOrder confirma al Seller Center que el pedido salió.
+//
+// Falabella NO tiene una acción "shipped": SetStatusToShipped no existe en esta
+// API y respondía E008. El flujo vigente (v600) es GetOrderItems → GetDocument
+// (la etiqueta) → SetStatusToReadyToShip, y lo que identifica el bulto es el
+// PackageId, no la publicación. Por eso aquí ref.ListingID es el ID DEL PEDIDO
+// en el canal y no el de un listing: los OrderItemId y el PackageId se releen
+// con GetOrderItems, que es el único sitio donde están —el contrato de AckOrder
+// no transporta las líneas del pedido—.
+//
+// La guía y la transportadora de Fulfillment se ignoran A PROPÓSITO: la guía la
+// genera Falabella (el TrackingCode que devuelve GetOrderItems) y el vendedor no
+// puede fijarla; mandarla se rechaza con E091, "you are not allowed to set the
+// shipment provider and tracking number".
+func (a *Adaptador) AckOrder(ctx context.Context, ref channel.ExternalRef, _ channel.Fulfillment) error {
+	pedido := strings.TrimSpace(ref.ListingID)
+	if pedido == "" {
+		return &channel.Error{
+			Kind: channel.Falabella, Code: "sin_pedido",
+			Message: "el despacho de Falabella necesita el id del pedido en ExternalRef.ListingID",
+		}
 	}
-	if f.Carrier != "" {
-		p["ShippingProvider"] = f.Carrier
+
+	items, err := a.itemsDe(ctx, pedido)
+	if err != nil {
+		return err
 	}
+
+	var ids []string
+	var paquete string
+	var yaDespachados, deFalabella int
+	for _, it := range items {
+		if despachaFalabella(it.ShippingType) {
+			deFalabella++
+			continue
+		}
+		switch normalizarEstado(it.Status) {
+		case "pending", "ready_to_ship":
+			ids = append(ids, string(it.OrderItemId))
+			if paquete == "" {
+				paquete = strings.TrimSpace(string(it.PackageId))
+			}
+		case "shipped", "delivered":
+			yaDespachados++
+		}
+	}
+
+	if len(ids) == 0 {
+		// Que no quede nada que confirmar no es un fallo: o el pedido ya salió
+		// —y el reintento del mismo trabajo tiene que terminar bien en vez de
+		// repetir la acción— o es un pedido FBF que despacha Falabella con su
+		// propio inventario, donde la acción está prohibida.
+		if yaDespachados > 0 || deFalabella > 0 {
+			return nil
+		}
+		// Cancelado, devuelto o en un estado que Seller Center no acepta. Se
+		// reporta en vez de callarse: significa que se despachó algo que el
+		// canal no da por vendido, y E073 lo rechazaría igual.
+		return &channel.Error{
+			Kind: channel.Falabella, Code: "sin_lineas_despachables",
+			Message: "el pedido " + pedido + " no tiene líneas en estado pending o ready_to_ship",
+		}
+	}
+
+	if paquete == "" {
+		if paquete, err = a.empaquetar(ctx, ids); err != nil {
+			return err
+		}
+	}
+
+	p := conectores.ParamsFalabella("SetStatusToReadyToShip", a.userID)
+	p["OrderItemIds"] = listaDeIDs(ids)
+	p["PackageId"] = paquete
 	return a.llamar(ctx, http.MethodPost, p, nil, nil)
+}
+
+// empaquetar consigue el PackageId cuando GetOrderItems todavía no lo trae.
+//
+// En el flujo vigente el paquete llega ya hecho, así que esto es la excepción y
+// no el camino normal: sin PackageId, SetStatusToReadyToShip no se puede
+// llamar, y la única acción documentada que lo crea es
+// SetStatusToPackedByMarketplace —que Falabella rotula "endpoint deprecado, aún
+// operativo" sin publicar sustituto—.
+func (a *Adaptador) empaquetar(ctx context.Context, ids []string) (string, error) {
+	p := conectores.ParamsFalabella("SetStatusToPackedByMarketplace", a.userID)
+	p["OrderItemIds"] = listaDeIDs(ids)
+	// dropship es "lo despacha el vendedor". Los otros dos modos que acepta la
+	// API (pickup y sendtowarehouse) son cross-docking contra las bodegas de
+	// Falabella y no se usan desde Integra.
+	p["DeliveryType"] = "dropship"
+
+	var resp struct {
+		SuccessResponse struct {
+			Body struct {
+				OrderItems json.RawMessage `json:"OrderItems"`
+			} `json:"Body"`
+		} `json:"SuccessResponse"`
+	}
+	if err := a.llamar(ctx, http.MethodPost, p, nil, &resp); err != nil {
+		return "", err
+	}
+	items, err := listaSC[itemResp](resp.SuccessResponse.Body.OrderItems, "OrderItem")
+	if err != nil {
+		return "", &channel.Error{
+			Kind:    channel.Falabella,
+			Message: "SetStatusToPackedByMarketplace ilegible: " + err.Error(), Err: err,
+		}
+	}
+	for _, it := range items {
+		if id := strings.TrimSpace(string(it.PackageId)); id != "" {
+			return id, nil
+		}
+	}
+	return "", &channel.Error{
+		Kind: channel.Falabella, Code: "sin_paquete",
+		Message: "SetStatusToPackedByMarketplace no devolvió PackageId y sin él " +
+			"no se puede marcar el pedido listo para envío",
+	}
+}
+
+// listaDeIDs arma el formato que exige Seller Center para las listas de
+// identificadores: [1,2,3], sin espacios ni comillas.
+func listaDeIDs(ids []string) string { return "[" + strings.Join(ids, ",") + "]" }
+
+// despachaFalabella distingue los pedidos que el marketplace despacha con su
+// propio inventario (FBF), donde SetStatusToReadyToShip está PROHIBIDO. El
+// nombre del modo cambia según el endpoint —unas respuestas lo llaman
+// "Own Warehouse" y la restricción de la acción habla de un ShipmentType
+// "Fulfillment"—, así que se aceptan los dos. "Dropshipping" manda sobre
+// cualquier otra coincidencia: la propia documentación llama a ese modo
+// "Fulfillment by Seller", y confundirlos dejaría sin confirmar todos los
+// pedidos que despacha el vendedor, que son la mayoría.
+func despachaFalabella(tipo string) bool {
+	t := strings.ToLower(strings.TrimSpace(tipo))
+	if t == "" || strings.Contains(t, "dropship") {
+		return false
+	}
+	return strings.Contains(t, "own warehouse") || strings.Contains(t, "fulfillment")
+}
+
+// normalizarEstado unifica cómo nombra Seller Center los estados: la misma API
+// devuelve "ready_to_ship" en unas respuestas y "Ready To Ship" en otras.
+func normalizarEstado(s string) string {
+	return strings.ReplaceAll(strings.ToLower(strings.TrimSpace(s)), " ", "_")
 }
 
 // ------------------------------------------------------------- auxiliares
