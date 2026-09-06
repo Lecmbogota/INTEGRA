@@ -432,10 +432,12 @@ func (s *Servicio) montarEnOdoo(ctx context.Context, t jobs.Trabajo) error {
 // CrearPedido monta un pedido concreto en Odoo.
 func (s *Servicio) CrearPedido(ctx context.Context, o store.Orden) error {
 	// Una línea sin variante reconocida no puede convertirse en línea de
-	// pedido: se marca el fallo y se deja para que una persona lo mapee.
+	// pedido: se marca el fallo y se deja para que una persona lo mapee. La
+	// causa nombra las dos razones posibles porque un SKU repetido en Odoo
+	// también llega sin variante, y "no existe" mandaría a buscar donde no es.
 	for _, l := range o.Lineas {
 		if l.VarianteID == nil {
-			causa := fmt.Sprintf("el SKU %q del pedido %s no existe en el catálogo", l.SKU, o.Numero)
+			causa := fmt.Sprintf("el SKU %q del pedido %s no se reconoce en el catálogo: no existe o lo tienen dos productos", l.SKU, o.Numero)
 			_ = s.st.MarcarOrdenFallida(ctx, o.ID, causa)
 			return fmt.Errorf("%s", causa)
 		}

@@ -113,6 +113,18 @@ func (s *Store) CandidatosPublicacion(ctx context.Context, cuentaID int64) ([]Ca
 		LEFT JOIN product_channel_listings pcl ON pcl.product_id = p.id AND pcl.channel_account_id = $1
 		LEFT JOIN variant_channel_listings vcl ON vcl.variant_id = v.id AND vcl.channel_account_id = $1
 		WHERE v.active AND p.active AND p.excluded_reason IS NULL AND v.sku IS NOT NULL
+		  -- Una referencia repetida en Odoo no se publica por ninguno de los
+		  -- productos que la comparten: el segundo adoptaría por SKU la ficha
+		  -- del primero y la pisaría en cada pasada, y una venta de ese SKU
+		  -- no sabría de cuál es. Es la misma comparación, sin distinguir
+		  -- mayúsculas, con la que se emparejan los pedidos, acotada a la
+		  -- conexión porque el mismo SKU en otra instancia es el mismo
+		  -- producto, no otro.
+		  AND NOT EXISTS (SELECT 1 FROM product_variants v2
+		                  JOIN products p2 ON p2.id = v2.product_id
+		                  WHERE v2.id <> v.id AND v2.active
+		                    AND p2.odoo_connection_id = p.odoo_connection_id
+		                    AND lower(v2.sku) = lower(v.sku))
 		ORDER BY p.name`, cuentaID, canalCodigo)
 	if err != nil {
 		return nil, fmt.Errorf("listando candidatos de publicación: %w", err)

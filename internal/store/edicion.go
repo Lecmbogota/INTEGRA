@@ -199,17 +199,37 @@ func (s *Store) RecalcularAtencion(ctx context.Context) error {
 	// La descripción cuenta si existe en product_content (propiedad de
 	// Integra) o quedó heredada en description_sale de la época en que se leía
 	// de Odoo: el mismo criterio que usa la vista previa.
+	//
+	// La referencia repetida bloquea a todos los productos que la comparten:
+	// dos product.product con el mismo default_code se pisarían la ficha en el
+	// canal y una venta de ese SKU no sabría contra cuál montarse en Odoo, así
+	// que ninguno se publica hasta que se corrija en Odoo, que es donde está
+	// el error. Se agrupa una sola vez sobre el catálogo, y sin distinguir
+	// mayúsculas porque así emparejan los pedidos. Dentro de cada conexión:
+	// el mismo SKU en dos conexiones es un producto visto desde dos instancias
+	// (pasa mientras dura `conexiones migrar`), no dos productos.
 	_, err = tx.Exec(ctx, `
 		INSERT INTO attention_queue (variant_id, channel_account_id, reason, detail, severity, last_seen_at)
 		SELECT v.id, NULL, m.reason, m.detail, m.severity, now()
 		FROM product_variants v
 		JOIN products p ON p.id = v.product_id
 		LEFT JOIN product_content c ON c.product_id = p.id
+		LEFT JOIN (
+		    SELECT p2.odoo_connection_id AS conexion, lower(v2.sku) AS sku,
+		           string_agg(p2.name, ', ' ORDER BY p2.name) AS productos
+		    FROM product_variants v2 JOIN products p2 ON p2.id = v2.product_id
+		    WHERE v2.active AND v2.sku IS NOT NULL
+		    GROUP BY p2.odoo_connection_id, lower(v2.sku) HAVING count(*) > 1
+		) rep ON rep.conexion = p.odoo_connection_id AND rep.sku = lower(v.sku)
 		CROSS JOIN LATERAL (VALUES
 		  ('missing_sku',
 		   'los cuatro canales exigen referencia interna',
 		   'blocking',
 		   NULLIF(TRIM(COALESCE(v.sku,'')), '') IS NULL),
+		  ('duplicate_sku',
+		   'la referencia ' || v.sku || ' está en más de un producto de Odoo: ' || rep.productos,
+		   'blocking',
+		   rep.sku IS NOT NULL),
 		  ('missing_description',
 		   'sin descripción; se escribe en Integra',
 		   'blocking',

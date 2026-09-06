@@ -128,14 +128,21 @@ func (s *Store) GuardarOrden(ctx context.Context, d DatosOrden) (id int64, nuevo
 	// Las líneas se emparejan por SKU con el catálogo. Una línea sin pareja se
 	// guarda igual con variant_id nulo: perder el pedido sería peor que
 	// tenerlo incompleto, y así se ve qué hay que arreglar.
+	//
+	// Sin pareja también cuando el SKU está en más de una variante viva: con
+	// LIMIT 1 se elegía una al azar y el pedido se montaba en Odoo contra ese
+	// producto, o sea, se despachaba otra mercancía. El HAVING solo empareja
+	// cuando la respuesta es única; la colisión la señala la cola de atención
+	// y el rescate vuelve a intentarlo cuando se corrija en Odoo.
 	for _, l := range d.Lineas {
 		_, err = tx.Exec(ctx, `
 			INSERT INTO channel_order_lines
 			    (channel_order_id, external_line_id, external_variant_id, channel_sku,
 			     variant_id, title, quantity, unit_price, total_price)
 			VALUES ($1,$2,$3,$4,
-			        (SELECT v.id FROM product_variants v
-			         WHERE lower(v.sku) = lower($4) AND v.active LIMIT 1),
+			        (SELECT min(v.id) FROM product_variants v
+			         WHERE lower(v.sku) = lower($4) AND v.active
+			         HAVING count(*) = 1),
 			        $5,$6,$7,$8)`,
 			id, nulo(l.ExternalID), nulo(l.VarianteExt), nulo(l.SKU),
 			nulo(l.Titulo), l.Cantidad, l.PrecioUnit, l.Total)
@@ -208,14 +215,19 @@ func (s *Store) ReemparejarLineasHuerfanas(ctx context.Context) (lineas, pedidos
 	}
 	defer tx.Rollback(ctx)
 
+	// Solo con la variante que responde en exclusiva a ese SKU: con dos vivas,
+	// UPDATE ... FROM tomaría una cualquiera, que es la elección al azar que
+	// la ingesta acaba de negarse a hacer.
 	tag, err := tx.Exec(ctx, `
 		UPDATE channel_order_lines l
-		SET variant_id = v.id
-		FROM product_variants v
+		SET variant_id = u.id
+		FROM (SELECT lower(v.sku) AS sku, min(v.id) AS id
+		      FROM product_variants v
+		      WHERE v.active AND v.sku IS NOT NULL
+		      GROUP BY lower(v.sku) HAVING count(*) = 1) u
 		WHERE l.variant_id IS NULL
 		  AND l.channel_sku IS NOT NULL
-		  AND lower(v.sku) = lower(l.channel_sku)
-		  AND v.active`)
+		  AND u.sku = lower(l.channel_sku)`)
 	if err != nil {
 		return 0, 0, fmt.Errorf("reemparejando líneas de pedido: %w", err)
 	}
