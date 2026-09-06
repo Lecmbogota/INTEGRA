@@ -128,6 +128,15 @@ func (s *Store) GuardarOrden(ctx context.Context, d DatosOrden) (id int64, nuevo
 	// Las líneas se emparejan por SKU con el catálogo. Una línea sin pareja se
 	// guarda igual con variant_id nulo: perder el pedido sería peor que
 	// tenerlo incompleto, y así se ve qué hay que arreglar.
+	//
+	// El SKU que manda el canal es el que tenía cuando se publicó, y ese no
+	// cambia cuando alguien lo renombra en Odoo: ningún Update se lo lleva al
+	// canal y en Falabella ni siquiera se puede. Por eso se busca primero
+	// entre lo publicado en esta misma cuenta (channel_sku), que es lo que el
+	// comprador vio, y solo después por el SKU actual de la variante. Mirar
+	// solo el actual dejaba sin variante cada pedido de un producto
+	// renombrado, y el montaje en Odoo lo agotaba en cinco intentos: una
+	// venta cobrada que nunca llegaba.
 	for _, l := range d.Lineas {
 		_, err = tx.Exec(ctx, `
 			INSERT INTO channel_order_lines
@@ -135,10 +144,16 @@ func (s *Store) GuardarOrden(ctx context.Context, d DatosOrden) (id int64, nuevo
 			     variant_id, title, quantity, unit_price, total_price)
 			VALUES ($1,$2,$3,$4,
 			        (SELECT v.id FROM product_variants v
-			         WHERE lower(v.sku) = lower($4) AND v.active LIMIT 1),
+			         LEFT JOIN variant_channel_listings vcl
+			                ON vcl.variant_id = v.id AND vcl.channel_account_id = $9
+			               AND lower(vcl.channel_sku) = lower($4)
+			         WHERE v.active
+			           AND (vcl.id IS NOT NULL OR lower(v.sku) = lower($4))
+			         ORDER BY (vcl.id IS NOT NULL) DESC
+			         LIMIT 1),
 			        $5,$6,$7,$8)`,
 			id, nulo(l.ExternalID), nulo(l.VarianteExt), nulo(l.SKU),
-			nulo(l.Titulo), l.Cantidad, l.PrecioUnit, l.Total)
+			nulo(l.Titulo), l.Cantidad, l.PrecioUnit, l.Total, d.CuentaID)
 		if err != nil {
 			return 0, false, fmt.Errorf("guardando línea de %s: %w", d.ExternalID, err)
 		}
@@ -208,14 +223,29 @@ func (s *Store) ReemparejarLineasHuerfanas(ctx context.Context) (lineas, pedidos
 	}
 	defer tx.Rollback(ctx)
 
+	// El mismo criterio que al insertar la línea (ver GuardarOrden): primero
+	// el SKU con el que esta cuenta publicó la variante, después el actual.
+	// Sin la primera parte, un pedido de un SKU renombrado en Odoo no se
+	// rescataba nunca: el catálogo ya no tiene el SKU que manda el canal.
 	tag, err := tx.Exec(ctx, `
 		UPDATE channel_order_lines l
-		SET variant_id = v.id
-		FROM product_variants v
-		WHERE l.variant_id IS NULL
-		  AND l.channel_sku IS NOT NULL
-		  AND lower(v.sku) = lower(l.channel_sku)
-		  AND v.active`)
+		SET variant_id = e.variant_id
+		FROM (
+		    SELECT h.id,
+		           (SELECT v.id FROM product_variants v
+		            LEFT JOIN variant_channel_listings vcl
+		                   ON vcl.variant_id = v.id
+		                  AND vcl.channel_account_id = o.channel_account_id
+		                  AND lower(vcl.channel_sku) = lower(h.channel_sku)
+		            WHERE v.active
+		              AND (vcl.id IS NOT NULL OR lower(v.sku) = lower(h.channel_sku))
+		            ORDER BY (vcl.id IS NOT NULL) DESC
+		            LIMIT 1) AS variant_id
+		    FROM channel_order_lines h
+		    JOIN channel_orders o ON o.id = h.channel_order_id
+		    WHERE h.variant_id IS NULL AND h.channel_sku IS NOT NULL
+		) e
+		WHERE e.id = l.id AND e.variant_id IS NOT NULL`)
 	if err != nil {
 		return 0, 0, fmt.Errorf("reemparejando líneas de pedido: %w", err)
 	}

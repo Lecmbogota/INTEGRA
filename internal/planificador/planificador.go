@@ -26,6 +26,7 @@ const (
 	AlertaPublicacionErr   = "publicacion_con_error"
 	AlertaTrabajosFallidos = "trabajos_fallidos"
 	AlertaSinStock         = "sin_stock_publicado"
+	AlertaSKURenombrado    = "sku_renombrado"
 )
 
 type Planificador struct {
@@ -271,6 +272,16 @@ func (p *Planificador) Vigilar(ctx context.Context) error {
 	if n, err := p.st.PublicadosSinStock(ctx); err == nil && n > 0 {
 		_ = p.st.CrearAlerta(ctx, AlertaSinStock, "warning", nil,
 			fmt.Sprintf("%d productos publicados se quedaron sin existencias", n), nil)
+	}
+
+	// SKUs renombrados en Odoo después de publicar: el canal sigue con el
+	// viejo porque ningún Update se lo cambia, y en Falabella no se puede.
+	// Los pedidos y los envíos no se pierden —usan el SKU publicado—, pero la
+	// ficha del marketplace muestra una referencia que Odoo ya no tiene y
+	// alguien tiene que decidir qué hacer con ella.
+	if n, err := p.st.PublicadosConSKURenombrado(ctx); err == nil && n > 0 {
+		_ = p.st.CrearAlerta(ctx, AlertaSKURenombrado, "warning", nil,
+			fmt.Sprintf("%d publicaciones tienen en el canal un SKU distinto del de Odoo", n), nil)
 	}
 	return nil
 }

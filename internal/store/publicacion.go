@@ -253,7 +253,14 @@ func (s *Store) GuardarContenidoPublicado(ctx context.Context, cuentaID, product
 		SET listing_id = EXCLUDED.listing_id,
 		    external_variant_id = COALESCE(EXCLUDED.external_variant_id,
 		                                   variant_channel_listings.external_variant_id),
-		    channel_sku = COALESCE(EXCLUDED.channel_sku, variant_channel_listings.channel_sku),
+		    -- Actualizar la ficha no cambia el SKU con el que se publicó:
+		    -- ninguno de los cuatro Update lo manda al canal, y Falabella
+		    -- fuerza el viejo porque allí es la referencia. Preferir aquí el
+		    -- de la variante hacía que la primera republicación tras un
+		    -- renombrado en Odoo pisara el publicado, y desde ese momento los
+		    -- envíos de precio y stock y el emparejamiento de pedidos
+		    -- apuntaban a un SKU que el canal no conoce.
+		    channel_sku = COALESCE(variant_channel_listings.channel_sku, EXCLUDED.channel_sku),
 		    status = 'published', content_hash = EXCLUDED.content_hash, updated_at = now()`,
 		listingID, varianteID, cuentaID, nulo(varianteExterna), nulo(contentHash))
 	if err != nil {
@@ -342,6 +349,21 @@ func (s *Store) PublicadosSinStock(ctx context.Context) (int, error) {
 		WHERE v.status = 'published'
 		  AND NOT EXISTS (SELECT 1 FROM variant_stock st
 		                  WHERE st.variant_id = v.variant_id AND st.qty_on_hand > 0)`).Scan(&n)
+	return n, err
+}
+
+// PublicadosConSKURenombrado cuenta las publicaciones cuyo SKU en Odoo ya no
+// es el que conoce el canal. Los pedidos y los envíos no se pierden —los dos
+// usan el SKU publicado—, pero la ficha del marketplace muestra una
+// referencia que el catálogo ya no tiene, y eso alguien lo tiene que decidir.
+func (s *Store) PublicadosConSKURenombrado(ctx context.Context) (int, error) {
+	var n int
+	err := s.pool.QueryRow(ctx, `
+		SELECT count(*)
+		FROM variant_channel_listings v
+		JOIN product_variants pv ON pv.id = v.variant_id
+		WHERE v.channel_sku IS NOT NULL AND pv.sku IS NOT NULL
+		  AND lower(v.channel_sku) <> lower(pv.sku)`).Scan(&n)
 	return n, err
 }
 
