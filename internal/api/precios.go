@@ -13,6 +13,7 @@ func (s *Server) registrarPrecios(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/cuentas/{id}/reglas-precio", s.reglasPrecioCuenta)
 	mux.HandleFunc("POST /api/cuentas/{id}/reglas-precio", s.guardarReglaPrecio)
 	mux.HandleFunc("POST /api/cuentas/{id}/recalcular-precios", s.recalcularPreciosCuenta)
+	mux.HandleFunc("PATCH /api/cuentas/{id}/suelo-costo", s.guardarSueloCosto)
 	mux.HandleFunc("PUT /api/variantes/{id}/override-precio", s.guardarOverridePrecio)
 	mux.HandleFunc("DELETE /api/variantes/{id}/override-precio", s.eliminarOverridePrecio)
 	mux.HandleFunc("POST /api/variantes/{id}/ofertas", s.guardarOferta)
@@ -135,6 +136,40 @@ func (s *Server) recalcularPreciosCuenta(w http.ResponseWriter, r *http.Request)
 		"cuenta_id": cuentaID,
 		"total":     total,
 	})
+}
+
+// guardarSueloCosto fija el margen mínimo de la cuenta y si publicar por
+// debajo de él frena el envío.
+//
+// Al guardar se recalculan los precios de la cuenta en el acto, porque es el
+// recálculo el que aplica el suelo y el que rehace la lista de lo que está por
+// debajo de coste: sin él, subir el margen sería un número en una pantalla que
+// no cambia lo que sale a los canales hasta la siguiente pasada.
+func (s *Server) guardarSueloCosto(w http.ResponseWriter, r *http.Request) {
+	cuentaID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "id de cuenta inválido", http.StatusBadRequest)
+		return
+	}
+
+	var req store.SueloCosto
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "cuerpo json inválido", http.StatusBadRequest)
+		return
+	}
+
+	if err := s.st.ActualizarSueloCosto(r.Context(), cuentaID, req); err != nil {
+		escribir(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+		return
+	}
+
+	total, err := s.st.RecalcularPreciosCuenta(r.Context(), cuentaID)
+	if err != nil {
+		s.fallo(w, err)
+		return
+	}
+
+	escribir(w, http.StatusOK, map[string]any{"ok": true, "total": total})
 }
 
 type reqOverridePrecio struct {

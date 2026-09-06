@@ -26,6 +26,7 @@ const (
 	AlertaPublicacionErr   = "publicacion_con_error"
 	AlertaTrabajosFallidos = "trabajos_fallidos"
 	AlertaSinStock         = "sin_stock_publicado"
+	AlertaPrecioBajoCosto  = "precio_bajo_costo"
 )
 
 type Planificador struct {
@@ -271,6 +272,15 @@ func (p *Planificador) Vigilar(ctx context.Context) error {
 	if n, err := p.st.PublicadosSinStock(ctx); err == nil && n > 0 {
 		_ = p.st.CrearAlerta(ctx, AlertaSinStock, "warning", nil,
 			fmt.Sprintf("%d productos publicados se quedaron sin existencias", n), nil)
+	}
+
+	// Precios que no cubren el coste. Es el único aviso que habla de dinero
+	// perdido en cada venta, no de una venta que no se hace, y por eso sale
+	// como error y no como advertencia: hasta que alguien lo mire, cada
+	// unidad despachada resta.
+	if n, err := p.st.VariantesBajoCosto(ctx); err == nil && n > 0 {
+		_ = p.st.CrearAlerta(ctx, AlertaPrecioBajoCosto, "error", nil,
+			fmt.Sprintf("%d productos tienen un precio que no cubre el coste", n), nil)
 	}
 	return nil
 }

@@ -21,6 +21,10 @@ type CuentaCanal struct {
 	ProbadaAt  *time.Time `json:"probada_at"`
 	ProbadaOK  *bool      `json:"probada_ok"`
 	ProbadaMsg string     `json:"probada_msg"`
+	// Suelo de coste de la cuenta: margen mínimo exigido y si publicar por
+	// debajo de él frena el envío o solo levanta el aviso.
+	MinMargenPct float64 `json:"min_margen_pct"`
+	Bloquear     bool    `json:"bloquear_bajo_costo"`
 }
 
 // GuardarCuenta crea o reemplaza la cuenta global de un canal. La credencial
@@ -72,7 +76,8 @@ func (s *Store) GuardarCuenta(ctx context.Context, canalCodigo, nombre string, c
 func (s *Store) ListarCuentas(ctx context.Context) ([]CuentaCanal, error) {
 	filas, err := s.pool.Query(ctx, `
 		SELECT a.id, ch.code, ch.name, a.name, a.active, a.last_sync_at,
-		       a.config->>'probada_at', a.config->>'probada_ok', COALESCE(a.config->>'probada_msg','')
+		       a.config->>'probada_at', a.config->>'probada_ok', COALESCE(a.config->>'probada_msg',''),
+		       a.min_margen_pct, a.bloquear_bajo_costo
 		FROM channel_accounts a
 		JOIN channels ch ON ch.id = a.channel_id
 		WHERE a.brand_id IS NULL AND a.active
@@ -87,7 +92,8 @@ func (s *Store) ListarCuentas(ctx context.Context) ([]CuentaCanal, error) {
 		var c CuentaCanal
 		var probadaAt, probadaOK *string
 		if err := filas.Scan(&c.ID, &c.CanalCodigo, &c.CanalNombre, &c.Nombre,
-			&c.Activa, &c.UltimoSync, &probadaAt, &probadaOK, &c.ProbadaMsg); err != nil {
+			&c.Activa, &c.UltimoSync, &probadaAt, &probadaOK, &c.ProbadaMsg,
+			&c.MinMargenPct, &c.Bloquear); err != nil {
 			return nil, err
 		}
 		if probadaAt != nil {
@@ -102,6 +108,43 @@ func (s *Store) ListarCuentas(ctx context.Context) ([]CuentaCanal, error) {
 		out = append(out, c)
 	}
 	return out, filas.Err()
+}
+
+// SueloCosto es el margen mínimo de una cuenta y si ese suelo frena el envío.
+type SueloCosto struct {
+	MinMargenPct float64 `json:"min_margen_pct"`
+	Bloquear     bool    `json:"bloquear_bajo_costo"`
+}
+
+// SueloCostoDeCuenta lee el suelo de coste configurado en una cuenta.
+func (s *Store) SueloCostoDeCuenta(ctx context.Context, cuentaID int64) (SueloCosto, error) {
+	var sc SueloCosto
+	err := s.pool.QueryRow(ctx, `
+		SELECT min_margen_pct, bloquear_bajo_costo FROM channel_accounts WHERE id = $1`,
+		cuentaID).Scan(&sc.MinMargenPct, &sc.Bloquear)
+	if err == pgx.ErrNoRows {
+		return sc, fmt.Errorf("no existe la cuenta %d", cuentaID)
+	}
+	return sc, err
+}
+
+// ActualizarSueloCosto fija el margen mínimo de la cuenta y si publicar por
+// debajo de él se frena o solo se avisa.
+func (s *Store) ActualizarSueloCosto(ctx context.Context, cuentaID int64, sc SueloCosto) error {
+	if sc.MinMargenPct < 0 || sc.MinMargenPct >= 1000 {
+		return fmt.Errorf("el margen mínimo debe estar entre 0 y 999,99")
+	}
+	et, err := s.pool.Exec(ctx, `
+		UPDATE channel_accounts
+		SET min_margen_pct = $2, bloquear_bajo_costo = $3, updated_at = now()
+		WHERE id = $1`, cuentaID, sc.MinMargenPct, sc.Bloquear)
+	if err != nil {
+		return fmt.Errorf("guardando el suelo de coste: %w", err)
+	}
+	if et.RowsAffected() == 0 {
+		return fmt.Errorf("no existe la cuenta %d", cuentaID)
+	}
+	return nil
 }
 
 // CredencialesDeCuenta devuelve la credencial cifrada de una cuenta.

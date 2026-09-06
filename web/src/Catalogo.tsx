@@ -5,7 +5,7 @@ import { EdicionMasiva } from './EdicionMasiva'
 import { PlantillaMasiva } from './PlantillaMasiva'
 
 const POR_PAGINA = 50
-const BLOQUEANTES = new Set(['missing_sku', 'missing_description', 'missing_price'])
+const BLOQUEANTES = new Set(['missing_sku', 'missing_description', 'missing_price', 'price_below_cost'])
 const bloqueante = (m: string) => BLOQUEANTES.has(m)
 
 export function Catalogo({ marcas, categorias = [], onVer, onCambio }: {

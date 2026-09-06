@@ -72,6 +72,10 @@ type ChannelInfo struct {
 	CommissionPct float64
 	FixedCost     float64
 	Currency      string
+	// MinMargenPct es el suelo de margen de la CUENTA, el que rige cuando
+	// ninguna regla trae el suyo. Cero no significa «no comprobar»: significa
+	// que el precio debe cubrir el coste exacto.
+	MinMargenPct float64
 }
 
 // VariantPricingInput agrupa los datos del producto necesarios para resolver el precio.
@@ -140,18 +144,27 @@ func ResolverPrecio(
 		precio = math.Ceil(precio/100) * 100
 	}
 
-	// 4. Margen mínimo sobre costo
-	if input.Cost > 0 {
-		var minMargen float64
-		if mejorRegla != nil && mejorRegla.MinMarginPercent != nil {
-			minMargen = *mejorRegla.MinMarginPercent
-		}
-		if minMargen > 0 {
-			precioMinimo := input.Cost * (1 + minMargen/100)
-			if precio < precioMinimo {
-				precio = math.Ceil(precioMinimo/100) * 100
-				expl += fmt.Sprintf(", ajustado al margen mín %.1f%% (costo %.2f) = %.2f", minMargen, input.Cost, precio)
-			}
+	// 4. Suelo de coste
+	//
+	// Se compara contra lo que QUEDA tras la comisión, no contra el precio de
+	// escaparate: publicar a 100 en un canal que se lleva el 16% deja 84, y
+	// comparar 100 contra el coste daba por bueno vender a pérdida.
+	//
+	// El suelo lo pone la regla si lo trae y, si no, la cuenta. Antes solo
+	// existía cuando había regla CON margen, así que la inmensa mayoría del
+	// catálogo no tenía ninguna comprobación; ahora, con el coste conocido,
+	// siempre hay suelo aunque el margen exigido sea cero.
+	//
+	// Un producto sin precio (436 de los 632 de MDV) se queda sin precio: el
+	// suelo levanta un precio demasiado bajo, no inventa uno donde no lo hay.
+	// Subirlo al coste lo haría publicable de golpe a un precio que nadie
+	// decidió.
+	if input.Cost > 0 && precio > 0 {
+		minMargen := margenDeRegla(mejorRegla, channel)
+		precioMinimo := SueloDeCosto(input.Cost, minMargen, channel)
+		if precio < precioMinimo {
+			precio = math.Ceil(precioMinimo/100) * 100
+			expl += fmt.Sprintf(", ajustado al margen mín %.1f%% (costo %.2f) = %.2f", minMargen, input.Cost, precio)
 		}
 	}
 
@@ -183,6 +196,59 @@ func esOfertaVigente(o *Offer, now time.Time) bool {
 		return false
 	}
 	return true
+}
+
+// MargenExigido devuelve el suelo de margen que rige para una variante: el de
+// la regla que le aplica si lo trae y, si no, el de la cuenta.
+//
+// Lo usa quien tiene que decidir si un precio ya guardado se vende a pérdida,
+// para exigir exactamente el mismo margen que exigió el cálculo. Con dos
+// márgenes distintos, una regla más laxa que la cuenta daría un precio que el
+// aviso marcaría como pérdida en cuanto se guardara, y no habría forma de
+// publicar ese producto nunca.
+func MargenExigido(input VariantPricingInput, canal ChannelInfo, rules []ChannelPriceRule) float64 {
+	return margenDeRegla(seleccionarMejorRegla(rules, input.BrandID, input.CategPath), canal)
+}
+
+func margenDeRegla(r *ChannelPriceRule, canal ChannelInfo) float64 {
+	if r != nil && r.MinMarginPercent != nil {
+		return *r.MinMarginPercent
+	}
+	return canal.MinMargenPct
+}
+
+// NetoDelCanal es lo que le queda a MDV de un precio publicado: el canal se
+// cobra su comisión sobre el precio de escaparate y su costo fijo por venta.
+func NetoDelCanal(precio float64, canal ChannelInfo) float64 {
+	comision := canal.CommissionPct
+	if comision >= 100 {
+		comision = 99.9
+	}
+	return precio*(1-comision/100) - canal.FixedCost
+}
+
+// SueloDeCosto es el precio de escaparate más bajo que todavía deja el coste
+// cubierto con el margen exigido, una vez descontado lo que se lleva el canal.
+func SueloDeCosto(costo, margenPct float64, canal ChannelInfo) float64 {
+	if costo <= 0 {
+		return 0
+	}
+	return compensarComision(costo*(1+margenPct/100), canal.CommissionPct, canal.FixedCost)
+}
+
+// CubreCosto responde la pregunta que hoy solo se contesta al cuadrar el mes:
+// con este precio publicado, ¿se gana o se pierde?
+//
+// Un coste desconocido —cero, que es lo que hay en Odoo mientras el producto
+// no se haya comprado nunca— no permite responderla, y no se toma por venta a
+// pérdida: bloquear medio catálogo por un dato que falta sería peor que el
+// problema. El centavo de holgura absorbe el error de coma flotante del
+// redondeo comercial, que si no delataría como pérdida un precio exacto.
+func CubreCosto(precio, costo, margenPct float64, canal ChannelInfo) bool {
+	if costo <= 0 {
+		return true
+	}
+	return NetoDelCanal(precio, canal) >= costo*(1+margenPct/100)-0.01
 }
 
 func compensarComision(base, comisionPct, costoFijo float64) float64 {

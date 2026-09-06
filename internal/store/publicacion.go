@@ -41,6 +41,16 @@ type CandidatoPublicacion struct {
 
 	// Listo indica que cumple todo lo exigible antes de intentar publicar.
 	Listo bool
+
+	// BloqueadoPorCosto: el precio que saldría no cubre el coste con el
+	// margen exigido, y la cuenta pidió que eso frene el envío.
+	//
+	// No se recalcula aquí: se lee de la cola de atención, que es donde lo
+	// deja el recálculo de precios. Volver a compararlo con el margen de la
+	// cuenta ignoraría el de la regla que aplique a esta variante, y una regla
+	// más laxa daría un producto imposible de publicar: el cálculo lo daría
+	// por bueno y el bloqueo lo rechazaría en la misma pasada.
+	BloqueadoPorCosto bool
 }
 
 // CandidatosPublicacion arma la foto del catálogo publicable para una cuenta,
@@ -49,10 +59,12 @@ type CandidatoPublicacion struct {
 func (s *Store) CandidatosPublicacion(ctx context.Context, cuentaID int64) ([]CandidatoPublicacion, error) {
 	var canalCodigo string
 	var comision, costoFijo float64
+	var bloquearBajoCosto bool
 	err := s.pool.QueryRow(ctx, `
-		SELECT ch.code, ch.comision_pct, ch.costo_fijo
+		SELECT ch.code, ch.comision_pct, ch.costo_fijo, a.bloquear_bajo_costo
 		FROM channel_accounts a JOIN channels ch ON ch.id = a.channel_id
-		WHERE a.id = $1 AND a.active`, cuentaID).Scan(&canalCodigo, &comision, &costoFijo)
+		WHERE a.id = $1 AND a.active`, cuentaID).Scan(&canalCodigo, &comision, &costoFijo,
+		&bloquearBajoCosto)
 	if err != nil {
 		return nil, fmt.Errorf("no existe la cuenta %d: %w", cuentaID, err)
 	}
@@ -76,6 +88,9 @@ func (s *Store) CandidatosPublicacion(ctx context.Context, cuentaID int64) ([]Ca
 		       -- para las filas anteriores a la migración 019.
 		       COALESCE(vcl.content_hash, pcl.content_hash, ''),
 		       COALESCE(vcl.price_hash, ''), COALESCE(vcl.stock_hash, ''),
+		       EXISTS (SELECT 1 FROM attention_queue aq
+		               WHERE aq.variant_id = v.id AND aq.channel_account_id = $1
+		                 AND aq.reason = 'price_below_cost' AND aq.resolved_at IS NULL),
 		       COALESCE(ARRAY(
 		           SELECT i.sha256 FROM producto_imagenes pi
 		           JOIN imagenes i ON i.id = pi.imagen_id
@@ -112,9 +127,11 @@ func (s *Store) CandidatosPublicacion(ctx context.Context, cuentaID int64) ([]Ca
 	for filas.Next() {
 		var c CandidatoPublicacion
 		var precioEfectivo float64
+		var bajoCosto bool
 		if err := filas.Scan(&c.VarianteID, &c.ProductoID, &c.SKU, &c.Titulo, &c.Descripcion,
-			&c.Marca, &c.Barcode, &c.Peso, &c.LargoCm, &c.AnchoCm, &c.AltoCm, &c.CategoriaCanal, &c.PrecioBase, &precioEfectivo, &c.Stock,
-			&c.ExternalID, &c.ContentHash, &c.PriceHash, &c.StockHash, &c.Imagenes); err != nil {
+			&c.Marca, &c.Barcode, &c.Peso, &c.LargoCm, &c.AnchoCm, &c.AltoCm, &c.CategoriaCanal,
+			&c.PrecioBase, &precioEfectivo, &c.Stock,
+			&c.ExternalID, &c.ContentHash, &c.PriceHash, &c.StockHash, &bajoCosto, &c.Imagenes); err != nil {
 			return nil, err
 		}
 		c.Moneda = "COP"
@@ -127,6 +144,7 @@ func (s *Store) CandidatosPublicacion(ctx context.Context, cuentaID int64) ([]Ca
 		// piden MercadoLibre y Falabella; se comprueba en el adaptador.
 		c.Listo = c.SKU != "" && c.Titulo != "" && c.Descripcion != "" &&
 			(c.PrecioCanal > 0 || c.PrecioBase > 0) && len(c.Imagenes) > 0
+		c.BloqueadoPorCosto = bloquearBajoCosto && bajoCosto
 		out = append(out, c)
 	}
 	return out, filas.Err()

@@ -41,9 +41,14 @@ export function Publicacion() {
     try {
       const p = await api.planificar(c.id)
       const total = p.publicar + p.precio + p.stock
+      // Lo retenido por coste se nombra siempre: sin esto, un catálogo entero
+      // frenado por precios a pérdida se anunciaba como «ya está todo al día».
+      const retenidos = p.bajo_costo > 0
+        ? ` ${num(p.bajo_costo)} no salen porque su precio no cubre el coste.`
+        : ''
       setPlan(total === 0
-        ? `${nombre}: nada que enviar. ${num(p.sin_cambios)} productos ya están al día${p.no_listos > 0 ? `, ${num(p.no_listos)} aún no cumplen los requisitos` : ''}.`
-        : `${nombre}: ${num(total)} envíos encolados — ${num(p.publicar)} publicaciones, ${num(p.precio)} precios, ${num(p.stock)} stock. El worker los procesa en segundo plano.`)
+        ? `${nombre}: nada que enviar. ${num(p.sin_cambios)} productos ya están al día${p.no_listos > 0 ? `, ${num(p.no_listos)} aún no cumplen los requisitos` : ''}.${retenidos}`
+        : `${nombre}: ${num(total)} envíos encolados — ${num(p.publicar)} publicaciones, ${num(p.precio)} precios, ${num(p.stock)} stock. El worker los procesa en segundo plano.${retenidos}`)
       void cargar()
     } catch (e) {
       setError(`No se pudo planificar los envíos de ${nombre}: ${e instanceof Error ? e.message : String(e)}`)

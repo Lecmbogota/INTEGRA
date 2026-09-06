@@ -313,6 +313,10 @@ export interface CuentaCanal {
   probada_at: string | null
   probada_ok: boolean | null
   probada_msg: string
+  // Suelo de coste: margen mínimo exigido y si publicar por debajo frena el
+  // envío al canal o solo levanta el aviso.
+  min_margen_pct: number
+  bloquear_bajo_costo: boolean
 }
 
 
@@ -800,7 +804,7 @@ export const api = {
 
   publicaciones: () => pedir<ResumenPublicacion[]>('/api/publicaciones'),
   planificar: (cuentaId: number) =>
-    pedir<{ publicar: number; precio: number; stock: number; sin_cambios: number; no_listos: number }>(
+    pedir<{ publicar: number; precio: number; stock: number; sin_cambios: number; no_listos: number; bajo_costo: number }>(
       `/api/cuentas/${cuentaId}/planificar`, { method: 'POST' }),
 
   cuentas: () => pedir<CuentaCanal[]>('/api/cuentas'),
@@ -812,6 +816,12 @@ export const api = {
     }),
   probarCuenta: (id: number) =>
     pedir<{ ok: boolean; mensaje: string }>(`/api/cuentas/${id}/probar`, { method: 'POST' }),
+  guardarSueloCosto: (id: number, min_margen_pct: number, bloquear_bajo_costo: boolean) =>
+    pedir<{ ok: boolean; total: number }>(`/api/cuentas/${id}/suelo-costo`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ min_margen_pct, bloquear_bajo_costo }),
+    }),
 
   integraciones: () => pedir<ConexionOdoo[]>('/api/integraciones'),
   crearIntegracion: (datos: DatosIntegracion) =>
@@ -890,6 +900,7 @@ export const MOTIVOS: Record<string, string> = {
   missing_brand: 'Sin marca',
   no_stock: 'Sin existencias',
   image_mismatch: 'Portada dudosa',
+  price_below_cost: 'Precio por debajo del coste',
 }
 
 export const motivo = (k: string) => MOTIVOS[k] ?? k
