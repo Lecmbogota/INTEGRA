@@ -63,6 +63,11 @@ services:
     # las dependencias ni la versión del esquema entre ambos procesos.
     command: ["worker"]
     restart: unless-stopped
+    # Docker manda SIGKILL a los 10 s por defecto, y el worker espera hasta 30
+    # a que terminen los envíos que ya están hablando con un canal. Sin este
+    # margen, un despliegue cortaría publicaciones a la mitad y el reintento
+    # podría duplicarlas.
+    stop_grace_period: 45s
     environment:
       INTEGRA_DATABASE_URL: postgres://integra:integra_dev@postgres:5432/integra?sslmode=disable
       INTEGRA_MASTER_KEY: ${INTEGRA_MASTER_KEY:?define INTEGRA_MASTER_KEY}

@@ -20,6 +20,9 @@ type Worker struct {
 	concurrencia int
 	tick         time.Duration
 	lease        time.Duration
+	// gracia es cuánto se espera al apagar a que terminen los trabajos que ya
+	// están hablando con un canal.
+	gracia time.Duration
 
 	mu        sync.Mutex
 	manejores map[string]Handler
@@ -36,7 +39,12 @@ func NuevoWorker(cola *Cola, log *slog.Logger, concurrencia int, tick time.Durat
 		cola: cola, log: log, concurrencia: concurrencia, tick: tick,
 		// El lease debe superar al trabajo más largo esperable; cinco minutos
 		// cubre de sobra una llamada a un canal con reintentos de red.
-		lease:     5 * time.Minute,
+		lease: 5 * time.Minute,
+		// Medio minuto: suficiente para que termine una llamada a un canal
+		// con su reintento, y poco para no dejar el contenedor colgado en un
+		// despliegue. Docker manda SIGKILL a los 10 s por defecto, así que el
+		// compose necesita stop_grace_period acorde.
+		gracia:    30 * time.Second,
 		manejores: map[string]Handler{},
 	}
 }
@@ -81,6 +89,15 @@ func (w *Worker) Ejecutar(ctx context.Context) error {
 		huecos <- struct{}{}
 	}
 
+	// Los trabajos corren con un contexto propio, desligado del que apaga el
+	// worker. Antes recibían el mismo: al pedir el apagado, la llamada al
+	// canal que estuviera a medias moría en el acto y —peor— tampoco se podía
+	// anotar el resultado en la base, porque esa escritura usaba el mismo
+	// contexto muerto. El trabajo se quedaba en 'running' hasta que caducaba
+	// su lease, bloqueado sin que nadie lo estuviera procesando.
+	ctxTrabajos, cancelarTrabajos := context.WithCancel(context.WithoutCancel(ctx))
+	defer cancelarTrabajos()
+
 	var enVuelo sync.WaitGroup
 	timer := time.NewTicker(w.tick)
 	defer timer.Stop()
@@ -88,8 +105,7 @@ func (w *Worker) Ejecutar(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			w.log.Info("worker apagándose: esperando los trabajos en vuelo")
-			enVuelo.Wait()
+			w.esperarEnVuelo(&enVuelo, cancelarTrabajos)
 			return nil
 		case <-timer.C:
 		}
@@ -117,9 +133,31 @@ func (w *Worker) Ejecutar(ctx context.Context) error {
 			enVuelo.Add(1)
 			go func(t Trabajo) {
 				defer func() { huecos <- struct{}{}; enVuelo.Done() }()
-				w.procesar(ctx, t)
+				w.procesar(ctxTrabajos, t)
 			}(t)
 		}
+	}
+}
+
+// esperarEnVuelo da un margen a lo que ya está a medias antes de cortarlo.
+//
+// Un envío al canal que se corta a la mitad es lo peor que puede pasar aquí:
+// no se sabe si llegó, y el reintento puede duplicar una publicación. Por eso
+// se espera; pero el margen es finito, porque un canal colgado no puede
+// impedir para siempre que el proceso termine. Lo que no acabe a tiempo se
+// cancela y vuelve a la cola por el camino de los huérfanos.
+func (w *Worker) esperarEnVuelo(enVuelo *sync.WaitGroup, cancelar context.CancelFunc) {
+	hecho := make(chan struct{})
+	go func() { enVuelo.Wait(); close(hecho) }()
+
+	select {
+	case <-hecho:
+		w.log.Info("worker apagado: los trabajos en vuelo terminaron")
+	case <-time.After(w.gracia):
+		w.log.Warn("se agotó el margen de apagado: los trabajos en vuelo se cancelan y volverán a la cola",
+			"margen", w.gracia.String())
+		cancelar()
+		<-hecho
 	}
 }
 
