@@ -35,10 +35,27 @@ func fixtureSKURepetido(t *testing.T, st *Store) (cuentaID, varA, varB, varContr
 		VALUES ('conexion-sku-repetido-test','http://x','x','x','\x00'::bytea,false) RETURNING id`).Scan(&conexionID); err != nil {
 		t.Fatal(err)
 	}
+	// La cuenta necesita al menos una bodega asignada: desde que se exige la
+	// asignación, una cuenta sin bodegas no publica nada y este test dejaría de
+	// medir lo suyo —el SKU repetido— para medir eso otro.
+	var bodegaID int64
+	if err := st.pool.QueryRow(ctx, `
+		INSERT INTO odoo_warehouses (odoo_connection_id, odoo_id, code, name)
+		VALUES ($1, 990001, 'SKUDUP', 'Bodega de prueba de SKU repetido') RETURNING id`,
+		conexionID).Scan(&bodegaID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.pool.Exec(ctx, `
+		INSERT INTO channel_account_warehouses (channel_account_id, odoo_warehouse_id)
+		VALUES ($1, $2)`, cuentaID, bodegaID); err != nil {
+		t.Fatal(err)
+	}
+
 	t.Cleanup(func() {
 		_, _ = st.pool.Exec(ctx, `DELETE FROM channel_orders WHERE channel_account_id = $1`, cuentaID)
 		_, _ = st.pool.Exec(ctx, `DELETE FROM channel_accounts WHERE id = $1`, cuentaID)
 		_, _ = st.pool.Exec(ctx, `DELETE FROM products WHERE odoo_connection_id = $1`, conexionID)
+		_, _ = st.pool.Exec(ctx, `DELETE FROM odoo_warehouses WHERE odoo_connection_id = $1`, conexionID)
 		_, _ = st.pool.Exec(ctx, `DELETE FROM odoo_connections WHERE id = $1`, conexionID)
 	})
 
