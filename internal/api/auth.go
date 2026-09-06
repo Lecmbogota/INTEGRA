@@ -51,21 +51,42 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Se frena por IP y por correo: por IP sola no se detiene una botnet
+	// repartida contra una cuenta, y por correo solo no se detiene a quien
+	// barre muchas cuentas desde una máquina.
+	ip, correo := ipDe(r), strings.ToLower(strings.TrimSpace(req.Email))
+	frenoDeLogin.Limpiar()
+	if espera := max(frenoDeLogin.Espera(ip), frenoDeLogin.Espera("correo:"+correo)); espera > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(int(espera.Seconds())+1))
+		http.Error(w, "demasiados intentos fallidos; espera unos segundos",
+			http.StatusTooManyRequests)
+		return
+	}
+
+	// El fallo se cuenta antes de saber por qué falló: distinguirlo aquí
+	// diría al atacante qué correos existen.
+	fallar := func(mensaje string, codigo int) {
+		frenoDeLogin.Fallo(ip, "correo:"+correo)
+		s.log.Warn("intento de acceso fallido", "correo", correo, "ip", ip)
+		http.Error(w, mensaje, codigo)
+	}
+
 	u, hash, err := s.st.UsuarioPorEmail(r.Context(), req.Email)
 	if err != nil {
-		http.Error(w, "correo o contraseña incorrectos", http.StatusUnauthorized)
+		fallar("correo o contraseña incorrectos", http.StatusUnauthorized)
 		return
 	}
 
 	if !u.Active {
-		http.Error(w, "el usuario está inactivo", http.StatusForbidden)
+		fallar("el usuario está inactivo", http.StatusForbidden)
 		return
 	}
 
 	if !auth.VerificarPassword(hash, req.Password) {
-		http.Error(w, "correo o contraseña incorrectos", http.StatusUnauthorized)
+		fallar("correo o contraseña incorrectos", http.StatusUnauthorized)
 		return
 	}
+	frenoDeLogin.Acierto(ip, "correo:"+correo)
 
 	token, err := auth.GenerarToken(u.ID, u.Email, u.Role, s.claveFirma(), 24*time.Hour)
 	if err != nil {
