@@ -27,10 +27,13 @@ type almacenFalso struct {
 	candidato store.CandidatoPublicacion
 	ref       channel.ExternalRef
 
-	guardado    *publicacionGuardada
-	precioHash  string
-	stockHash   string
-	errAnotados []string
+	guardado *publicacionGuardada
+	// soloContenido distingue por qué camino se guardó: actualizar una ficha
+	// viva no puede tocar el precio ni el stock publicados.
+	soloContenido bool
+	precioHash    string
+	stockHash     string
+	errAnotados   []string
 }
 
 type publicacionGuardada struct {
@@ -62,6 +65,20 @@ func (a *almacenFalso) GuardarPublicacion(ctx context.Context, cuentaID, product
 		contentHash: contentHash, priceHash: priceHash, stockHash: stockHash,
 		precio: precio, cantidad: cantidad,
 	}
+	return nil
+}
+
+func (a *almacenFalso) GuardarContenidoPublicado(ctx context.Context, cuentaID, productoID, varianteID int64,
+	externalID, externalURL, varianteExterna, contentHash string) error {
+
+	// Se anota igual que una publicación, pero con precio y stock a cero y sus
+	// hashes vacíos: es lo que distingue "solo se mandó la ficha" de "se
+	// publicó entero", y es justo lo que comprueban las pruebas.
+	a.guardado = &publicacionGuardada{
+		externalID: externalID, varianteExterna: varianteExterna,
+		contentHash: contentHash,
+	}
+	a.soloContenido = true
 	return nil
 }
 

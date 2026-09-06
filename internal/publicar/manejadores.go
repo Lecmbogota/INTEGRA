@@ -31,6 +31,11 @@ type almacen interface {
 	GuardarPublicacion(ctx context.Context, cuentaID, productoID, varianteID int64,
 		externalID, externalURL, varianteExterna, contentHash, priceHash, stockHash string,
 		precio float64, cantidad int) error
+	// GuardarContenidoPublicado se usa al actualizar una publicación viva:
+	// solo se envió la ficha, así que el precio y el stock publicados no se
+	// tocan.
+	GuardarContenidoPublicado(ctx context.Context, cuentaID, productoID, varianteID int64,
+		externalID, externalURL, varianteExterna, contentHash string) error
 	GuardarPrecioPublicado(ctx context.Context, cuentaID, varianteID int64, hash string, precio float64) error
 	GuardarStockPublicado(ctx context.Context, cuentaID, varianteID int64, hash string, cantidad int) error
 	AnotarErrorPublicacion(ctx context.Context, cuentaID, productoID int64, causa string) error
@@ -183,12 +188,13 @@ func (s *Servicio) actualizarFicha(ctx context.Context, ad channel.Adapter,
 		ref = res.Ref
 	}
 
-	// Hash de precio y de stock vacíos a propósito: es la verdad —no se ha
-	// enviado ninguno de los dos— y hace que la planificación los vuelva a
-	// pedir aunque los trabajos de abajo se pierdan.
-	if err := s.st.GuardarPublicacion(ctx, p.CuentaID, c.ProductoID, c.VarianteID,
-		ref.ListingID, "", ref.VariantID,
-		HashContenido(*c), "", "", 0, 0); err != nil {
+	// Solo se anota el contenido: Update no lleva precio ni stock en ninguno
+	// de los cuatro canales. Los hashes de esos dos quedan intactos y sus
+	// trabajos, encolados abajo, son los que los anotarán al enviarlos. Pasar
+	// por GuardarPublicacion aquí ponía a cero el precio y el stock
+	// publicados, que es mentira sobre lo que tiene el canal.
+	if err := s.st.GuardarContenidoPublicado(ctx, p.CuentaID, c.ProductoID, c.VarianteID,
+		ref.ListingID, "", ref.VariantID, HashContenido(*c)); err != nil {
 		return err
 	}
 	return s.encolarPrecioYStock(ctx, p.CuentaID, p.VarianteID)

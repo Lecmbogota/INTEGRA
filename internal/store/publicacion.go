@@ -61,7 +61,13 @@ func (s *Store) CandidatosPublicacion(ctx context.Context, cuentaID int64) ([]Ca
 		       COALESCE(v.price, 0),
 		       COALESCE(ep.sale_price, ep.regular_price, 0),
 		       COALESCE(st.total, 0)::int,
-		       COALESCE(pcl.external_id, ''), COALESCE(pcl.content_hash, ''),
+		       COALESCE(pcl.external_id, ''),
+		       -- El hash de contenido se lee de la variante: en
+		       -- product_channel_listings hay una sola fila por producto, así
+		       -- que dos variantes se pisaban el hash entre sí y ninguna
+		       -- coincidía nunca con su catálogo. Se cae al del producto solo
+		       -- para las filas anteriores a la migración 019.
+		       COALESCE(vcl.content_hash, pcl.content_hash, ''),
 		       COALESCE(vcl.price_hash, ''), COALESCE(vcl.stock_hash, ''),
 		       COALESCE(ARRAY(
 		           SELECT i.sha256 FROM producto_imagenes pi
@@ -162,25 +168,102 @@ func (s *Store) GuardarPublicacion(ctx context.Context, cuentaID, productoID, va
 		return fmt.Errorf("guardando la publicación: %w", err)
 	}
 
+	// channel_sku guarda el SKU con el que se publicó, tomado de la variante
+	// en este momento. Se escribía siempre NULL, y por eso RefDePublicacion
+	// tenía que caer en el SKU actual: si alguien renombraba el SKU en Odoo,
+	// los envíos apuntaban a una referencia que el canal no conoce —en
+	// Falabella el SKU *es* la referencia— y la publicación quedaba
+	// inalcanzable sin que nada lo dijera.
 	_, err = tx.Exec(ctx, `
 		INSERT INTO variant_channel_listings
 		    (listing_id, variant_id, channel_account_id, external_variant_id, channel_sku,
-		     status, price_hash, stock_hash, published_price, published_qty,
+		     status, content_hash, price_hash, stock_hash, published_price, published_qty,
 		     last_price_push_at, last_stock_push_at)
-		VALUES ($1,$2,$3,$4,$5,'published',$6,$7,$8,$9, now(), now())
+		VALUES ($1,$2,$3,$4,
+		        (SELECT sku FROM product_variants WHERE id = $2),
+		        'published',$5,$6,$7,$8,$9, now(), now())
 		ON CONFLICT (variant_id, channel_account_id) DO UPDATE
 		SET listing_id = EXCLUDED.listing_id,
 		    external_variant_id = EXCLUDED.external_variant_id,
-		    channel_sku = EXCLUDED.channel_sku, status = 'published',
+		    channel_sku = COALESCE(EXCLUDED.channel_sku, variant_channel_listings.channel_sku),
+		    status = 'published',
+		    content_hash = EXCLUDED.content_hash,
 		    price_hash = EXCLUDED.price_hash, stock_hash = EXCLUDED.stock_hash,
 		    published_price = EXCLUDED.published_price, published_qty = EXCLUDED.published_qty,
 		    last_price_push_at = now(), last_stock_push_at = now(), updated_at = now()`,
-		listingID, varianteID, cuentaID, nulo(varianteExterna), nulo(""),
-		nulo(priceHash), nulo(stockHash), precio, cantidad)
+		listingID, varianteID, cuentaID, nulo(varianteExterna),
+		nulo(contentHash), nulo(priceHash), nulo(stockHash), precio, cantidad)
 	if err != nil {
 		return fmt.Errorf("guardando la variante publicada: %w", err)
 	}
 	return tx.Commit(ctx)
+}
+
+// GuardarContenidoPublicado anota que la ficha se envió, sin tocar el precio
+// ni el stock.
+//
+// Existe aparte de GuardarPublicacion porque actualizar una publicación viva
+// solo manda la ficha: en los cuatro canales el precio y el stock tienen su
+// propio endpoint. Usar GuardarPublicacion en ese camino ponía a cero
+// published_price y published_qty, que es mentira sobre lo que tiene el
+// canal. Los hashes de precio y stock se dejan intactos a propósito: sus
+// trabajos van aparte y son ellos los que deben anotarlos al enviarlos.
+func (s *Store) GuardarContenidoPublicado(ctx context.Context, cuentaID, productoID, varianteID int64,
+	externalID, externalURL, varianteExterna, contentHash string) error {
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	var listingID int64
+	err = tx.QueryRow(ctx, `
+		INSERT INTO product_channel_listings
+		    (product_id, channel_account_id, external_id, external_url, status,
+		     content_hash, last_published_at, last_error, last_error_at)
+		VALUES ($1,$2,$3,$4,'published',$5, now(), NULL, NULL)
+		ON CONFLICT (product_id, channel_account_id) DO UPDATE
+		SET external_id = COALESCE(EXCLUDED.external_id, product_channel_listings.external_id),
+		    external_url = COALESCE(EXCLUDED.external_url, product_channel_listings.external_url),
+		    status = 'published', content_hash = EXCLUDED.content_hash,
+		    last_published_at = now(), last_error = NULL, last_error_at = NULL,
+		    error_count = 0, updated_at = now()
+		RETURNING id`,
+		productoID, cuentaID, nulo(externalID), nulo(externalURL), nulo(contentHash)).Scan(&listingID)
+	if err != nil {
+		return fmt.Errorf("guardando el contenido publicado: %w", err)
+	}
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO variant_channel_listings
+		    (listing_id, variant_id, channel_account_id, external_variant_id, channel_sku,
+		     status, content_hash)
+		VALUES ($1,$2,$3,$4,
+		        (SELECT sku FROM product_variants WHERE id = $2),
+		        'published',$5)
+		ON CONFLICT (variant_id, channel_account_id) DO UPDATE
+		SET listing_id = EXCLUDED.listing_id,
+		    external_variant_id = COALESCE(EXCLUDED.external_variant_id,
+		                                   variant_channel_listings.external_variant_id),
+		    channel_sku = COALESCE(EXCLUDED.channel_sku, variant_channel_listings.channel_sku),
+		    status = 'published', content_hash = EXCLUDED.content_hash, updated_at = now()`,
+		listingID, varianteID, cuentaID, nulo(varianteExterna), nulo(contentHash))
+	if err != nil {
+		return fmt.Errorf("guardando el contenido de la variante: %w", err)
+	}
+	return tx.Commit(ctx)
+}
+
+// GuardarInventarioExterno anota el identificador de inventario que el canal
+// usa para ajustar el stock. Shopify no lo hace sobre la variante sino sobre
+// su inventory_item, que hay que resolver con una llamada aparte: guardarlo
+// ahorra una petición en cada envío de stock, que son los más frecuentes.
+func (s *Store) GuardarInventarioExterno(ctx context.Context, cuentaID, varianteID int64, inventarioID string) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE variant_channel_listings SET inventory_item_id = $3, updated_at = now()
+		WHERE variant_id = $1 AND channel_account_id = $2`, varianteID, cuentaID, nulo(inventarioID))
+	return err
 }
 
 // RefDePublicacion devuelve la referencia externa de una variante ya
@@ -188,7 +271,11 @@ func (s *Store) GuardarPublicacion(ctx context.Context, cuentaID, productoID, va
 func (s *Store) RefDePublicacion(ctx context.Context, cuentaID, varianteID int64) (channel.ExternalRef, error) {
 	var ref channel.ExternalRef
 	err := s.pool.QueryRow(ctx, `
-		SELECT COALESCE(l.external_id,''), COALESCE(v.external_variant_id,''), COALESCE(pv.sku,'')
+		-- Se prefiere el SKU con el que se publicó, no el actual de la
+		-- variante: si alguien lo renombra en Odoo, el canal sigue conociendo
+		-- el viejo, y en Falabella el SKU es la referencia de la publicación.
+		SELECT COALESCE(l.external_id,''), COALESCE(v.external_variant_id,''),
+		       COALESCE(v.channel_sku, pv.sku, '')
 		FROM variant_channel_listings v
 		JOIN product_channel_listings l ON l.id = v.listing_id
 		JOIN product_variants pv ON pv.id = v.variant_id
