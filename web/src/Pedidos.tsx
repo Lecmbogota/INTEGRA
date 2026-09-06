@@ -97,6 +97,31 @@ export function Pedidos() {
     }
   }
 
+  // Despacho: la guía se teclea aquí porque no sale de Odoo (el módulo de
+  // transporte no está instalado). Se guarda por pedido para no perderla al
+  // desplegar otro.
+  const [guias, setGuias] = useState<Record<number, { guia: string; transportadora: string }>>({})
+  const [despachando, setDespachando] = useState<number | null>(null)
+
+  async function despachar(o: Orden) {
+    const g = guias[o.id] ?? { guia: '', transportadora: '' }
+    setDespachando(o.id)
+    setError(null)
+    setNota(null)
+    try {
+      const r = await api.despacharPedido(o.id, g)
+      setNota(r.aviso ?? `Se avisará a ${o.canal} del despacho del pedido ${o.numero || o.external_id}.`)
+      temporizador.current = window.setTimeout(() => {
+        temporizador.current = null
+        void cargar()
+      }, ESPERA_INGESTA_MS)
+    } catch (e) {
+      setError(`No se pudo despachar el pedido ${o.numero || o.external_id}: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setDespachando(null)
+    }
+  }
+
   const visibles = filtro === '' ? ordenes : ordenes.filter((o) => o.estado === filtro)
 
   return (
@@ -237,6 +262,69 @@ export function Pedidos() {
                                 disabled={reintentando === o.id}>
                                 {reintentando === o.id ? 'Reintentando…' : 'Reintentar en Odoo'}
                               </button>
+                            </div>
+                          )}
+
+                          {/* Despacho. Solo tiene sentido con el pedido ya en
+                              Odoo: lo que dispara el aviso al canal es el
+                              albarán validado allí, no este botón. */}
+                          {o.estado === 'created_in_odoo' && (
+                            <div className="bloque-despacho">
+                              {o.despachado_at ? (
+                                <div className="fila">
+                                  <span className="pastilla ok">Canal avisado</span>
+                                  <span className="tenue mini-texto">
+                                    {fecha(o.despachado_at)}
+                                    {o.guia && ` · guía ${o.guia}`}
+                                    {o.transportadora && ` · ${o.transportadora}`}
+                                  </span>
+                                </div>
+                              ) : (
+                                <>
+                                  {/* Que el canal no lo sepa no es un detalle:
+                                      MercadoLibre y Falabella miden el tiempo
+                                      hasta el despacho y, pasado el plazo,
+                                      cancelan y bajan la reputación. */}
+                                  <div className="fila">
+                                    <span className="pastilla aviso">{o.canal} no sabe que salió</span>
+                                    {o.salida_bodega_at && (
+                                      <span className="tenue mini-texto">
+                                        salió de bodega el {fecha(o.salida_bodega_at)}
+                                      </span>
+                                    )}
+                                  </div>
+                                  {o.despacho_error && (
+                                    <div className="mini-texto error">
+                                      Último intento falló: {o.despacho_error}
+                                    </div>
+                                  )}
+                                  <div className="fila apila-movil">
+                                    <input className="expande" placeholder="Guía (opcional)"
+                                      aria-label="Número de guía"
+                                      value={guias[o.id]?.guia ?? o.guia}
+                                      onChange={(e) => setGuias({
+                                        ...guias,
+                                        [o.id]: { guia: e.target.value, transportadora: guias[o.id]?.transportadora ?? o.transportadora },
+                                      })} />
+                                    <input className="expande" placeholder="Transportadora (opcional)"
+                                      aria-label="Transportadora"
+                                      value={guias[o.id]?.transportadora ?? o.transportadora}
+                                      onChange={(e) => setGuias({
+                                        ...guias,
+                                        [o.id]: { guia: guias[o.id]?.guia ?? o.guia, transportadora: e.target.value },
+                                      })} />
+                                    <button className="primario" onClick={() => void despachar(o)}
+                                      disabled={despachando === o.id}>
+                                      {despachando === o.id ? 'Avisando…' : 'Avisar del despacho'}
+                                    </button>
+                                  </div>
+                                  <div className="tenue mini-texto">
+                                    Sin guía también vale: en Mercado Envíos y en Falabella la
+                                    logística la pone el canal. El aviso sale en cuanto el albarán
+                                    esté validado en Odoo.
+                                  </div>
+                                </>
+                              )}
                             </div>
                           )}
                         </td>

@@ -30,6 +30,15 @@ type Orden struct {
 	Intentos     int          `json:"intentos"`
 	SincronAt    *time.Time   `json:"sincronizada_at"`
 	Lineas       []LineaOrden `json:"lineas"`
+
+	// Despacho: si el canal ya sabe que el pedido salió. Nulo en DespachadoAt
+	// significa «todavía no lo sabe», que es lo que hay que poder ver de un
+	// vistazo: es el reloj que corre en MercadoLibre y en Falabella.
+	SalidaBodegaAt *time.Time `json:"salida_bodega_at"`
+	DespachadoAt   *time.Time `json:"despachado_at"`
+	Guia           string     `json:"guia"`
+	Transportadora string     `json:"transportadora"`
+	DespachoError  string     `json:"despacho_error"`
 }
 
 // LineaOrden es una línea del pedido, ya emparejada con la variante local
@@ -487,7 +496,9 @@ func (s *Store) ListarOrdenes(ctx context.Context, limite int) ([]Orden, error) 
 		       COALESCE(o.external_number,''), COALESCE(o.channel_status,''),
 		       o.ordered_at, o.currency, o.total_amount, o.shipping_amount, o.tax_amount,
 		       COALESCE(o.buyer_name,''), o.status::text, o.odoo_sale_order_id,
-		       COALESCE(o.sync_error,''), o.sync_attempts, o.synced_at
+		       COALESCE(o.sync_error,''), o.sync_attempts, o.synced_at,
+		       o.odoo_done_at, o.dispatched_at, COALESCE(o.tracking_number,''),
+		       COALESCE(o.carrier,''), COALESCE(o.dispatch_error,'')
 		FROM channel_orders o
 		JOIN channel_accounts a ON a.id = o.channel_account_id
 		JOIN channels ch ON ch.id = a.channel_id
@@ -503,7 +514,8 @@ func (s *Store) ListarOrdenes(ctx context.Context, limite int) ([]Orden, error) 
 		var o Orden
 		if err := filas.Scan(&o.ID, &o.CuentaID, &o.Canal, &o.ExternalID, &o.Numero,
 			&o.EstadoCanal, &o.FechaPedido, &o.Moneda, &o.Total, &o.Envio, &o.Impuesto,
-			&o.CompradorNom, &o.Estado, &o.OdooPedidoID, &o.Error, &o.Intentos, &o.SincronAt); err != nil {
+			&o.CompradorNom, &o.Estado, &o.OdooPedidoID, &o.Error, &o.Intentos, &o.SincronAt,
+			&o.SalidaBodegaAt, &o.DespachadoAt, &o.Guia, &o.Transportadora, &o.DespachoError); err != nil {
 			return nil, err
 		}
 		out = append(out, o)

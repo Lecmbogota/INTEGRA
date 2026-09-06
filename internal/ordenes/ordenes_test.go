@@ -211,6 +211,16 @@ type odooFalso struct {
 	totalDevuelto float64
 	monedaOdoo    string
 
+	// Albarán de salida del pedido. Vacío significa que no hay ninguno, que
+	// es el estado de un pedido recién montado.
+	albaranEstado string
+	albaranFecha  string
+	// traeGuia simula una instancia con el módulo delivery instalado. La de
+	// MDV no lo tiene, y por eso los campos de transporte no existen.
+	traeGuia   bool
+	guiaOdoo   string
+	transpOdoo string
+
 	mu      sync.Mutex
 	cuerpos map[string]string // modelo → cuerpo del último create
 	creados []string          // modelos creados, en orden
@@ -276,6 +286,35 @@ func (o *odooFalso) despachar(t *testing.T, w http.ResponseWriter, cuerpo string
 	pide := func(s string) bool { return strings.Contains(cuerpo, "<string>"+s+"</string>") }
 
 	switch {
+	// ¿Declara stock.picking los campos de transporte? Sin el módulo delivery
+	// instalado no existen, y pedirlos rompería la lectura del albarán.
+	case pide("stock.picking") && pide("fields_get"):
+		campos := map[string]interface{}{
+			"state":     map[string]interface{}{"type": "selection"},
+			"date_done": map[string]interface{}{"type": "datetime"},
+		}
+		if o.traeGuia {
+			campos["carrier_tracking_ref"] = map[string]interface{}{"type": "char"}
+			campos["carrier_id"] = map[string]interface{}{"type": "many2one"}
+		}
+		responder(w, campos)
+
+	case pide("stock.picking") && pide("search_read"):
+		if o.albaranEstado == "" {
+			responder(w, []interface{}{})
+			return
+		}
+		alb := map[string]interface{}{
+			"id":        int64(700),
+			"state":     o.albaranEstado,
+			"date_done": o.albaranFecha,
+		}
+		if o.traeGuia {
+			alb["carrier_tracking_ref"] = o.guiaOdoo
+			alb["carrier_id"] = []interface{}{int64(3), o.transpOdoo}
+		}
+		responder(w, []interface{}{alb})
+
 	// Idempotencia: no existe ningún pedido con esa referencia.
 	case pide("sale.order") && pide("search_read") && strings.Contains(cuerpo, "client_order_ref"):
 		responder(w, []interface{}{})
@@ -410,6 +449,14 @@ type tiendaFalsa struct {
 	destinos    []store.DestinoStock
 	errDestinos error
 	guardados   int64 // pedidos guardados; numera los ids que devuelve
+
+	// Despacho.
+	porDespachar   *store.OrdenPorDespachar
+	salidaMarcada  bool
+	despachoHecho  bool
+	guiaConfirmada string
+	transpConfirm  string
+	falloDespacho  string
 }
 
 func nuevaTienda() *tiendaFalsa {
@@ -862,4 +909,37 @@ func TestSinStockQueMoverNoSeEncolaNingunEnvio(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ------------------------------------------------------- despacho al canal
+
+func (t *tiendaFalsa) OrdenesPorDespachar(context.Context, int) ([]store.OrdenPorDespachar, error) {
+	if t.porDespachar == nil {
+		return nil, nil
+	}
+	return []store.OrdenPorDespachar{*t.porDespachar}, nil
+}
+
+func (t *tiendaFalsa) OrdenPorDespacharID(_ context.Context, id int64) (*store.OrdenPorDespachar, error) {
+	if t.porDespachar == nil || t.porDespachar.ID != id {
+		return nil, fmt.Errorf("no existe el pedido %d", id)
+	}
+	copia := *t.porDespachar
+	return &copia, nil
+}
+
+func (t *tiendaFalsa) MarcarSalidaDeBodega(context.Context, int64, time.Time) error {
+	t.salidaMarcada = true
+	return nil
+}
+
+func (t *tiendaFalsa) MarcarDespachoConfirmado(_ context.Context, _ int64, guia, transportadora string) error {
+	t.despachoHecho = true
+	t.guiaConfirmada, t.transpConfirm = guia, transportadora
+	return nil
+}
+
+func (t *tiendaFalsa) AnotarFalloDespacho(_ context.Context, _ int64, causa string) error {
+	t.falloDespacho = causa
+	return nil
 }

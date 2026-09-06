@@ -237,6 +237,21 @@ func (p *Planificador) planificarTodas(ctx context.Context, h store.Horario) err
 			return err
 		}
 	}
+
+	// Confirmar al canal lo que ya salió de bodega. Es lo que cierra el ciclo:
+	// MercadoLibre y Falabella miden el tiempo hasta el despacho y, pasado el
+	// plazo, cancelan, reembolsan al comprador y bajan la reputación del
+	// vendedor. El trabajo mira el albarán en Odoo y solo avisa si está
+	// validado, así que encolar de más es inofensivo.
+	porDespachar, err := p.st.OrdenesPorDespachar(ctx, 200)
+	if err != nil {
+		return err
+	}
+	for _, o := range porDespachar {
+		if err := ordenes.EncolarDespacho(ctx, p.cola, o.CuentaID, o.ID); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

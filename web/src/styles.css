@@ -931,3 +931,14 @@ button.enlace:hover:not(:disabled) { background: none; color: var(--acento-hover
   .vacio { padding: 28px 16px; }
   .json-panel pre, .bloque-cmd { font-size: 11px; }
 }
+
+/* Bloque de despacho dentro del detalle de un pedido. Separado del resto
+   porque es una acción con consecuencia fuera de Integra: avisa al canal. */
+.bloque-despacho {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--borde);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}

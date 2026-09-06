@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"math"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mdv/integra/internal/channel"
@@ -73,6 +74,13 @@ type almacen interface {
 	OdooProductIDDeVariante(ctx context.Context, varianteID int64) (int64, error)
 	DatosCompradorDeOrden(ctx context.Context, ordenID int64) (*store.DatosComprador, error)
 	DireccionEnvioDeOrden(ctx context.Context, ordenID int64) (DireccionEnvio, error)
+
+	// Despacho: confirmar al canal que el pedido salió.
+	OrdenesPorDespachar(ctx context.Context, limite int) ([]store.OrdenPorDespachar, error)
+	OrdenPorDespacharID(ctx context.Context, id int64) (*store.OrdenPorDespachar, error)
+	MarcarSalidaDeBodega(ctx context.Context, ordenID int64, cuando time.Time) error
+	MarcarDespachoConfirmado(ctx context.Context, ordenID int64, guia, transportadora string) error
+	AnotarFalloDespacho(ctx context.Context, ordenID int64, causa string) error
 }
 
 // encolador es lo que este paquete necesita de la cola. Es una interfaz, como
@@ -97,6 +105,13 @@ type Servicio struct {
 	// en la ruta de línea de comandos (`integra ordenes`) queda nula y el
 	// montaje se hace en el acto.
 	cola encolador
+
+	// Si el modelo stock.picking de esta instancia declara los campos de
+	// transporte. Se pregunta una vez por proceso: sin el módulo delivery
+	// instalado no existen, y pedirlos rompería la lectura del albarán.
+	guiaMu     sync.Mutex
+	guiaSabida bool
+	guiaHay    bool
 }
 
 func NuevoServicio(st *store.Store, cif *crypto.Cifrador, log *slog.Logger,
@@ -126,6 +141,7 @@ func (s *Servicio) Registrar(w *jobs.Worker) {
 	s.cola = w.Cola()
 	w.Registrar(TrabajoIngerir, s.ingerir)
 	w.Registrar(TrabajoAOdoo, s.montarEnOdoo)
+	w.Registrar(TrabajoDespachar, s.despachar)
 }
 
 // EncolarMontaje pide montar en Odoo un pedido ya ingerido.

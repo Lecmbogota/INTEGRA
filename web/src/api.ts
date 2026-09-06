@@ -283,6 +283,15 @@ export interface Orden {
   intentos: number
   sincronizada_at: string | null
   lineas: LineaOrden[] | null
+
+  // Despacho. despachado_at en nulo significa que el canal todavía no sabe
+  // que el pedido salió, que es el reloj que corre en MercadoLibre y en
+  // Falabella hasta que cancelan y bajan la reputación.
+  salida_bodega_at: string | null
+  despachado_at: string | null
+  guia: string
+  transportadora: string
+  despacho_error: string
 }
 
 export interface ResumenOrdenes {

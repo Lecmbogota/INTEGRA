@@ -91,6 +91,7 @@ func Nuevo(st *store.Store, log *slog.Logger, addr string, alm *imagen.Almacen, 
 	mux.HandleFunc("GET /api/ordenes/resumen", s.resumenOrdenes)
 	mux.HandleFunc("POST /api/cuentas/{id}/ingerir-ordenes", s.ingerirOrdenes)
 	mux.HandleFunc("POST /api/ordenes/{id}/reintentar", s.reintentarOrden)
+	mux.HandleFunc("POST /api/ordenes/{id}/despachar", s.despacharOrden)
 	mux.HandleFunc("GET /api/publicaciones", s.publicaciones)
 	mux.HandleFunc("POST /api/cuentas/{id}/planificar", s.planificar)
 	mux.HandleFunc("GET /api/cuentas", s.cuentas)
