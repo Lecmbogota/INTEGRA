@@ -594,9 +594,11 @@ func (s *Store) DescontarStockPublicado(ctx context.Context, ordenID int64) (flo
 		if l.cantidad <= 0 {
 			continue
 		}
-		// Solo las bodegas que alimentan esta cuenta, y todas si no tiene
-		// ninguna asignada: es el mismo criterio con el que se calculó el
-		// stock que se publicó, así que se descuenta de donde se ofreció.
+		// Solo las bodegas que alimentan esta cuenta: es el criterio con el
+		// que se calculó el stock que se publicó, así que se descuenta de
+		// donde se ofreció. Sin asignación se descuenta de todas: esa cuenta
+		// ya no publica (CandidatosPublicacion se niega), pero la venta pudo
+		// entrar igual por una ficha anterior, y bajar stock nunca sobrevende.
 		// FOR UPDATE serializa dos pedidos simultáneos de la misma variante.
 		bodegas, err := tx.Query(ctx, `
 			SELECT vs.odoo_warehouse_id, vs.qty_on_hand

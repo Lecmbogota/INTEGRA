@@ -45,16 +45,28 @@ type CandidatoPublicacion struct {
 
 // CandidatosPublicacion arma la foto del catálogo publicable para una cuenta,
 // con el precio ya ajustado por la comisión del canal y el stock limitado a
-// las bodegas asignadas a esa cuenta (todas si no hay ninguna asignada).
+// las bodegas asignadas a esa cuenta.
+//
+// Sin bodegas asignadas se niega (ErrCuentaSinBodegas) en vez de sumar todas.
+// «Todas» fue el valor por defecto desde el primer esquema, y como nada las
+// asignaba, cada canal publicaba también Muestras, Garantías y el stock
+// consignado en las bodegas de Falabella: WooCommerce ofrecía unidades que
+// estaban en el centro de distribución de Falabella y la venta había que
+// cancelarla. El desglose por bodega existe justo para no contar eso.
 func (s *Store) CandidatosPublicacion(ctx context.Context, cuentaID int64) ([]CandidatoPublicacion, error) {
-	var canalCodigo string
+	var canalCodigo, nombreCuenta string
 	var comision, costoFijo float64
+	var conBodegas bool
 	err := s.pool.QueryRow(ctx, `
-		SELECT ch.code, ch.comision_pct, ch.costo_fijo
+		SELECT ch.code, ch.comision_pct, ch.costo_fijo, a.name,
+		       EXISTS (SELECT 1 FROM channel_account_warehouses w WHERE w.channel_account_id = a.id)
 		FROM channel_accounts a JOIN channels ch ON ch.id = a.channel_id
-		WHERE a.id = $1 AND a.active`, cuentaID).Scan(&canalCodigo, &comision, &costoFijo)
+		WHERE a.id = $1 AND a.active`, cuentaID).Scan(&canalCodigo, &comision, &costoFijo, &nombreCuenta, &conBodegas)
 	if err != nil {
 		return nil, fmt.Errorf("no existe la cuenta %d: %w", cuentaID, err)
+	}
+	if !conBodegas {
+		return nil, fmt.Errorf("la cuenta %q %w", nombreCuenta, ErrCuentaSinBodegas)
 	}
 	canal := Canal{Codigo: canalCodigo, ComisionPct: comision, CostoFijo: costoFijo}
 
@@ -91,10 +103,9 @@ func (s *Store) CandidatosPublicacion(ctx context.Context, cuentaID int64) ([]Ca
 		    SELECT sum(vs.qty_on_hand) AS total
 		    FROM variant_stock vs
 		    WHERE vs.variant_id = v.id
-		      AND (NOT EXISTS (SELECT 1 FROM channel_account_warehouses w WHERE w.channel_account_id = $1)
-		           OR vs.odoo_warehouse_id IN (
-		               SELECT w.odoo_warehouse_id FROM channel_account_warehouses w
-		               WHERE w.channel_account_id = $1))
+		      AND vs.odoo_warehouse_id IN (
+		          SELECT w.odoo_warehouse_id FROM channel_account_warehouses w
+		          WHERE w.channel_account_id = $1)
 		) st ON TRUE
 		LEFT JOIN category_mappings cm ON cm.odoo_categ_path = p.categ_path
 		     AND cm.channel_account_id IS NULL AND cm.confirmado_at IS NOT NULL

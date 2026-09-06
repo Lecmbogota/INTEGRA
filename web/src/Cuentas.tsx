@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { api, fecha, type CredencialesCanal, type CuentaCanal } from './api'
+import { api, fecha, num, type BodegaCuenta, type CredencialesCanal, type CuentaCanal } from './api'
 
 // Conexión de las cuentas de canal. Las credenciales viajan una sola vez al
 // guardar (se cifran en el servidor) y nunca vuelven a la interfaz: aquí solo
@@ -59,6 +59,7 @@ export function Cuentas() {
   const [cargando, setCargando] = useState(true)
   const [abriendo, setAbriendo] = useState<string | null>(null)
   const [probando, setProbando] = useState<number | null>(null)
+  const [bodegasDe, setBodegasDe] = useState<CuentaCanal | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const cargar = useCallback(() => {
@@ -103,12 +104,27 @@ export function Cuentas() {
                         ? `✓ ${cuenta.probada_msg} · ${fecha(cuenta.probada_at)}`
                         : `✗ ${cuenta.probada_msg}`}
                 </div>
+                {/* Sin bodegas la cuenta no publica nada, y nada en el canal
+                    lo delata: hay que decirlo aquí, en texto. */}
+                {cuenta && (
+                  <div className="tenue mini-texto">
+                    {cuenta.bodegas === 0
+                      ? 'Sin bodegas asignadas: no se publica nada en este canal hasta asignarlas.'
+                      : `Publica el stock de ${cuenta.bodegas} ${cuenta.bodegas === 1 ? 'bodega' : 'bodegas'}.`}
+                  </div>
+                )}
               </div>
               {/* Estado y botones viajan juntos: al apilarse la fila en el
                   móvil quedan en una línea bajo el nombre, no en tres. */}
               <div className="grupo-acciones">
                 {cuenta && cuenta.probada_ok === true && <span className="pastilla ok">Conectado</span>}
                 {cuenta && cuenta.probada_ok === false && <span className="pastilla bloqueante">Falla</span>}
+                {cuenta && cuenta.bodegas === 0 && <span className="pastilla bloqueante">Sin bodegas</span>}
+                {cuenta && (
+                  <button onClick={() => setBodegasDe(cuenta)}>
+                    {cuenta.bodegas === 0 ? 'Asignar bodegas' : 'Bodegas'}
+                  </button>
+                )}
                 {cuenta && (
                   <button onClick={() => void probar(cuenta.id)} disabled={probando === cuenta.id}>
                     {probando === cuenta.id ? 'Probando…' : 'Probar'}
@@ -128,6 +144,12 @@ export function Cuentas() {
           yaConectada={cuentas.some((x) => x.canal === abriendo)}
           onCerrar={() => setAbriendo(null)}
           onGuardada={() => { setAbriendo(null); cargar() }} />
+      )}
+      {bodegasDe && (
+        <HojaBodegas cuenta={bodegasDe}
+          nombreCanal={CANALES.find((c) => c.codigo === bodegasDe.canal)?.nombre ?? bodegasDe.canal}
+          onCerrar={() => setBodegasDe(null)}
+          onGuardada={() => { setBodegasDe(null); cargar() }} />
       )}
     </section>
   )
@@ -226,6 +248,109 @@ function FormularioCuenta({ def, yaConectada, onCerrar, onGuardada }: {
           <button onClick={onCerrar} disabled={guardando}>Cancelar</button>
           <button className="primario" onClick={() => void guardar()} disabled={guardando}>
             {guardando ? 'Guardando y probando…' : 'Guardar y probar'}
+          </button>
+        </footer>
+      </div>
+    </div>
+  )
+}
+
+// Qué bodegas de Odoo alimentan el stock que se publica en este canal.
+//
+// Sin asignación la cuenta no publica nada: el valor por defecto de «todas»
+// ofrecía en WooCommerce unidades consignadas en las bodegas de Falabella, y
+// la venta había que cancelarla. Por eso no se puede guardar en blanco:
+// desmarcar todas las casillas pararía el canal sin querer.
+function HojaBodegas({ cuenta, nombreCanal, onCerrar, onGuardada }: {
+  cuenta: CuentaCanal
+  nombreCanal: string
+  onCerrar: () => void
+  onGuardada: () => void
+}) {
+  const [bodegas, setBodegas] = useState<BodegaCuenta[] | null>(null)
+  const [marcadas, setMarcadas] = useState<Set<number>>(new Set())
+  const [guardando, setGuardando] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    api.bodegasCuenta(cuenta.id)
+      .then((bs) => {
+        setBodegas(bs)
+        setMarcadas(new Set(bs.filter((b) => b.asignada).map((b) => b.id)))
+      })
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+  }, [cuenta.id])
+
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onCerrar() }
+    window.addEventListener('keydown', h)
+    return () => window.removeEventListener('keydown', h)
+  }, [onCerrar])
+
+  function alternar(id: number) {
+    setMarcadas((antes) => {
+      const ahora = new Set(antes)
+      if (ahora.has(id)) ahora.delete(id)
+      else ahora.add(id)
+      return ahora
+    })
+  }
+
+  async function guardar() {
+    setGuardando(true)
+    setError(null)
+    try {
+      await api.asignarBodegasCuenta(cuenta.id, Array.from(marcadas))
+      onGuardada()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+      setGuardando(false)
+    }
+  }
+
+  // Con una sola conexión de Odoo, su nombre en cada línea es ruido.
+  const variasConexiones = new Set((bodegas ?? []).map((b) => b.conexion)).size > 1
+
+  return (
+    <div className="capa" onClick={onCerrar}>
+      <div className="hoja hoja-editor" onClick={(e) => e.stopPropagation()}>
+        <header className="hoja-cabecera">
+          <div>
+            <h2>Bodegas de {nombreCanal}</h2>
+            <div className="sub">El canal publica la suma del stock de las bodegas marcadas. El cambio sale en la próxima planificación.</div>
+          </div>
+          <button onClick={onCerrar}>Cerrar ✕</button>
+        </header>
+
+        {error && <div className="aviso-caja">Error: {error}</div>}
+        {bodegas === null && !error && <div className="vacio">Cargando bodegas…</div>}
+        {bodegas !== null && bodegas.length === 0 && (
+          <div className="vacio">
+            Todavía no hay bodegas de Odoo: sincroniza primero desde «Integraciones».
+          </div>
+        )}
+        {bodegas !== null && bodegas.length > 0 && (
+          <div className="form-edicion">
+            {bodegas.map((b) => (
+              <label key={b.id} className="ancha casilla">
+                <input type="checkbox" checked={marcadas.has(b.id)} onChange={() => alternar(b.id)} />
+                <span>
+                  {variasConexiones && `${b.conexion} · `}{b.codigo} · {b.nombre}
+                  <span className="tenue"> ({num(b.unidades)} unidades)</span>
+                </span>
+              </label>
+            ))}
+            {marcadas.size === 0 && (
+              <small className="ancha tenue">Marca al menos una bodega: sin ninguna, el canal no publica.</small>
+            )}
+          </div>
+        )}
+
+        <footer className="hoja-pie">
+          <button onClick={onCerrar} disabled={guardando}>Cancelar</button>
+          <button className="primario" onClick={() => void guardar()}
+            disabled={guardando || bodegas === null || marcadas.size === 0}>
+            {guardando ? 'Guardando…' : 'Guardar'}
           </button>
         </footer>
       </div>
