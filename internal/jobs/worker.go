@@ -43,10 +43,22 @@ func NuevoWorker(cola *Cola, log *slog.Logger, concurrencia int, tick time.Durat
 
 // Registrar asocia un tipo de trabajo con su manejador. Los conectores de
 // canal se registran aquí desde sus paquetes.
+// Cola devuelve la cola sobre la que trabaja este worker, para que un
+// servicio registrado pueda encolar trabajos derivados (ingerir un pedido
+// encola su montaje en Odoo) sin que haya que pasarle la cola por separado.
+func (w *Worker) Cola() *Cola { return w.cola }
+
 func (w *Worker) Registrar(kind string, h Handler) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.manejores[kind] = h
+}
+
+// Maneja indica si hay un manejador registrado para ese tipo de trabajo.
+// Encolar un tipo que nadie atiende deja el trabajo en la cola para siempre.
+func (w *Worker) Maneja(kind string) bool {
+	_, ok := w.manejador(kind)
+	return ok
 }
 
 func (w *Worker) manejador(kind string) (Handler, bool) {

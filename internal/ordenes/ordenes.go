@@ -44,6 +44,10 @@ type Servicio struct {
 	log *slog.Logger
 	// abrirOdoo se inyecta para no duplicar aquí el descifrado de la conexión.
 	abrirOdoo func(context.Context) (*odoo.Client, error)
+	// cola encola el montaje en Odoo de cada pedido ingerido. La rellena
+	// Registrar con la cola del worker; en la ruta de línea de comandos
+	// (`integra ordenes`) queda nula y el montaje se hace en el acto.
+	cola *jobs.Cola
 }
 
 func NuevoServicio(st *store.Store, cif *crypto.Cifrador, log *slog.Logger,
@@ -52,8 +56,25 @@ func NuevoServicio(st *store.Store, cif *crypto.Cifrador, log *slog.Logger,
 }
 
 func (s *Servicio) Registrar(w *jobs.Worker) {
+	s.cola = w.Cola()
 	w.Registrar(TrabajoIngerir, s.ingerir)
 	w.Registrar(TrabajoAOdoo, s.montarEnOdoo)
+}
+
+// EncolarMontaje pide montar en Odoo un pedido ya ingerido.
+//
+// Sin esto la ingesta dejaba los pedidos en 'received' para siempre: el
+// manejador de orden_a_odoo estaba registrado pero nadie lo encolaba, así que
+// el pedido solo llegaba a Odoo si alguien ejecutaba `integra ordenes` a mano.
+// La clave única evita que dos pasadas encolen dos veces el mismo pedido.
+func EncolarMontaje(ctx context.Context, cola *jobs.Cola, cuentaID, ordenID int64) error {
+	_, err := cola.Encolar(ctx, TrabajoAOdoo, payloadOdoo{OrdenID: ordenID},
+		jobs.Opciones{
+			UniqueKey: fmt.Sprintf("%s:%d", TrabajoAOdoo, ordenID),
+			Priority:  5, // igual que la ingesta: un pedido sin montar cuesta dinero
+			CuentaID:  cuentaID,
+		})
+	return err
 }
 
 // EncolarIngesta pide traer los pedidos nuevos de una cuenta.
@@ -132,7 +153,7 @@ func (s *Servicio) ingerir(ctx context.Context, t jobs.Trabajo) error {
 			})
 		}
 
-		_, nuevo, err := s.st.GuardarOrden(ctx, d)
+		ordenID, nuevo, err := s.st.GuardarOrden(ctx, d)
 		if err != nil {
 			return err
 		}
@@ -150,6 +171,15 @@ func (s *Servicio) ingerir(ctx context.Context, t jobs.Trabajo) error {
 		}
 		nuevos++
 		s.log.Info("pedido nuevo", "canal", ad.Kind(), "numero", o.Number, "total", o.Total)
+		// El montaje va en su propio trabajo: si Odoo está caído, se
+		// reintenta con backoff sin arrastrar a la ingesta, que ya hizo su
+		// parte y no debe repetir la llamada al canal.
+		if s.cola != nil {
+			if err := EncolarMontaje(ctx, s.cola, p.CuentaID, ordenID); err != nil {
+				s.log.Error("no se pudo encolar el montaje en Odoo",
+					"pedido", o.Number, "orden_id", ordenID, "error", err)
+			}
+		}
 	}
 
 	if err := s.st.ActualizarWatermarkOrdenes(ctx, p.CuentaID, maxFecha, ""); err != nil {
@@ -170,19 +200,12 @@ func (s *Servicio) montarEnOdoo(ctx context.Context, t jobs.Trabajo) error {
 	if err := json.Unmarshal(t.Payload, &p); err != nil {
 		return fmt.Errorf("payload ilegible: %w", err)
 	}
-	pendientes, err := s.st.OrdenesPendientesOdoo(ctx, 200)
+	orden, err := s.st.OrdenPendientePorID(ctx, p.OrdenID)
 	if err != nil {
 		return err
 	}
-	var orden *store.Orden
-	for i := range pendientes {
-		if pendientes[i].ID == p.OrdenID {
-			orden = &pendientes[i]
-			break
-		}
-	}
 	if orden == nil {
-		return nil // ya está creado o descartado: nada que hacer
+		return nil // ya está creado, descartado o agotó los intentos
 	}
 	return s.CrearPedido(ctx, *orden)
 }
@@ -234,10 +257,10 @@ func (s *Servicio) CrearPedido(ctx context.Context, o store.Orden) error {
 			return err
 		}
 		lineas = append(lineas, []interface{}{0, 0, map[string]interface{}{
-			"product_id":       odooProductID,
-			"product_uom_qty":  l.Cantidad,
-			"price_unit":       l.PrecioUnit,
-			"name":             l.Titulo,
+			"product_id":      odooProductID,
+			"product_uom_qty": l.Cantidad,
+			"price_unit":      l.PrecioUnit,
+			"name":            l.Titulo,
 		}})
 	}
 
@@ -290,8 +313,8 @@ func (s *Servicio) resolverCliente(ctx context.Context, cli *odoo.Client, o stor
 		nombre = "Comprador " + strings.ToUpper(o.Canal)
 	}
 	valores := map[string]interface{}{
-		"name":     nombre,
-		"comment":  "Creado por Integra desde " + o.Canal + " (pedido " + o.Numero + ")",
+		"name":          nombre,
+		"comment":       "Creado por Integra desde " + o.Canal + " (pedido " + o.Numero + ")",
 		"customer_rank": 1,
 	}
 	if datos.Email != "" {

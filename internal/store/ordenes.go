@@ -11,36 +11,36 @@ import (
 
 // Orden es un pedido de un canal tal como lo guarda Integra.
 type Orden struct {
-	ID           int64      `json:"id"`
-	CuentaID     int64      `json:"cuenta_id"`
-	Canal        string     `json:"canal"`
-	ExternalID   string     `json:"external_id"`
-	Numero       string     `json:"numero"`
-	EstadoCanal  string     `json:"estado_canal"`
-	FechaPedido  time.Time  `json:"fecha_pedido"`
-	Moneda       string     `json:"moneda"`
-	Total        float64    `json:"total"`
-	Envio        float64    `json:"envio"`
-	Impuesto     float64    `json:"impuesto"`
-	CompradorNom string     `json:"comprador"`
-	Estado       string     `json:"estado"`
-	OdooPedidoID *int64     `json:"odoo_pedido_id"`
-	Error        string     `json:"error"`
-	Intentos     int        `json:"intentos"`
-	SincronAt    *time.Time `json:"sincronizada_at"`
+	ID           int64        `json:"id"`
+	CuentaID     int64        `json:"cuenta_id"`
+	Canal        string       `json:"canal"`
+	ExternalID   string       `json:"external_id"`
+	Numero       string       `json:"numero"`
+	EstadoCanal  string       `json:"estado_canal"`
+	FechaPedido  time.Time    `json:"fecha_pedido"`
+	Moneda       string       `json:"moneda"`
+	Total        float64      `json:"total"`
+	Envio        float64      `json:"envio"`
+	Impuesto     float64      `json:"impuesto"`
+	CompradorNom string       `json:"comprador"`
+	Estado       string       `json:"estado"`
+	OdooPedidoID *int64       `json:"odoo_pedido_id"`
+	Error        string       `json:"error"`
+	Intentos     int          `json:"intentos"`
+	SincronAt    *time.Time   `json:"sincronizada_at"`
 	Lineas       []LineaOrden `json:"lineas"`
 }
 
 // LineaOrden es una línea del pedido, ya emparejada con la variante local
 // cuando el SKU se pudo reconocer.
 type LineaOrden struct {
-	ID         int64    `json:"id"`
-	SKU        string   `json:"sku"`
-	Titulo     string   `json:"titulo"`
-	Cantidad   float64  `json:"cantidad"`
-	PrecioUnit float64  `json:"precio_unitario"`
-	Total      float64  `json:"total"`
-	VarianteID *int64   `json:"variante_id"`
+	ID         int64   `json:"id"`
+	SKU        string  `json:"sku"`
+	Titulo     string  `json:"titulo"`
+	Cantidad   float64 `json:"cantidad"`
+	PrecioUnit float64 `json:"precio_unitario"`
+	Total      float64 `json:"total"`
+	VarianteID *int64  `json:"variante_id"`
 }
 
 // DatosOrden es lo que entrega un adaptador para guardar.
@@ -187,6 +187,42 @@ func (s *Store) OrdenesPendientesOdoo(ctx context.Context, limite int) ([]Orden,
 		}
 	}
 	return out, nil
+}
+
+// OrdenPendientePorID devuelve un pedido concreto si sigue pendiente de
+// montarse en Odoo, o nil si ya se creó, se descartó o agotó los intentos.
+//
+// Existe aparte de OrdenesPendientesOdoo porque aquella corta a un límite:
+// buscar dentro de esa lista hace que un pedido que quede fuera del corte se
+// dé por montado sin haberse creado nunca.
+func (s *Store) OrdenPendientePorID(ctx context.Context, id int64) (*Orden, error) {
+	var o Orden
+	err := s.pool.QueryRow(ctx, `
+		SELECT o.id, o.channel_account_id, ch.code, o.external_order_id,
+		       COALESCE(o.external_number,''), COALESCE(o.channel_status,''),
+		       o.ordered_at, o.currency, o.total_amount, o.shipping_amount, o.tax_amount,
+		       COALESCE(o.buyer_name,''), o.status::text, o.odoo_sale_order_id,
+		       COALESCE(o.sync_error,''), o.sync_attempts, o.synced_at
+		FROM channel_orders o
+		JOIN channel_accounts a ON a.id = o.channel_account_id
+		JOIN channels ch ON ch.id = a.channel_id
+		WHERE o.id = $1 AND o.status IN ('received','mapped','failed') AND o.sync_attempts < 5`, id).
+		Scan(&o.ID, &o.CuentaID, &o.Canal, &o.ExternalID, &o.Numero,
+			&o.EstadoCanal, &o.FechaPedido, &o.Moneda, &o.Total, &o.Envio, &o.Impuesto,
+			&o.CompradorNom, &o.Estado, &o.OdooPedidoID,
+			&o.Error, &o.Intentos, &o.SincronAt)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("leyendo el pedido %d: %w", id, err)
+	}
+	lineas, err := s.LineasDeOrden(ctx, o.ID)
+	if err != nil {
+		return nil, err
+	}
+	o.Lineas = lineas
+	return &o, nil
 }
 
 func (s *Store) LineasDeOrden(ctx context.Context, ordenID int64) ([]LineaOrden, error) {

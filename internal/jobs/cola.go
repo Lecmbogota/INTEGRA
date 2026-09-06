@@ -20,6 +20,10 @@ type Cola struct{ pool *pgxpool.Pool }
 
 func NuevaCola(pool *pgxpool.Pool) *Cola { return &Cola{pool: pool} }
 
+// Pool expone el pool para consultas puntuales sobre la tabla de trabajos
+// (lo usan las pruebas de integración para comprobar lo que quedó encolado).
+func (c *Cola) Pool() *pgxpool.Pool { return c.pool }
+
 // Trabajo es lo que recibe un manejador.
 type Trabajo struct {
 	ID          int64

@@ -20,12 +20,12 @@ import (
 
 // Tipos de alerta que levanta la vigilancia.
 const (
-	AlertaTokenVencido   = "token_vencido"
-	AlertaPedidoSinMapear = "pedido_sin_mapear"
-	AlertaPedidoFallido  = "pedido_fallido"
-	AlertaPublicacionErr = "publicacion_con_error"
+	AlertaTokenVencido     = "token_vencido"
+	AlertaPedidoSinMapear  = "pedido_sin_mapear"
+	AlertaPedidoFallido    = "pedido_fallido"
+	AlertaPublicacionErr   = "publicacion_con_error"
 	AlertaTrabajosFallidos = "trabajos_fallidos"
-	AlertaSinStock       = "sin_stock_publicado"
+	AlertaSinStock         = "sin_stock_publicado"
 )
 
 type Planificador struct {
@@ -166,6 +166,19 @@ func (p *Planificador) planificarTodas(ctx context.Context, h store.Horario) err
 		// Los pedidos se traen en la misma pasada: es lo más urgente y
 		// aprovecha que ya se está hablando con el canal.
 		if err := ordenes.EncolarIngesta(ctx, p.cola, c.ID); err != nil {
+			return err
+		}
+	}
+	// Red de seguridad para el montaje en Odoo: la ingesta encola cada pedido
+	// nuevo, pero un pedido guardado antes de que existiera ese encolado, o
+	// uno cuyo trabajo se perdió, se quedaría en 'received' para siempre. Esta
+	// pasada los recupera; la clave única del trabajo evita duplicarlos.
+	pendientes, err := p.st.OrdenesPendientesOdoo(ctx, 200)
+	if err != nil {
+		return err
+	}
+	for _, o := range pendientes {
+		if err := ordenes.EncolarMontaje(ctx, p.cola, o.CuentaID, o.ID); err != nil {
 			return err
 		}
 	}
