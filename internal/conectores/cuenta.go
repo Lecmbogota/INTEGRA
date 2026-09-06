@@ -31,7 +31,7 @@ func AdaptadorDeCuenta(ctx context.Context, st *store.Store, cif *crypto.Cifrado
 	if err := json.Unmarshal([]byte(claro), &campos); err != nil {
 		return nil, fmt.Errorf("credenciales ilegibles de la cuenta %d: %w", cuentaID, err)
 	}
-	return channel.New(channel.Kind(canalCodigo), channel.Config{
+	ad, err := channel.New(channel.Kind(canalCodigo), channel.Config{
 		AccountID:   cuentaID,
 		Credentials: campos,
 		PersistCredentials: func(ctx context.Context, cred map[string]string) error {
@@ -46,4 +46,17 @@ func AdaptadorDeCuenta(ctx context.Context, st *store.Store, cif *crypto.Cifrado
 			return st.ActualizarCredenciales(ctx, cuentaID, cifrada)
 		},
 	})
+	if err != nil {
+		return nil, err
+	}
+
+	// El cupo se aplica aquí, en el único sitio por el que pasan todos los
+	// adaptadores: el worker dispara tantas llamadas a la vez como
+	// concurrencia tenga, y sin freno la publicación inicial del catálogo
+	// provoca 429 en cadena que vuelven a la cola y repiten la tormenta.
+	rps, burst, err := st.CupoDeCuenta(ctx, cuentaID)
+	if err != nil {
+		return nil, err
+	}
+	return conCupo{Adapter: ad, lim: limitadorDe(cuentaID, rps, burst)}, nil
 }

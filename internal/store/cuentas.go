@@ -133,6 +133,21 @@ func (s *Store) ActualizarCredenciales(ctx context.Context, id int64, credencial
 	return nil
 }
 
+// CupoDeCuenta devuelve el ritmo máximo de llamadas al canal de esa cuenta.
+//
+// Se lee aparte de las credenciales porque no es un secreto y porque el
+// limitador se comparte entre todos los adaptadores de la cuenta, mientras
+// que las credenciales se releen en cada trabajo.
+func (s *Store) CupoDeCuenta(ctx context.Context, id int64) (rps float64, burst int, err error) {
+	err = s.pool.QueryRow(ctx, `
+		SELECT rate_limit_rps, rate_limit_burst FROM channel_accounts WHERE id = $1`,
+		id).Scan(&rps, &burst)
+	if err == pgx.ErrNoRows {
+		return 0, 0, fmt.Errorf("no existe la cuenta %d", id)
+	}
+	return rps, burst, err
+}
+
 // AnotarPrueba guarda el resultado de la última prueba de conexión.
 func (s *Store) AnotarPrueba(ctx context.Context, id int64, ok bool, msg string) error {
 	extra, err := json.Marshal(map[string]any{
