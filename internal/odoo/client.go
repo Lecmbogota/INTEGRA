@@ -8,6 +8,7 @@
 package odoo
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/url"
@@ -36,6 +37,19 @@ type Client struct {
 	common *xmlrpc.Client
 	object *xmlrpc.Client
 	uid    int64
+}
+
+// ConContexto devuelve una copia del cliente cuyas llamadas se cortan cuando
+// el contexto se cancela.
+//
+// Sin esto, apagar el worker no abortaba la llamada en curso a Odoo: el
+// proceso se quedaba esperando la respuesta, y una cadena lenta podía superar
+// el lease del trabajo y acabar con dos workers creando el mismo pedido.
+func (c *Client) ConContexto(ctx context.Context) *Client {
+	copia := *c
+	copia.common = c.common.ConContexto(ctx)
+	copia.object = c.object.ConContexto(ctx)
+	return &copia
 }
 
 // Connect autentica contra la instancia y devuelve un cliente listo para usar.

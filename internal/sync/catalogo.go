@@ -82,6 +82,14 @@ func (s *Sincronizador) Catalogo(ctx context.Context, conexionID int64, desde ti
 	inicio := time.Now()
 	res := &Resultado{}
 
+	// Un sync completo son decenas de llamadas a Odoo. Atarlas al contexto es
+	// lo que hace que apagar el worker, o cancelar desde la interfaz, corte de
+	// verdad en vez de esperar a que Odoo responda una por una.
+	if s.cli != nil {
+		defer func(original *odoo.Client) { s.cli = original }(s.cli)
+		s.cli = s.cli.ConContexto(ctx)
+	}
+
 	almacenes, mapaAlmacenes, err := s.sincronizarAlmacenes(ctx, conexionID)
 	if err != nil {
 		return nil, err

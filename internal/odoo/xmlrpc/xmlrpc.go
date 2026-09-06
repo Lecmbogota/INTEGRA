@@ -15,6 +15,7 @@ package xmlrpc
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/xml"
 	"fmt"
@@ -39,14 +40,40 @@ func (f *Fault) Error() string {
 type Client struct {
 	Endpoint string
 	HTTP     *http.Client
+	// ctx, si se fija con ConContexto, corta las llamadas cuando el trabajo
+	// que las originó se cancela.
+	ctx context.Context
 }
+
+// Timeout por llamada.
+//
+// Eran 180 segundos, por encima de lo razonable y peligrosamente cerca del
+// lease de cinco minutos del worker: crear un pedido encadena hasta cinco
+// llamadas (autenticar, buscar el pedido, buscar el cliente, crearlo, crear el
+// pedido), así que con un Odoo lento se superaba el lease, otro worker
+// reclamaba el mismo trabajo y ambos creaban el sale.order —Odoo no impone
+// unicidad sobre client_order_ref—. Noventa segundos deja margen para la
+// cadena entera dentro del lease.
+const timeoutLlamada = 90 * time.Second
 
 // New construye un cliente con un timeout razonable para lecturas masivas.
 func New(endpoint string) *Client {
 	return &Client{
 		Endpoint: endpoint,
-		HTTP:     &http.Client{Timeout: 180 * time.Second},
+		HTTP:     &http.Client{Timeout: timeoutLlamada},
 	}
+}
+
+// ConContexto devuelve una copia cuyas llamadas respetan el contexto dado.
+//
+// Va como copia y no como parámetro de Call para no cambiar la firma que usan
+// decenas de sitios: quien tenga contexto lo adopta, y el resto sigue igual.
+// Sin esto, apagar el worker no abortaba la llamada en curso y el proceso se
+// quedaba esperando la respuesta de Odoo.
+func (c *Client) ConContexto(ctx context.Context) *Client {
+	copia := *c
+	copia.ctx = ctx
+	return &copia
 }
 
 // Call invoca un método remoto y devuelve el valor decodificado.
@@ -56,7 +83,11 @@ func (c *Client) Call(method string, params ...interface{}) (interface{}, error)
 		return nil, fmt.Errorf("codificando petición %s: %w", method, err)
 	}
 
-	req, err := http.NewRequest(http.MethodPost, c.Endpoint, bytes.NewReader(body))
+	ctx := c.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.Endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
