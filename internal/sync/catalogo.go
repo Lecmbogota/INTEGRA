@@ -64,7 +64,7 @@ func (s *Sincronizador) Catalogo(ctx context.Context, conexionID int64, desde ti
 
 	for offset := 0; ; offset += tamañoPagina {
 		filas, err := s.cli.SearchRead("product.product", dominio,
-			[]string{"default_code", "name", "product_tmpl_id", "write_date"},
+			[]string{"default_code", "name", "product_tmpl_id", "categ_id", "write_date"},
 			map[string]interface{}{
 				"limit": tamañoPagina, "offset": offset, "order": "id",
 			})
@@ -82,6 +82,10 @@ func (s *Sincronizador) Catalogo(ctx context.Context, conexionID int64, desde ti
 				OdooProductID:  r.ID(),
 				Nombre:         r.Str("name"),
 				SKU:            r.Str("default_code"),
+				// La categoría es identificador, no dato comercial: es lo que
+				// category_mappings traduce a la categoría de cada canal.
+				CategPath:   r.RefName("categ_id"),
+				OdooCategID: r.RefID("categ_id"),
 			}
 			if ts, ok := r.Time("write_date"); ok {
 				ident.OdooWriteDate = &ts

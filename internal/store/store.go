@@ -283,7 +283,15 @@ type Identidad struct {
 	OdooProductID  int64
 	Nombre         string
 	SKU            string
-	OdooWriteDate  *time.Time
+	// CategPath es la categoría interna de Odoo con su ruta completa
+	// ("Todo / Ventas / Impresoras"). No es dato comercial —eso es propiedad
+	// de Integra— sino el identificador con el que category_mappings traduce
+	// a la categoría de cada canal. Sin él, MercadoLibre y Falabella
+	// rechazan toda publicación por falta de categoría.
+	CategPath   string
+	OdooCategID int64
+
+	OdooWriteDate *time.Time
 }
 
 // UpsertIdentidad guarda o refresca la identidad de un producto sin rozar los
@@ -299,14 +307,23 @@ func (s *Store) UpsertIdentidad(ctx context.Context, conexionID int64, ident Ide
 	}
 	defer tx.Rollback(ctx)
 
+	// La categoría entra en el ON CONFLICT porque es identidad, no dato
+	// comercial: si en Odoo mueven un producto de categoría, el mapeo al
+	// canal tiene que seguirlo. COALESCE evita que una lectura sin el campo
+	// (una instancia que no lo exponga) borre la categoría ya conocida.
 	err = tx.QueryRow(ctx, `
-		INSERT INTO products (odoo_connection_id, odoo_template_id, name, odoo_write_date, synced_at)
-		VALUES ($1,$2,$3,$4, now())
+		INSERT INTO products (odoo_connection_id, odoo_template_id, name,
+		                      categ_path, odoo_categ_id, odoo_write_date, synced_at)
+		VALUES ($1,$2,$3,$4,$5,$6, now())
 		ON CONFLICT (odoo_connection_id, odoo_template_id) DO UPDATE
-		SET name = EXCLUDED.name, odoo_write_date = EXCLUDED.odoo_write_date,
+		SET name = EXCLUDED.name,
+		    categ_path = COALESCE(EXCLUDED.categ_path, products.categ_path),
+		    odoo_categ_id = COALESCE(EXCLUDED.odoo_categ_id, products.odoo_categ_id),
+		    odoo_write_date = EXCLUDED.odoo_write_date,
 		    synced_at = now(), updated_at = now()
 		RETURNING id`,
-		conexionID, ident.OdooTemplateID, ident.Nombre, ident.OdooWriteDate).Scan(&prodID)
+		conexionID, ident.OdooTemplateID, ident.Nombre,
+		nulo(ident.CategPath), nuloInt(ident.OdooCategID), ident.OdooWriteDate).Scan(&prodID)
 	if err != nil {
 		return 0, 0, fmt.Errorf("guardando producto %d: %w", ident.OdooTemplateID, err)
 	}
@@ -394,4 +411,13 @@ func nulo(s string) any {
 		return nil
 	}
 	return s
+}
+
+// nuloInt convierte el cero en NULL, para que un campo ausente en la lectura
+// de Odoo no pise con un cero el valor que ya estaba guardado.
+func nuloInt(n int64) any {
+	if n == 0 {
+		return nil
+	}
+	return n
 }
