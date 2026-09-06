@@ -45,6 +45,40 @@ principal.
 
 ---
 
+## Avance
+
+### Ola 0 — hecha (2026-09-05)
+
+Repositorio git creado con commit de línea base, `datos/` (409 MB) excluido,
+finales de línea fijados. Puertas verificadas en limpio: `go build`, `go vet`,
+`go test ./...` (20 paquetes), `tsc -b` y `vite build` del frontend.
+
+### Ola 1 — auditoría, en curso
+
+Los 10 auditores salieron; 7 devolvieron 79 hallazgos (2 críticos, 11 altos,
+34 medios, 32 bajos) antes de que el límite de sesión matara la verificación.
+Se recuperaron del diario y se reanudó con el esfuerzo graduado por
+severidad: dos lentes más desempate para lo crítico y alto, una lente para lo
+medio, revisión manual para lo bajo. Faltaban tres dimensiones por correr
+(núcleo, WooCommerce, Falabella).
+
+### Arreglos ya aplicados y verificados a mano
+
+Cuatro hallazgos se confirmaron con evidencia propia (no solo del auditor) y
+se corrigieron sin esperar a la verificación:
+
+| Commit | Qué estaba roto | Prueba de que lo estaba |
+|---|---|---|
+| `2bd652b` | Los pedidos ingeridos nunca se montaban solos en Odoo: el manejador estaba registrado y nadie encolaba el trabajo. Solo llegaban con `integra ordenes` a mano | `grep` de `TrabajoAOdoo`: dos apariciones, la constante y el registro |
+| `77e5dae` | `products.categ_path` no lo escribía nadie: sin categoría, MercadoLibre y Falabella rechazan toda publicación | 545 productos, 0 con categoría; los 55 mapeos casaban con 0. Tras el arreglo: 545 con categoría, 55 mapeos casando, 241 productos publicables |
+| `6fee68d` | Contraseñas en claro en `audit_logs`, servidas a cualquier rol de solo lectura | El cuerpo de la petición entero iba a `RegistrarAuditoria`; el endpoint exigía solo `viewer` |
+| `2ece854` | El banco de imágenes vivía en disco efímero; faltaba `INTEGRA_PUBLIC_BASE_URL`, `restart` y rotación de logs; no había `.dockerignore` | `docker compose config` sin volumen ni esas variables |
+
+Todo con `go test ./...` en verde y prueba nueva en `internal/ordenes` que
+vigila el cableado que faltaba.
+
+---
+
 ## Ola 0 — Preparación (yo, sin agentes)
 
 1. `git init` + commit de línea base. Sin esto no hay trabajo en paralelo
