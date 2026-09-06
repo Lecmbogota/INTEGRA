@@ -2,6 +2,7 @@ package falabella
 
 import (
 	"context"
+	"encoding/json"
 	"encoding/xml"
 	"io"
 	"net/http"
@@ -719,8 +720,113 @@ func TestFetchOrdersPaginaConOffset(t *testing.T) {
 		t.Errorf("el cursor no se tradujo a Offset: %q y %q",
 			llamadas[0].Query.Get("Offset"), llamadas[1].Query.Get("Offset"))
 	}
-	if llamadas[0].Query.Get("SortBy") != "created_at" || llamadas[0].Query.Get("SortDirection") != "ASC" {
-		t.Errorf("sin orden ascendente por fecha la marca de agua puede saltarse pedidos: %v", llamadas[0].Query)
+	if llamadas[0].Query.Get("SortBy") != "updated_at" || llamadas[0].Query.Get("SortDirection") != "ASC" {
+		t.Errorf("sin orden ascendente por fecha de modificación la marca de agua puede saltarse pedidos: %v", llamadas[0].Query)
+	}
+}
+
+// TestFetchOrdersPideLoModificadoYLeeElEstado: el conector filtraba por
+// CreatedAfter y no leía Statuses ni UpdatedAt. Un pedido ya ingerido que
+// Falabella cancelaba no volvía a bajar nunca —cancelar no crea nada— y, si
+// bajaba, llegaba sin estado: el núcleo lo montaba en Odoo como venta viva y
+// el stock apartado no volvía.
+func TestFetchOrdersPideLoModificadoYLeeElEstado(t *testing.T) {
+	s := nuevoServidor(t)
+	s.responde("GetOrders", `{"SuccessResponse":{"Body":{"Orders":{"Order":
+		{"OrderId":1001,"OrderNumber":200001,"CreatedAt":"2026-09-01 10:00:00",
+		 "UpdatedAt":"2026-09-03 09:30:00","Price":"45990.00",
+		 "Statuses":{"Status":"canceled"},"AddressShipping":{"City":"Bogotá"}}}}}}`)
+	s.responde("GetOrderItems", itemsPedido(
+		`{"OrderItemId":"101311982","Sku":"AO-NU-1001","ItemPrice":"45990.00","Status":"canceled"}`))
+
+	desde := time.Date(2026, 9, 2, 8, 0, 0, 0, time.UTC)
+	pag, err := s.adaptador().FetchOrders(context.Background(), desde, channel.Cursor{})
+	if err != nil {
+		t.Fatalf("FetchOrders devolvió error: %v", err)
+	}
+
+	q := s.llamadasDe("GetOrders")[0].Query
+	if q.Get("UpdatedAfter") != "2026-09-02T08:00:00+0000" || q.Has("CreatedAfter") {
+		t.Errorf("hay que pedir lo modificado desde la marca, no lo creado: %v", q)
+	}
+	if q.Get("SortBy") != "updated_at" {
+		t.Errorf("la marca de agua avanza por modificación: el orden tiene que ser el mismo: %v", q)
+	}
+
+	if len(pag.Orders) != 1 {
+		t.Fatalf("se esperaba un pedido: %+v", pag.Orders)
+	}
+	o := pag.Orders[0]
+	if o.Status != "canceled" {
+		t.Errorf("el estado no llegó al núcleo: %q", o.Status)
+	}
+	if quiere := time.Date(2026, 9, 3, 9, 30, 0, 0, time.UTC); !o.UpdatedAt.Equal(quiere) {
+		t.Errorf("UpdatedAt = %v, se esperaba %v: sin él la marca de agua no avanza por la cancelación",
+			o.UpdatedAt, quiere)
+	}
+	// Con todas las líneas canceladas muere el pedido entero, y las líneas se
+	// conservan como registro de lo que se había vendido.
+	if len(o.Lines) != 1 {
+		t.Errorf("las líneas del pedido cancelado tenían que conservarse: %+v", o.Lines)
+	}
+}
+
+// TestFetchOrdersNoDaPorMuertoUnPedidoConLineasVivas: Falabella cancela por
+// artículo. Con una unidad anulada y otra pendiente el pedido sigue vivo —hay
+// algo que despachar—, pero la unidad muerta no puede llegar a Odoo como si no.
+func TestFetchOrdersNoDaPorMuertoUnPedidoConLineasVivas(t *testing.T) {
+	s := nuevoServidor(t)
+	s.responde("GetOrders", `{"SuccessResponse":{"Body":{"Orders":{"Order":
+		{"OrderId":1001,"OrderNumber":200001,"CreatedAt":"2026-09-01 10:00:00",
+		 "UpdatedAt":"2026-09-03 09:30:00","Statuses":{"Status":["pending","canceled"]}}}}}}`)
+	s.responde("GetOrderItems", itemsPedido(
+		`{"OrderItemId":"1","Sku":"AO-NU-1001","ItemPrice":"45990.00","Status":"pending"}`,
+		`{"OrderItemId":"2","Sku":"AO-NU-1001","ItemPrice":"45990.00","Status":"canceled"}`))
+
+	pag, err := s.adaptador().FetchOrders(context.Background(), time.Time{}, channel.Cursor{})
+	if err != nil {
+		t.Fatalf("FetchOrders devolvió error: %v", err)
+	}
+	if len(pag.Orders) != 1 {
+		t.Fatalf("se esperaba un pedido: %+v", pag.Orders)
+	}
+	o := pag.Orders[0]
+	if o.Status != "pending,canceled" {
+		t.Errorf("el estado tenía que dejar a la vista la cancelación parcial sin dar el pedido por muerto: %q", o.Status)
+	}
+	if len(o.Lines) != 1 || o.Lines[0].ExternalID != "1" {
+		t.Errorf("solo la unidad viva tenía que quedar como línea: %+v", o.Lines)
+	}
+}
+
+// TestEstadoDelPedidoSoloEsCanceladoSiLoEstanTodasLasLineas fija el resumen:
+// mandan las líneas, la cabecera vale solo cuando no dicen nada, y "canceled"
+// a secas —lo único que el núcleo reconoce como venta muerta— solo aparece
+// cuando no queda ninguna viva.
+func TestEstadoDelPedidoSoloEsCanceladoSiLoEstanTodasLasLineas(t *testing.T) {
+	casos := []struct {
+		nombre   string
+		lineas   []string
+		cabecera string
+		quiere   string
+	}{
+		{"todas canceladas", []string{"canceled", "canceled"}, `{"Status":"canceled"}`, "canceled"},
+		{"una viva", []string{"Canceled", "pending"}, `{"Status":["canceled","pending"]}`, "canceled,pending"},
+		{"la cabecera no manda sobre las líneas", []string{"pending"}, `{"Status":"canceled"}`, "pending"},
+		{"sin estado en las líneas, uno en la cabecera", []string{"", ""}, `{"Status":"canceled"}`, "canceled"},
+		{"sin estado en las líneas, varios en la cabecera", nil, `{"Status":["pending","canceled"]}`, "pending,canceled"},
+		{"como lo escribe otra respuesta", []string{"Ready To Ship"}, ``, "ready_to_ship"},
+		{"sin nada", nil, `""`, ""},
+		{"cabecera ilegible", nil, `{"Status":{"raro":1}}`, ""},
+	}
+	for _, c := range casos {
+		var items []itemResp
+		for _, e := range c.lineas {
+			items = append(items, itemResp{Status: e})
+		}
+		if got := estadoDelPedido(items, json.RawMessage(c.cabecera)); got != c.quiere {
+			t.Errorf("%s: estadoDelPedido = %q, se esperaba %q", c.nombre, got, c.quiere)
+		}
 	}
 }
 
@@ -935,5 +1041,21 @@ func TestListaSCAceptaLasTresFormas(t *testing.T) {
 				t.Fatalf("%s: se esperaban %d y llegaron %d", nombre, c.cuantos, len(out))
 			}
 		})
+	}
+}
+
+// TestListaSCAceptaElValorSuelto: cuando los elementos son valores simples, el
+// colapso a uno solo deja una cadena y no un objeto:
+// <Statuses><Status>pending</Status></Statuses> llega como {"Status":"pending"}.
+// Sin esta forma el estado del pedido era ilegible justo cuando solo había uno,
+// que es lo normal.
+func TestListaSCAceptaElValorSuelto(t *testing.T) {
+	uno, err := listaSC[string]([]byte(`{"Status":"pending"}`), "Status")
+	if err != nil || len(uno) != 1 || uno[0] != "pending" {
+		t.Fatalf("el estado único no se leyó: %v, %v", uno, err)
+	}
+	varios, err := listaSC[string]([]byte(`{"Status":["pending","canceled"]}`), "Status")
+	if err != nil || len(varios) != 2 {
+		t.Fatalf("la lista de estados no se leyó: %v, %v", varios, err)
 	}
 }

@@ -161,7 +161,8 @@ func TestEsCancelado(t *testing.T) {
 		{"delivered", false, "entregado no es cancelado"},
 		{"failed", false, "pago rechazado que el comprador reintenta"},
 		{"partially_refunded", false, "devolvió dinero, no la mercancía entera"},
-		{"", false, "Falabella no reporta estado: no se puede suponer"},
+		{"pending,canceled", false, "Falabella con una unidad anulada y otra viva: sigue habiendo qué despachar"},
+		{"", false, "un canal que no reporte estado: no se puede suponer"},
 	}
 	for _, c := range casos {
 		if got := esCancelado(c.estado); got != c.cancelado {
