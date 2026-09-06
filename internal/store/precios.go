@@ -106,15 +106,24 @@ func (s *Store) GuardarReglaPrecioCanal(ctx context.Context, r ReglaPrecioCanal)
 		return id, err
 	}
 
-	_, err := s.pool.Exec(ctx, `
+	// La regla tiene que ser de la cuenta indicada: si no, se editaría la de
+	// otra cuenta y quien guarda recalcularía los precios de la equivocada.
+	et, err := s.pool.Exec(ctx, `
 		UPDATE channel_price_rules
 		SET brand_id = $2, categ_path_prefix = $3, adjustment_type = $4,
 		    adjustment_value = $5, round_to = $6, min_margin_percent = $7,
 		    priority = $8, active = $9, updated_at = now()
-		WHERE id = $1`,
+		WHERE id = $1 AND channel_account_id = $10`,
 		r.ID, r.BrandID, r.CategPathPrefix, r.AdjustmentType,
-		r.AdjustmentValue, r.RoundTo, r.MinMarginPercent, r.Priority, r.Active)
-	return r.ID, err
+		r.AdjustmentValue, r.RoundTo, r.MinMarginPercent, r.Priority, r.Active,
+		r.ChannelAccountID)
+	if err != nil {
+		return 0, err
+	}
+	if et.RowsAffected() == 0 {
+		return 0, fmt.Errorf("no existe la regla %d en la cuenta %d", r.ID, r.ChannelAccountID)
+	}
+	return r.ID, nil
 }
 
 // OverridesDeCuenta devuelve los overrides manuales fijados para una cuenta.

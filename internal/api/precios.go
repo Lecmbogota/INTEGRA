@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -110,6 +111,9 @@ func (s *Server) guardarReglaPrecio(w http.ResponseWriter, r *http.Request) {
 		s.fallo(w, err)
 		return
 	}
+	// La regla ya está escrita, pero el canal publica effective_prices: sin
+	// rehacerlos, «+8% en la marca X» no sale nunca de la base.
+	s.refrescarPreciosDeCuenta(r.Context(), cuentaID)
 
 	escribir(w, http.StatusOK, map[string]any{
 		"ok": true,
@@ -160,6 +164,7 @@ func (s *Server) guardarOverridePrecio(w http.ResponseWriter, r *http.Request) {
 		s.fallo(w, err)
 		return
 	}
+	s.refrescarPreciosDeCuenta(r.Context(), req.ChannelAccountID)
 
 	escribir(w, http.StatusOK, map[string]any{"ok": true})
 }
@@ -182,8 +187,31 @@ func (s *Server) eliminarOverridePrecio(w http.ResponseWriter, r *http.Request) 
 		s.fallo(w, err)
 		return
 	}
+	// Retirar el override también mueve el precio: sin rehacerlo, el canal se
+	// queda con el precio pactado después de haberlo quitado.
+	s.refrescarPreciosDeCuenta(r.Context(), cuentaID)
 
 	escribir(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// refrescarPreciosDeCuenta rehace effective_prices de una cuenta después de
+// tocar sus overrides o sus reglas: lo mismo que hace refrescarPreciosEfectivos
+// tras editar un precio, acotado a la única cuenta que cambia.
+//
+// Sin este paso lo guardado se veía en la base y en la respuesta, pero no
+// llegaba al canal: el motor publica lo que hay en effective_prices, y lo único
+// que aplica overrides y reglas es RecalcularPreciosCuenta, que solo invocaban
+// el botón manual y las promociones. Un precio pactado se guardaba con ok:true
+// y se seguía vendiendo al precio anterior.
+//
+// El error no se le devuelve a quien edita, con el mismo criterio que el
+// refresco global: lo guardado ya está guardado. Queda en el log y el siguiente
+// horario vuelve a recalcular antes de planificar.
+func (s *Server) refrescarPreciosDeCuenta(ctx context.Context, cuentaID int64) {
+	if _, err := s.st.RecalcularPreciosCuenta(ctx, cuentaID); err != nil {
+		s.log.Error("recalculando los precios efectivos de la cuenta tras editar sus precios",
+			"cuenta", cuentaID, "error", err)
+	}
 }
 
 type reqOferta struct {

@@ -190,6 +190,15 @@ func (p *Planificador) planificarTodas(ctx context.Context, h store.Horario) err
 		if h.CuentaID != nil && *h.CuentaID != c.ID {
 			continue
 		}
+		// Los precios efectivos se rehacen antes de comparar hashes: el motor
+		// publica lo que hay en effective_prices y nada más lo refresca solo.
+		// Un override o una regla cuyo recálculo falló en la petición, un
+		// precio cargado por plantilla o una comisión editada se quedaban
+		// publicados al precio anterior hasta que alguien pulsara «recalcular
+		// precios» cuenta por cuenta.
+		if _, err := p.st.RecalcularPreciosCuenta(ctx, c.ID); err != nil {
+			return fmt.Errorf("recalculando precios de la cuenta %d: %w", c.ID, err)
+		}
 		if _, err := publicar.Planificar(ctx, p.st, p.cola, c.ID); err != nil {
 			// Una cuenta sin bodegas asignadas no publica, pero eso no puede
 			// dejar sin planificar a las demás ni sin traer sus propios
