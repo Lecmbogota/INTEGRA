@@ -120,21 +120,50 @@ func (s *Store) CredencialesDeCuenta(ctx context.Context, id int64) (canalCodigo
 	return
 }
 
-// ActualizarCredenciales reemplaza la credencial cifrada de una cuenta sin
-// tocar nada más. Lo usan los canales que rotan tokens (MercadoLibre canjea
-// el refresh token en cada uso); no borra el resultado de la última prueba
-// porque la credencial sigue siendo la misma cuenta, solo renovada.
-func (s *Store) ActualizarCredenciales(ctx context.Context, id int64, credencialCifrada []byte) error {
-	tag, err := s.pool.Exec(ctx, `
-		UPDATE channel_accounts SET credentials_enc = $2, updated_at = now()
-		WHERE id = $1`, id, credencialCifrada)
+// RotarCredenciales ejecuta fn con la credencial cifrada de una cuenta tal
+// como está guardada en ese instante y con la fila bloqueada, y reemplaza la
+// credencial por lo que fn devuelva (nula = no cambió nada) sin tocar nada
+// más: no borra el resultado de la última prueba porque la credencial sigue
+// siendo la misma cuenta, solo renovada.
+//
+// El bloqueo dura toda la transacción, es decir también mientras fn habla
+// con el canal, y eso es lo que se busca: MercadoLibre canjea el refresh
+// token en cada uso e invalida el anterior, así que dos canjes a la vez
+// —dos trabajos del worker, o el worker y el panel probando la conexión—
+// dejan a uno con un token muerto, y si ese es el que guarda último, la
+// cuenta entera. FOR UPDATE serializa el canje entre procesos, y releer la
+// fila dentro del bloqueo es lo que permite al segundo ver lo que guardó el
+// primero. Los lectores no esperan: solo se retrasan las escrituras de esa
+// fila, y como mucho lo que tarda una llamada al canal.
+func (s *Store) RotarCredenciales(ctx context.Context, id int64, fn func(cifrada []byte) ([]byte, error)) error {
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("actualizando la credencial de la cuenta %d: %w", id, err)
+		return err
 	}
-	if tag.RowsAffected() == 0 {
+	defer tx.Rollback(ctx)
+
+	var cifrada []byte
+	err = tx.QueryRow(ctx,
+		`SELECT credentials_enc FROM channel_accounts WHERE id = $1 FOR UPDATE`, id).Scan(&cifrada)
+	if err == pgx.ErrNoRows {
 		return fmt.Errorf("no existe la cuenta %d", id)
 	}
-	return nil
+	if err != nil {
+		return fmt.Errorf("bloqueando la credencial de la cuenta %d: %w", id, err)
+	}
+	nueva, err := fn(cifrada)
+	if err != nil {
+		return err
+	}
+	if nueva == nil {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE channel_accounts SET credentials_enc = $2, updated_at = now()
+		WHERE id = $1`, id, nueva); err != nil {
+		return fmt.Errorf("actualizando la credencial de la cuenta %d: %w", id, err)
+	}
+	return tx.Commit(ctx)
 }
 
 // CupoDeCuenta devuelve el ritmo máximo de llamadas al canal de esa cuenta.

@@ -37,7 +37,7 @@ func init() {
 			appSecret: cfg.Credentials["app_secret"],
 			refresh:   cfg.Credentials["refresh_token"],
 			token:     cfg.Credentials["access_token"],
-			persistir: cfg.PersistCredentials,
+			rotar:     cfg.RotateCredentials,
 			base:      conectores.URLBaseML,
 			cli:       &http.Client{Timeout: 30 * time.Second},
 			// Plantilla de la URL pública de rastreo de la transportadora
@@ -49,6 +49,16 @@ func init() {
 		}
 		if a.token == "" && (a.refresh == "" || a.appID == "" || a.appSecret == "") {
 			return nil, fmt.Errorf("hace falta un access token, o app_id + app_secret + refresh_token")
+		}
+		if a.rotar == nil {
+			// Sin base con la que serializar ni donde guardar (pruebas,
+			// herramientas de línea de comandos) el canje se hace en memoria
+			// y el refresh token nuevo vive lo que viva el adaptador.
+			a.rotar = func(ctx context.Context,
+				fn func(context.Context, map[string]string) (map[string]string, error)) error {
+				_, err := fn(ctx, nil)
+				return err
+			}
 		}
 		return a, nil
 	})
@@ -74,7 +84,9 @@ type Adaptador struct {
 	appSecret string
 	cli       *http.Client
 	base      string
-	persistir func(context.Context, map[string]string) error
+	// rotar canjea el refresh token con la cuenta bloqueada y sobre lo que
+	// haya guardado en ese momento; ver channel.Config.RotateCredentials.
+	rotar func(context.Context, func(context.Context, map[string]string) (map[string]string, error)) error
 
 	plantillaSeguimiento string
 
@@ -1159,48 +1171,63 @@ func (a *Adaptador) buscarPorSKU(ctx context.Context, sku string) (*channel.Exte
 // ML rota el refresh token en cada canje e invalida el anterior, así que el
 // nuevo se guarda en memoria y, si hay dónde, también en la base: si el
 // proceso muere con el nuevo solo en memoria, el siguiente arranque canjea
-// el viejo y ML responde invalid_grant.
+// el viejo y ML responde invalid_grant. Y como cada trabajo construye su
+// propio adaptador, el canje se hace con la cuenta bloqueada en la base y
+// sobre lo que haya guardado en ese instante: si otro adaptador —de este
+// worker, del panel o de otro proceso— canjeó antes, se adopta su token en
+// vez de quemar el nuestro, que ML ya dio por muerto.
 func (a *Adaptador) accessToken(ctx context.Context) (string, error) {
 	a.mu.Lock()
+	defer a.mu.Unlock()
 	// Se refresca un minuto antes de caducar para no perder una llamada por
 	// el camino.
 	if a.token != "" && (a.expira.IsZero() || time.Now().Before(a.expira.Add(-time.Minute))) {
-		tok := a.token
-		a.mu.Unlock()
-		return tok, nil
+		return a.token, nil
 	}
 	if a.refresh == "" || a.appID == "" || a.appSecret == "" {
-		tok := a.token // solo hay token fijo: se usa hasta que falle
-		a.mu.Unlock()
-		return tok, nil
+		return a.token, nil // solo hay token fijo: se usa hasta que falle
 	}
 
-	// El canje se hace con el candado tomado: dos llamadas concurrentes que
-	// refrescaran a la vez se invalidarían el refresh token entre sí.
-	t, err := conectores.RefrescarTokenML(ctx, a.appID, a.appSecret, a.refresh)
+	// El candado de la instancia sigue tomado durante el canje: dos llamadas
+	// concurrentes del mismo adaptador tampoco deben refrescar a la vez.
+	canjeado := false
+	err := a.rotar(ctx, func(ctx context.Context, guardadas map[string]string) (map[string]string, error) {
+		if g := guardadas["refresh_token"]; g != "" && g != a.refresh {
+			// Alguien canjeó antes: el refresh token que traemos ya no vale
+			// y el guardado sí. Con su access token basta; sin él (una
+			// reautorización recién pegada en el panel) se canjea el adoptado.
+			a.refresh, a.token, a.expira = g, guardadas["access_token"], time.Time{}
+			if a.token != "" {
+				return nil, nil
+			}
+		}
+		t, err := conectores.RefrescarTokenML(ctx, a.appID, a.appSecret, a.refresh)
+		if err != nil {
+			return nil, err
+		}
+		canjeado = true
+		a.token = t.AccessToken
+		if t.RefreshToken != "" {
+			a.refresh = t.RefreshToken
+		}
+		a.expira = time.Now().Add(time.Duration(t.ExpiresIn) * time.Second)
+		// Se escribe sobre el juego guardado y no sobre uno nuevo: app_id,
+		// la plantilla de seguimiento y lo demás que no rota tiene que
+		// sobrevivir al canje.
+		nuevas := make(map[string]string, len(guardadas)+2)
+		for k, v := range guardadas {
+			nuevas[k] = v
+		}
+		nuevas["refresh_token"], nuevas["access_token"] = a.refresh, a.token
+		return nuevas, nil
+	})
+	if err != nil && canjeado {
+		return "", fmt.Errorf("el token de MercadoLibre se renovó pero no se pudo guardar el refresh token nuevo: %w", err)
+	}
 	if err != nil {
-		a.mu.Unlock()
 		return "", err
 	}
-	a.token = t.AccessToken
-	if t.RefreshToken != "" {
-		a.refresh = t.RefreshToken
-	}
-	a.expira = time.Now().Add(time.Duration(t.ExpiresIn) * time.Second)
-	tok := a.token
-	cred := map[string]string{
-		"app_id": a.appID, "app_secret": a.appSecret,
-		"refresh_token": a.refresh, "access_token": a.token,
-	}
-	persistir := a.persistir
-	a.mu.Unlock()
-
-	if persistir != nil {
-		if err := persistir(ctx, cred); err != nil {
-			return "", fmt.Errorf("el token de MercadoLibre se renovó pero no se pudo guardar el refresh token nuevo: %w", err)
-		}
-	}
-	return tok, nil
+	return a.token, nil
 }
 
 func (a *Adaptador) llamar(ctx context.Context, metodo, ruta string, q url.Values, cuerpo any, out any) error {
