@@ -315,6 +315,87 @@ export interface CuentaCanal {
   probada_msg: string
 }
 
+
+// ---------------------------------------------------------------- usuarios
+
+export interface UsuarioCuenta {
+  id: number
+  email: string
+  name: string
+  role: 'admin' | 'operator' | 'viewer'
+  active: boolean
+  last_login_at: string | null
+  created_at: string
+}
+
+export interface RegistroAuditoria {
+  id: number
+  usuario: string
+  accion: string
+  entidad: string
+  entidad_id: string
+  ip: string
+  creado_at: string
+  before?: unknown
+  after?: unknown
+}
+
+// --------------------------------------------------------------- mediateca
+
+export interface ImagenBanco {
+  id: number
+  sha256: string
+  ancho: number
+  alto: number
+  bytes: number
+  formato: string
+  // Productos a los que está vinculada. Vacío = huérfana: ocupa disco y no
+  // la publica nadie.
+  productos: { variante_id: number; sku: string; nombre: string; principal: boolean }[]
+  verificacion: '' | 'ok' | 'dudosa' | 'sin_verificar'
+}
+
+export interface PaginaImagenes {
+  total: number
+  limite: number
+  offset: number
+  items: ImagenBanco[]
+  // Los tres números que mueven decisiones, calculados sobre TODO el banco y
+  // no sobre la página: cuántos productos no pueden publicarse por falta de
+  // foto, cuántas fotos son demasiado pequeñas para los canales, y cuánto
+  // disco ocupa lo que no pertenece a ningún producto.
+  productos_sin_foto: number
+  pequenas: number
+  bytes_huerfanos: number
+}
+
+export type FiltroMediateca = 'todas' | 'aptas' | 'pequenas' | 'huerfanas' | 'duplicadas' | 'dudosas'
+
+// ----------------------------------------------------- destinos de avisos
+
+export interface DestinoAviso {
+  id: number
+  tipo: 'email'
+  nombre: string
+  min_severidad: 'info' | 'warning' | 'error' | 'critical'
+  activo: boolean
+  ultimo_envio: string | null
+  ultimo_error: string
+  // La configuración nunca vuelve del servidor: lleva la contraseña SMTP.
+  // Solo se manda al guardar.
+  destinatarios: string[]
+}
+
+export interface ConfigSMTP {
+  host: string
+  puerto: number
+  usuario: string
+  password: string
+  remitente: string
+  destinatarios: string[]
+  sin_tls?: boolean
+}
+
 // Los campos usados dependen del canal; el resto se omite.
 export interface CredencialesCanal {
   tienda?: string
@@ -494,6 +575,69 @@ export const api = {
   // Cierra la sesión en el servidor. Sin esto, la cookie que dejó el login
   // sigue siendo una credencial válida hasta 24 h después.
   cerrarSesion: () => pedir<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
+
+  // ---- usuarios y auditoría (solo administradores) ----
+  usuarios: () => pedir<UsuarioCuenta[]>('/api/usuarios'),
+
+  crearUsuario: (u: { email: string; name: string; password: string; role: string }) =>
+    pedir<{ ok: boolean; id: number }>('/api/usuarios', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(u),
+    }),
+
+  editarUsuario: (id: number, campos: { name?: string; role?: string; active?: boolean; password?: string }) =>
+    pedir<{ ok: boolean }>(`/api/usuarios/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(campos),
+    }),
+
+  auditoria: (p?: { entidad?: string; limite?: number }) => {
+    const q = new URLSearchParams()
+    if (p?.entidad) q.set('entity', p.entidad)
+    if (p?.limite) q.set('limite', String(p.limite))
+    return pedir<{ items: RegistroAuditoria[] }>(`/api/auditoria?${q}`)
+  },
+
+  // ---- mediateca ----
+  banco: (p?: { filtro?: FiltroMediateca; q?: string; limite?: number; offset?: number }) => {
+    const q = new URLSearchParams()
+    if (p?.filtro && p.filtro !== 'todas') q.set('filtro', p.filtro)
+    if (p?.q) q.set('q', p.q)
+    q.set('limite', String(p?.limite ?? 60))
+    q.set('offset', String(p?.offset ?? 0))
+    return pedir<PaginaImagenes>(`/api/imagenes?${q}`)
+  },
+
+  borrarDelBanco: (id: number) =>
+    pedir<{ estado: string }>(`/api/imagenes/${id}`, { method: 'DELETE' }),
+
+  // ---- destinos de avisos ----
+  destinosAviso: () => pedir<DestinoAviso[]>('/api/avisos/destinos'),
+
+  guardarDestinoAviso: (d: { id?: number; nombre: string; min_severidad: string; activo: boolean; config: ConfigSMTP }) =>
+    pedir<{ ok: boolean; id: number }>('/api/avisos/destinos', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(d),
+    }),
+
+  borrarDestinoAviso: (id: number) =>
+    pedir<{ estado: string }>(`/api/avisos/destinos/${id}`, { method: 'DELETE' }),
+
+  // Manda un correo de prueba: una configuración SMTP que nadie ha probado no
+  // se descubre rota hasta el día que hay una alerta de verdad.
+  probarDestinoAviso: (id: number) =>
+    pedir<{ ok: boolean; mensaje: string }>(`/api/avisos/destinos/${id}/probar`, { method: 'POST' }),
+
+  // ---- despacho ----
+  despacharPedido: (ordenID: number, envio: { guia: string; transportadora: string }) =>
+    pedir<{ estado: string; aviso?: string }>(`/api/ordenes/${ordenID}/despachar`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(envio),
+    }),
 
   sincronizar: () => pedir<{ estado: string }>('/api/sincronizar', { method: 'POST' }),
 

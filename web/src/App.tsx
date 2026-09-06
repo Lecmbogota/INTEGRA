@@ -16,6 +16,9 @@ import { Prioridad } from './Prioridad'
 import { Atributos } from './Atributos'
 import { Automatizacion } from './Automatizacion'
 import { Integraciones } from './Integraciones'
+import { Usuarios } from './Usuarios'
+import { Mediateca } from './Mediateca'
+import { Avisos } from './Avisos'
 import { Sidebar, type Seccion } from './Sidebar'
 
 export default function App() {
@@ -219,7 +222,7 @@ function Aplicacion({ sesion, onSalir }: { sesion: Sesion; onSalir: () => void }
           <Catalogo marcas={marcas} categorias={categorias} onVer={(id) => setPreview(id)} onCambio={() => void cargarPanel()} />
         )}
 
-        {seccion === 'imagenes' && (
+        {seccion === 'mediateca' && (
           <>
             <header className="principal">
               <div>
@@ -250,11 +253,7 @@ function Aplicacion({ sesion, onSalir }: { sesion: Sesion; onSalir: () => void }
               </div>
             )}
 
-            <div className="nota-previa">
-              Las imágenes se gestionan por producto: abre cualquiera desde <strong>Productos</strong>
-              {' '}para subir, quitar o elegir portada. La búsqueda masiva de arriba cubre
-              todo el catálogo de una vez.
-            </div>
+            <Mediateca />
           </>
         )}
 
@@ -273,6 +272,8 @@ function Aplicacion({ sesion, onSalir }: { sesion: Sesion; onSalir: () => void }
           </>
         )}
 
+        {seccion === 'usuarios' && <Usuarios />}
+        {seccion === 'avisos' && <Avisos />}
         {seccion === 'atributos' && <Atributos />}
         {seccion === 'automatizacion' && <Automatizacion />}
 

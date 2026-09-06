@@ -4,9 +4,9 @@ import { Marca } from './Logo'
 // va a vender, luego lo que hace falta para publicarlo, después la venta y,
 // al final, la configuración que rara vez se toca.
 export type Seccion =
-  | 'panel' | 'catalogo' | 'imagenes'
+  | 'panel' | 'catalogo' | 'imagenes' | 'mediateca'
   | 'publicacion' | 'categorias' | 'atributos' | 'canales' | 'integraciones'
-  | 'pedidos' | 'automatizacion'
+  | 'pedidos' | 'automatizacion' | 'usuarios' | 'avisos'
 
 type Item = { id: Seccion; nombre: string; icono: JSX.Element; insignia?: number }
 
@@ -25,7 +25,7 @@ export function Sidebar({ actual, onIr, avisos, pedidosPendientes, alertas, usua
       items: [
         { id: 'panel', nombre: 'Panel', icono: <IconoPanel /> },
         { id: 'catalogo', nombre: 'Productos', icono: <IconoCaja />, insignia: avisos },
-        { id: 'imagenes', nombre: 'Imágenes', icono: <IconoImagen /> },
+        { id: 'mediateca', nombre: 'Imágenes', icono: <IconoImagen /> },
       ],
     },
     {
@@ -48,6 +48,15 @@ export function Sidebar({ actual, onIr, avisos, pedidosPendientes, alertas, usua
         { id: 'categorias', nombre: 'Categorías', icono: <IconoArbol /> },
         { id: 'atributos', nombre: 'Atributos', icono: <IconoEtiqueta /> },
         { id: 'canales', nombre: 'Canales', icono: <IconoEnchufe /> },
+        // Quien no es administrador no ve estas dos: no puede usarlas —la API
+        // las cierra a admin— y ofrecerlas seria prometer algo que devuelve un
+        // rechazo.
+        ...(usuario.role === 'admin'
+          ? [
+              { id: 'usuarios' as Seccion, nombre: 'Usuarios', icono: <IconoUsuarios /> },
+              { id: 'avisos' as Seccion, nombre: 'Avisos', icono: <IconoCampana /> },
+            ]
+          : []),
       ],
     },
   ]
@@ -130,6 +139,12 @@ const IconoEtiqueta = () => (
 )
 const IconoEnchufe = () => (
   <svg {...props}><path d="M9 2v6" /><path d="M15 2v6" /><path d="M6 8h12v3a6 6 0 0 1-6 6 6 6 0 0 1-6-6z" /><path d="M12 17v5" /></svg>
+)
+const IconoUsuarios = () => (
+  <svg {...props}><circle cx="9" cy="8" r="3.2" /><path d="M2.5 20a6.5 6.5 0 0 1 13 0" /><path d="M16.5 5.4a3.2 3.2 0 0 1 0 5.2" /><path d="M18 14.4a6.5 6.5 0 0 1 3.5 5.6" /></svg>
+)
+const IconoCampana = () => (
+  <svg {...props}><path d="M18 9a6 6 0 1 0-12 0c0 5-2 6-2 6h16s-2-1-2-6" /><path d="M10.3 20a2 2 0 0 0 3.4 0" /></svg>
 )
 const IconoBaseDatos = () => (
   <svg {...props}><ellipse cx="12" cy="5" rx="8" ry="3" /><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5" /><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3" /></svg>
