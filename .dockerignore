@@ -1,0 +1,35 @@
+# El Dockerfile hace `COPY . .`: sin esta lista, el contexto de construcción
+# se lleva la clave maestra real y cientos de megas de imágenes, y ambos
+# quedan dentro de la imagen publicada.
+
+# Credenciales
+.env
+*.key
+*.pem
+
+# Banco de imágenes y datos locales (cientos de MB, van en un volumen)
+datos/
+
+# Informes con datos del catálogo
+odoo-report.json
+*-report.json
+
+# Binarios ya compilados: la imagen los construye dentro
+bin/
+*.exe
+integra
+odoo-explorer
+
+# Dependencias y artefactos del frontend
+web/node_modules/
+web/dist/
+
+# Control de versiones y herramientas
+.git/
+.gitignore
+.claude/
+.idea/
+.vscode/
+
+# Documentación: no cambia lo que hace el binario y invalida la caché de capas
+*.md

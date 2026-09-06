@@ -29,13 +29,27 @@ services:
       dockerfile: Dockerfile
     container_name: integra-api
     command: ["serve"]
+    restart: unless-stopped
     environment:
       INTEGRA_DATABASE_URL: postgres://integra:integra_dev@postgres:5432/integra?sslmode=disable
       INTEGRA_MASTER_KEY: ${INTEGRA_MASTER_KEY:?define INTEGRA_MASTER_KEY, generala con go run ./cmd/integra genkey}
       INTEGRA_HTTP_ADDR: ":8080"
-      INTEGRA_LOG_LEVEL: debug
+      INTEGRA_LOG_LEVEL: ${INTEGRA_LOG_LEVEL:-info}
+      INTEGRA_IMAGE_DIR: /var/lib/integra/imagenes
+      # Los canales de venta descargan las fotos desde esta URL con un cliente
+      # anónimo: si apunta a localhost, publican fichas sin imagen. En
+      # producción va el dominio público real.
+      INTEGRA_PUBLIC_BASE_URL: ${INTEGRA_PUBLIC_BASE_URL:-http://localhost:8080}
     ports:
       - "8080:8080"
+    volumes:
+      # El banco de imágenes es la única copia que existe: sin volumen, se
+      # pierde entero al recrear el contenedor y las publicaciones quedan
+      # apuntando a fotos que ya no están.
+      - imagenes_data:/var/lib/integra/imagenes
+    logging: &registro
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
     depends_on:
       postgres:
         condition: service_healthy
@@ -48,10 +62,19 @@ services:
     # Mismo binario que la API, distinto subcomando: así no pueden divergir
     # las dependencias ni la versión del esquema entre ambos procesos.
     command: ["worker"]
+    restart: unless-stopped
     environment:
       INTEGRA_DATABASE_URL: postgres://integra:integra_dev@postgres:5432/integra?sslmode=disable
       INTEGRA_MASTER_KEY: ${INTEGRA_MASTER_KEY:?define INTEGRA_MASTER_KEY}
-      INTEGRA_LOG_LEVEL: debug
+      INTEGRA_LOG_LEVEL: ${INTEGRA_LOG_LEVEL:-info}
+      INTEGRA_IMAGE_DIR: /var/lib/integra/imagenes
+      # El worker es quien arma los payloads que se envían al canal, así que
+      # necesita la misma URL pública que la API o publicará URLs de imagen
+      # que el canal no puede descargar.
+      INTEGRA_PUBLIC_BASE_URL: ${INTEGRA_PUBLIC_BASE_URL:-http://localhost:8080}
+    volumes:
+      - imagenes_data:/var/lib/integra/imagenes
+    logging: *registro
     depends_on:
       postgres:
         condition: service_healthy
@@ -72,3 +95,7 @@ services:
 
 volumes:
   postgres_data:
+  # Las fotos aptas para publicar se buscaron, recortaron y verificaron una a
+  # una: reconstruirlas cuesta horas de proceso y no hay copia en Odoo, cuyas
+  # imágenes son miniaturas que los marketplaces rechazan.
+  imagenes_data:
