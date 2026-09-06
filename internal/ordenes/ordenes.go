@@ -396,12 +396,15 @@ func (s *Servicio) encolarStock(ctx context.Context, avisos map[store.DestinoSto
 // esCancelado dice si el estado que reporta el canal significa que la venta
 // murió. Cada canal lo nombra a su manera y ninguno normaliza:
 // MercadoLibre usa cancelled e invalid (fraude), WooCommerce cancelled y
-// refunded, y Shopify manda su financial_status, donde una cancelación
-// aparece como voided (nunca se cobró) o refunded (se devolvió el dinero).
+// refunded, Shopify manda su financial_status, donde una cancelación aparece
+// como voided (nunca se cobró) o refunded (se devolvió el dinero), y Falabella
+// escribe canceled, con una ele, que solo llega a secas cuando lo están todas
+// las líneas: su adaptador resume los estados por artículo separados por coma.
 //
 // Deliberadamente fuera: WooCommerce 'failed' (pago rechazado que el
-// comprador suele reintentar, no una cancelación) y los reembolsos parciales,
-// que devuelven dinero pero no necesariamente la mercancía entera.
+// comprador suele reintentar, no una cancelación) y los reembolsos y las
+// cancelaciones parciales, que devuelven dinero o una unidad pero no la
+// mercancía entera.
 func esCancelado(estado string) bool {
 	switch strings.ToLower(strings.TrimSpace(estado)) {
 	case "cancelled", "canceled", "invalid", "refunded", "voided":

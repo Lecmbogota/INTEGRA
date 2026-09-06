@@ -445,14 +445,21 @@ func (a *Adaptador) FetchOrders(ctx context.Context, desde time.Time, cur channe
 	p := conectores.ParamsFalabella("GetOrders", a.userID)
 	p["Limit"] = strconv.Itoa(limite)
 	// Sin Offset el núcleo pedía cuarenta veces la misma primera página y los
-	// pedidos a partir del 101 no entraban nunca. Y ordenado por fecha
-	// ascendente, para que la marca de agua avance por el pedido más viejo y no
-	// pueda saltarse los que quedaron fuera de la página.
+	// pedidos a partir del 101 no entraban nunca. Y ordenado por fecha de
+	// modificación ascendente, para que la marca de agua avance por el pedido
+	// más viejo y no pueda saltarse los que quedaron fuera de la página.
 	p["Offset"] = strconv.Itoa(cur.Page * limite)
-	p["SortBy"] = "created_at"
+	p["SortBy"] = "updated_at"
 	p["SortDirection"] = "ASC"
+	// Se pide lo MODIFICADO desde la marca, no lo creado. Una cancelación no
+	// crea nada, solo cambia el estado: con CreatedAfter un pedido ya ingerido
+	// que el comprador anulaba no volvía a bajar nunca, el núcleo lo montaba
+	// en Odoo como venta viva y las unidades apartadas se quedaban sin vender
+	// hasta que caducara la reserva. La marca de agua avanza por UpdatedAt,
+	// que es justo lo que este filtro y este orden garantizan.
+	// https://developers.falabella.com/v600.0.0/reference/getorders
 	if !desde.IsZero() {
-		p["CreatedAfter"] = desde.UTC().Format("2006-01-02T15:04:05-0700")
+		p["UpdatedAfter"] = desde.UTC().Format("2006-01-02T15:04:05-0700")
 	}
 
 	var resp struct {
@@ -477,10 +484,12 @@ func (a *Adaptador) FetchOrders(ctx context.Context, desde time.Time, cur channe
 		total, _ := strconv.ParseFloat(string(o.Price), 64)
 		envio, _ := strconv.ParseFloat(string(o.ShippingFee), 64)
 		fecha, _ := time.Parse("2006-01-02 15:04:05", o.CreatedAt)
+		modificado, _ := time.Parse("2006-01-02 15:04:05", o.UpdatedAt)
 
 		ord := channel.Order{
 			ExternalID: string(o.OrderId), Number: string(o.OrderNumber),
-			OrderedAt: fecha, Currency: "COP", Total: total, Shipping: envio,
+			OrderedAt: fecha, UpdatedAt: modificado,
+			Currency: "COP", Total: total, Shipping: envio,
 			Buyer: channel.Buyer{
 				Name:  strings.TrimSpace(o.CustomerFirst + " " + o.CustomerLast),
 				Phone: o.AddressShipping.Phone,
@@ -494,11 +503,14 @@ func (a *Adaptador) FetchOrders(ctx context.Context, desde time.Time, cur channe
 		// Las líneas van en otra llamada: GetOrderItems por pedido. El fallo se
 		// propaga: un pedido sin líneas montaría en Odoo un sale.order vacío,
 		// con total cobrado y nada que despachar, sin dejar rastro del error.
-		lineas, err := a.lineasDe(ctx, string(o.OrderId))
+		// De esa misma llamada sale el estado: Seller Center no tiene estado
+		// de pedido, tiene estado por artículo.
+		items, err := a.itemsDe(ctx, string(o.OrderId))
 		if err != nil {
 			return channel.OrderPage{}, err
 		}
-		ord.Lines = lineas
+		ord.Lines = lineasDe(items)
+		ord.Status = estadoDelPedido(items, o.Statuses)
 		out = append(out, ord)
 	}
 	return channel.OrderPage{
@@ -509,13 +521,21 @@ func (a *Adaptador) FetchOrders(ctx context.Context, desde time.Time, cur channe
 }
 
 type ordenResp struct {
-	OrderId         numOTexto `json:"OrderId"`
-	OrderNumber     numOTexto `json:"OrderNumber"`
-	CreatedAt       string    `json:"CreatedAt"`
-	Price           numOTexto `json:"Price"`
-	ShippingFee     numOTexto `json:"ShippingFeeTotal"`
-	CustomerFirst   string    `json:"CustomerFirstName"`
-	CustomerLast    string    `json:"CustomerLastName"`
+	OrderId     numOTexto `json:"OrderId"`
+	OrderNumber numOTexto `json:"OrderNumber"`
+	CreatedAt   string    `json:"CreatedAt"`
+	// UpdatedAt cambia con cada cambio de estado: es lo que hace visible una
+	// cancelación posterior a la ingesta. Statuses es el resumen que hace
+	// Falabella de los estados de los artículos, <Statuses><Status>…</Status>
+	// </Statuses>, que en JSON llega como {"Status":"pending"} con uno solo y
+	// como {"Status":["pending","canceled"]} con varios; se guarda crudo y lo
+	// decodifica estadoDelPedido solo cuando las líneas no dicen nada.
+	UpdatedAt       string          `json:"UpdatedAt"`
+	Statuses        json.RawMessage `json:"Statuses"`
+	Price           numOTexto       `json:"Price"`
+	ShippingFee     numOTexto       `json:"ShippingFeeTotal"`
+	CustomerFirst   string          `json:"CustomerFirstName"`
+	CustomerLast    string          `json:"CustomerLastName"`
 	AddressShipping struct {
 		Address1 string `json:"Address1"`
 		City     string `json:"City"`
@@ -527,14 +547,27 @@ type ordenResp struct {
 	} `json:"AddressShipping"`
 }
 
-func (a *Adaptador) lineasDe(ctx context.Context, orderID string) ([]channel.OrderLine, error) {
-	items, err := a.itemsDe(ctx, orderID)
-	if err != nil {
-		return nil, err
+// lineasDe convierte los artículos del pedido en líneas.
+//
+// Los artículos cancelados se dejan fuera mientras quede alguno vivo:
+// Falabella cancela por artículo —el comprador anula una unidad y se queda con
+// las demás— y una línea muerta llegaría al sale.order de Odoo como si hubiera
+// que despacharla. Si están cancelados todos se conservan: entonces el que
+// muere es el pedido entero (ver estadoDelPedido), el núcleo no lo monta, y
+// sus líneas son el único registro de qué se había vendido.
+func lineasDe(items []itemResp) []channel.OrderLine {
+	vivos := 0
+	for _, li := range items {
+		if !cancelado(li.Status) {
+			vivos++
+		}
 	}
 
 	var out []channel.OrderLine
 	for _, li := range items {
+		if vivos > 0 && cancelado(li.Status) {
+			continue
+		}
 		precio, _ := strconv.ParseFloat(string(li.ItemPrice), 64)
 		// Falabella entrega una línea por unidad, no una línea con cantidad.
 		out = append(out, channel.OrderLine{
@@ -542,16 +575,67 @@ func (a *Adaptador) lineasDe(ctx context.Context, orderID string) ([]channel.Ord
 			Quantity: 1, UnitPrice: precio, TotalPrice: precio,
 		})
 	}
-	return out, nil
+	return out
+}
+
+// estadoDelPedido resume en un solo estado lo que Falabella reparte por
+// artículos, que es lo único que tiene: la cabecera de GetOrders se limita a
+// repetir en Statuses los distintos que aparecen entre ellos. Se devuelven los
+// estados distintos de las líneas, en su orden y separados por coma, así que
+// el pedido solo dice "canceled" a secas —lo que el núcleo reconoce como venta
+// muerta— cuando lo están TODAS sus líneas; con una sola viva hay algo que
+// despachar, y la cancelación parcial queda a la vista sin inventar un
+// vocabulario que el canal no usa. Statuses solo se mira cuando las líneas no
+// traen estado.
+func estadoDelPedido(items []itemResp, cabecera json.RawMessage) string {
+	var estados []string
+	for _, li := range items {
+		estados = append(estados, li.Status)
+	}
+	estados = distintos(estados)
+	if len(estados) == 0 {
+		// Un resumen ilegible no puede tumbar la ingesta: sin estado, el
+		// núcleo trata el pedido como vivo, que es lo prudente.
+		resumen, _ := listaSC[string](cabecera, "Status")
+		estados = distintos(resumen)
+	}
+	return strings.Join(estados, ",")
+}
+
+// distintos normaliza los estados y quita vacíos y repetidos conservando el
+// orden de aparición.
+func distintos(estados []string) []string {
+	var out []string
+	vistos := map[string]bool{}
+	for _, e := range estados {
+		e = normalizarEstado(e)
+		if e == "" || vistos[e] {
+			continue
+		}
+		vistos[e] = true
+		out = append(out, e)
+	}
+	return out
+}
+
+// cancelado reconoce el estado terminal de un artículo. Seller Center escribe
+// "canceled"; la grafía con dos eles se acepta por si algún endpoint la usa,
+// igual que hace el núcleo.
+func cancelado(estado string) bool {
+	switch normalizarEstado(estado) {
+	case "canceled", "cancelled":
+		return true
+	}
+	return false
 }
 
 // itemsDe trae las líneas del pedido tal como las entrega el canal.
 //
 // Está separada de lineasDe porque tiene dos consumidores con necesidades
-// distintas: FetchOrders solo quiere SKU y precio, mientras que AckOrder
-// necesita el OrderItemId, el PackageId y el estado. Esos tres no viajan en la
-// cabecera del pedido ni los transporta el contrato de channel: GetOrderItems
-// es el único sitio donde existen.
+// distintas: FetchOrders quiere SKU, precio y el estado de cada línea,
+// mientras que AckOrder necesita el OrderItemId, el PackageId y ese mismo
+// estado. Nada de eso viaja en la cabecera del pedido ni lo transporta el
+// contrato de channel: GetOrderItems es el único sitio donde existe.
 func (a *Adaptador) itemsDe(ctx context.Context, orderID string) ([]itemResp, error) {
 	p := conectores.ParamsFalabella("GetOrderItems", a.userID)
 	p["OrderId"] = orderID
@@ -582,9 +666,11 @@ type itemResp struct {
 	Sku         string    `json:"Sku"`
 	Name        string    `json:"Name"`
 	ItemPrice   numOTexto `json:"ItemPrice"`
-	// Los tres siguientes solo los usa el despacho. PackageId llega ya hecho
-	// en el flujo normal, y ShippingType distingue lo que despacha el vendedor
-	// de lo que despacha Falabella con su propio inventario.
+	// Status es el estado del artículo, el único que existe en Falabella: la
+	// ingesta lo resume por pedido y el despacho decide con él qué queda por
+	// confirmar. Los otros dos solo los usa el despacho: PackageId llega ya
+	// hecho en el flujo normal, y ShippingType distingue lo que despacha el
+	// vendedor de lo que despacha Falabella con su propio inventario.
 	Status       string    `json:"Status"`
 	ShippingType string    `json:"ShippingType"`
 	PackageId    numOTexto `json:"PackageId"`
@@ -1182,7 +1268,9 @@ func (n *numOTexto) UnmarshalJSON(b []byte) error {
 // elemento con nombre propio (Body.Products.Product, Body.OrderItems.OrderItem)
 // y colapsa el array a objeto cuando solo hay un elemento; algunas respuestas
 // la entregan como array plano. Se aceptan las tres formas porque el mismo
-// endpoint cambia de una a otra según cuántos resultados haya.
+// endpoint cambia de una a otra según cuántos resultados haya. Y una cuarta:
+// cuando los elementos son valores simples, como los estados de
+// Statuses.Status, el colapso a uno solo deja una cadena suelta, no un objeto.
 func listaSC[T any](raw json.RawMessage, etiqueta string) ([]T, error) {
 	b := bytes.TrimSpace(raw)
 	if len(b) == 0 || string(b) == "null" || string(b) == `""` {
@@ -1206,6 +1294,12 @@ func listaSC[T any](raw json.RawMessage, etiqueta string) ([]T, error) {
 		if hijo, ok := envoltorio[etiqueta]; ok {
 			return listaSC[T](hijo, etiqueta)
 		}
+		var uno T
+		if err := json.Unmarshal(b, &uno); err != nil {
+			return nil, err
+		}
+		return []T{uno}, nil
+	case '"':
 		var uno T
 		if err := json.Unmarshal(b, &uno); err != nil {
 			return nil, err
