@@ -313,6 +313,20 @@ export interface CuentaCanal {
   probada_at: string | null
   probada_ok: boolean | null
   probada_msg: string
+  // Bodegas asignadas. Con cero la cuenta no publica nada.
+  bodegas: number
+}
+
+// BodegaCuenta es una bodega de Odoo vista desde una cuenta: si la alimenta
+// o no, y cuánto stock tiene para saber qué se está eligiendo.
+export interface BodegaCuenta {
+  id: number
+  odoo_id: number
+  codigo: string
+  nombre: string
+  conexion: string
+  unidades: number
+  asignada: boolean
 }
 
 
@@ -812,6 +826,14 @@ export const api = {
     }),
   probarCuenta: (id: number) =>
     pedir<{ ok: boolean; mensaje: string }>(`/api/cuentas/${id}/probar`, { method: 'POST' }),
+  bodegasCuenta: (id: number) => pedir<BodegaCuenta[]>(`/api/cuentas/${id}/bodegas`),
+  // Reemplaza la asignación entera: se manda la lista completa de marcadas.
+  asignarBodegasCuenta: (id: number, bodegas: number[]) =>
+    pedir<{ estado: string }>(`/api/cuentas/${id}/bodegas`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bodegas }),
+    }),
 
   integraciones: () => pedir<ConexionOdoo[]>('/api/integraciones'),
   crearIntegracion: (datos: DatosIntegracion) =>

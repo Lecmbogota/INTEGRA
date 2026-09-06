@@ -8,6 +8,7 @@ package planificador
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -26,6 +27,7 @@ const (
 	AlertaPublicacionErr   = "publicacion_con_error"
 	AlertaTrabajosFallidos = "trabajos_fallidos"
 	AlertaSinStock         = "sin_stock_publicado"
+	AlertaCuentaSinBodegas = "cuenta_sin_bodegas"
 )
 
 type Planificador struct {
@@ -138,6 +140,14 @@ func (p *Planificador) moverPromociones(ctx context.Context) error {
 			return fmt.Errorf("recalculando precios de la cuenta %d: %w", c.CuentaID, err)
 		}
 		if _, err := publicar.Planificar(ctx, p.st, p.cola, c.CuentaID); err != nil {
+			if errors.Is(err, store.ErrCuentaSinBodegas) {
+				// La promoción se queda pendiente y sale en la primera
+				// pasada después de que alguien asigne bodegas: marcarla
+				// procesada la perdería, y devolver el error pararía las
+				// promociones de las demás cuentas.
+				p.log.Warn("cuenta sin bodegas asignadas: la promoción espera", "cuenta", c.CuentaID)
+				continue
+			}
 			return fmt.Errorf("planificando envío de la cuenta %d: %w", c.CuentaID, err)
 		}
 		if err := p.st.MarcarPromocionesProcesadas(ctx, c.Aplicar, c.Revertir); err != nil {
@@ -180,7 +190,13 @@ func (p *Planificador) planificarTodas(ctx context.Context, h store.Horario) err
 			continue
 		}
 		if _, err := publicar.Planificar(ctx, p.st, p.cola, c.ID); err != nil {
-			return err
+			// Una cuenta sin bodegas asignadas no publica, pero eso no puede
+			// dejar sin planificar a las demás ni sin traer sus propios
+			// pedidos, que no dependen de las bodegas. Vigilar es quien avisa.
+			if !errors.Is(err, store.ErrCuentaSinBodegas) {
+				return err
+			}
+			p.log.Warn("cuenta sin bodegas asignadas: no se planifica", "cuenta", c.ID, "canal", c.CanalNombre)
 		}
 		// Los pedidos se traen en la misma pasada: es lo más urgente y
 		// aprovecha que ya se está hablando con el canal.
@@ -243,6 +259,14 @@ func (p *Planificador) Vigilar(ctx context.Context) error {
 			id := c.ID
 			_ = p.st.CrearAlerta(ctx, AlertaTokenVencido, "critical", &id,
 				fmt.Sprintf("la conexión con %s no funciona: %s", c.CanalNombre, c.ProbadaMsg), nil)
+		}
+		// Sin bodegas asignadas la cuenta no publica nada: es un canal
+		// parado, y como el planificador la salta, este es el único sitio
+		// donde alguien se entera.
+		if c.Bodegas == 0 {
+			id := c.ID
+			_ = p.st.CrearAlerta(ctx, AlertaCuentaSinBodegas, "critical", &id,
+				fmt.Sprintf("%s no tiene bodegas asignadas: no se publica nada en ese canal hasta asignarlas en «Cuentas»", c.CanalNombre), nil)
 		}
 	}
 

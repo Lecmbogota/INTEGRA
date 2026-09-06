@@ -80,6 +80,12 @@ canal. Después:
 docker compose exec api integra sync
 ```
 
+Con el sync hecho ya existen las bodegas de Odoo: vuelve a **Cuentas** y
+asígnale a cada canal las bodegas de las que despacha (**Asignar bodegas**).
+Una cuenta sin bodegas asignadas no publica nada, a propósito: es lo que evita
+ofrecer en un canal stock que está en Muestras, en Garantías o consignado en
+las bodegas de Falabella.
+
 ## Qué hace cada pieza
 
 | Contenedor | Para qué |

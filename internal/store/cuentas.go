@@ -21,6 +21,9 @@ type CuentaCanal struct {
 	ProbadaAt  *time.Time `json:"probada_at"`
 	ProbadaOK  *bool      `json:"probada_ok"`
 	ProbadaMsg string     `json:"probada_msg"`
+	// Bodegas asignadas. Con cero la cuenta no publica nada (ver
+	// ErrCuentaSinBodegas): la pantalla y la vigilancia lo dicen desde aquí.
+	Bodegas int `json:"bodegas"`
 }
 
 // GuardarCuenta crea o reemplaza la cuenta global de un canal. La credencial
@@ -72,7 +75,8 @@ func (s *Store) GuardarCuenta(ctx context.Context, canalCodigo, nombre string, c
 func (s *Store) ListarCuentas(ctx context.Context) ([]CuentaCanal, error) {
 	filas, err := s.pool.Query(ctx, `
 		SELECT a.id, ch.code, ch.name, a.name, a.active, a.last_sync_at,
-		       a.config->>'probada_at', a.config->>'probada_ok', COALESCE(a.config->>'probada_msg','')
+		       a.config->>'probada_at', a.config->>'probada_ok', COALESCE(a.config->>'probada_msg',''),
+		       (SELECT count(*) FROM channel_account_warehouses w WHERE w.channel_account_id = a.id)
 		FROM channel_accounts a
 		JOIN channels ch ON ch.id = a.channel_id
 		WHERE a.brand_id IS NULL AND a.active
@@ -87,7 +91,7 @@ func (s *Store) ListarCuentas(ctx context.Context) ([]CuentaCanal, error) {
 		var c CuentaCanal
 		var probadaAt, probadaOK *string
 		if err := filas.Scan(&c.ID, &c.CanalCodigo, &c.CanalNombre, &c.Nombre,
-			&c.Activa, &c.UltimoSync, &probadaAt, &probadaOK, &c.ProbadaMsg); err != nil {
+			&c.Activa, &c.UltimoSync, &probadaAt, &probadaOK, &c.ProbadaMsg, &c.Bodegas); err != nil {
 			return nil, err
 		}
 		if probadaAt != nil {

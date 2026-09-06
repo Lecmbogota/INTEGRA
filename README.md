@@ -363,8 +363,9 @@ quemando cupo de API en el endpoint más caro.
 **Stock desglosado por almacén.** `qty_available` de Odoo suma todos los
 almacenes internos, incluidos muestras, garantías y el stock consignado en las
 bodegas de Falabella. `variant_stock` lo guarda por bodega para que cada cuenta
-sume lo que le corresponde. Sin filas en `channel_account_warehouses`, una
-cuenta ve todos los almacenes.
+sume solo las que se le asignan en **Cuentas** (`channel_account_warehouses`).
+Una cuenta sin bodegas asignadas no publica nada: asumir «todas» era justo la
+mentira que el desglose existe para evitar.
 
 **Odoo solo aporta SKU, nombre y stock.** Todo lo demás —precio, marca,
 descripción, categoría, exclusión, peso, barcode, imágenes— es propiedad de
