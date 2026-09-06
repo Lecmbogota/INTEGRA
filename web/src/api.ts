@@ -811,6 +811,11 @@ export const api = {
   resumenOrdenes: () => pedir<ResumenOrdenes>('/api/ordenes/resumen'),
   ingerirOrdenes: (cuentaId: number) =>
     pedir<{ estado: string }>(`/api/cuentas/${cuentaId}/ingerir-ordenes`, { method: 'POST' }),
+  // Devuelve a la cola de montaje un pedido que agotó sus intentos. Cuando no
+  // procede (ya está en Odoo, lo canceló el canal, le falta un SKU) el
+  // servidor responde 409 con el motivo, que `pedir` convierte en el error.
+  reintentarOrden: (ordenId: number) =>
+    pedir<{ estado: string; numero: string }>(`/api/ordenes/${ordenId}/reintentar`, { method: 'POST' }),
 
   publicaciones: () => pedir<ResumenPublicacion[]>('/api/publicaciones'),
   planificar: (cuentaId: number) =>

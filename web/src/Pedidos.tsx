@@ -19,6 +19,7 @@ export function Pedidos() {
   const [resumen, setResumen] = useState<ResumenOrdenes | null>(null)
   const [cuentas, setCuentas] = useState<CuentaCanal[]>([])
   const [trayendo, setTrayendo] = useState(false)
+  const [reintentando, setReintentando] = useState<number | null>(null)
   const [refrescando, setRefrescando] = useState(false)
   const [cargado, setCargado] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -72,6 +73,28 @@ export function Pedidos() {
       void cargar()
       setTrayendo(false)
     }, ESPERA_INGESTA_MS)
+  }
+
+  // Un pedido que falló cinco veces desaparecía de la cola de montaje y no
+  // había dónde pulsar: la alerta seguía sonando y el pedido, cobrado, no
+  // llegaba a Odoo. El montaje corre en el worker, así que la lista se
+  // refresca al cabo de unos segundos, igual que tras traer pedidos.
+  async function reintentar(o: Orden) {
+    setReintentando(o.id)
+    setError(null)
+    setNota(null)
+    try {
+      await api.reintentarOrden(o.id)
+      setNota(`El pedido ${o.numero || o.external_id} volvió a la cola de montaje. Se crea en Odoo en segundo plano: la lista se actualiza sola en unos segundos.`)
+      temporizador.current = window.setTimeout(() => {
+        temporizador.current = null
+        void cargar()
+      }, ESPERA_INGESTA_MS)
+    } catch (e) {
+      setError(`No se pudo reintentar el pedido ${o.numero || o.external_id}: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setReintentando(null)
+    }
   }
 
   const visibles = filtro === '' ? ordenes : ordenes.filter((o) => o.estado === filtro)
@@ -205,6 +228,17 @@ export function Pedidos() {
                                 </tbody>
                               </table>
                             )}
+                          {/* Solo lo que aún no está en Odoo ni canceló el canal:
+                              el servidor rechaza el resto, pero no hay por qué
+                              ofrecer un botón que no puede hacer nada. */}
+                          {(o.estado === 'failed' || o.estado === 'received' || o.estado === 'mapped') && (
+                            <div className="grupo-acciones">
+                              <button className="primario" onClick={() => void reintentar(o)}
+                                disabled={reintentando === o.id}>
+                                {reintentando === o.id ? 'Reintentando…' : 'Reintentar en Odoo'}
+                              </button>
+                            </div>
+                          )}
                         </td>
                       </tr>
                     )}
