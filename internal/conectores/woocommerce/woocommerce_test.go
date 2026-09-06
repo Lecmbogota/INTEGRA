@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -674,5 +675,26 @@ func TestConShippingEnBlancoSeCaeALaDireccionDeFacturacion(t *testing.T) {
 	}
 	if c.Name != "Ana Ruiz" {
 		t.Errorf("comprador = %q: con shipping vacío el pedido llegaría a Odoo sin nombre", c.Name)
+	}
+}
+
+// WooCommerce no limita por sí mismo, pero el hosting sí: Cloudflare, Wordfence
+// o el módulo de rate limit del servidor cortan con 429 y su Retry-After. Sin
+// leerlo, la cola reintentaba a los 30 s contra una tienda que ya estaba
+// rechazando por exceso, y el bloqueo se alargaba solo.
+func TestUn429DeLaTiendaTraeSuPlazo(t *testing.T) {
+	td := nuevaTienda(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "120")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"code":"rate_limited","message":"Too many requests"}`)
+	})
+
+	_, err := td.adaptador().ListRemote(context.Background(), channel.Cursor{})
+	var e *channel.Error
+	if !errors.As(err, &e) {
+		t.Fatalf("se esperaba un error de canal: %v", err)
+	}
+	if e.RetryAfter != 2*time.Minute {
+		t.Fatalf("el plazo del 429 tiene que llegar a la cola: %v", e.RetryAfter)
 	}
 }

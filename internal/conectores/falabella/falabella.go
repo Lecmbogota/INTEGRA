@@ -268,9 +268,10 @@ func (a *Adaptador) Publish(ctx context.Context, req channel.PublishRequest) (ch
 		}
 	}
 	avisos = append(avisos, feed.Aviso())
+	pendientes := sinVeredicto(nil, feed)
 
 	// Segunda escritura: las fotos no viajan en el feed de producto.
-	avisoImgs, err := a.imagenesDe(ctx, v.SKU, p.Images)
+	avisoImgs, feedImgs, err := a.imagenesDe(ctx, v.SKU, p.Images)
 	if err != nil {
 		return channel.PublishResult{}, err
 	}
@@ -281,6 +282,10 @@ func (a *Adaptador) Publish(ctx context.Context, req channel.PublishRequest) (ch
 		Ref: ref, Adopted: existe,
 		VariantRefs: map[string]channel.ExternalRef{v.SKU: ref},
 		Warnings:    avisos,
+		// Lo que Seller Center todavía no ha resuelto no se puede dar por
+		// publicado: quien llama tiene que preguntar por estos feeds antes de
+		// sellar el hash.
+		FeedsPendientes: sinVeredicto(pendientes, feedImgs),
 	}, nil
 }
 
@@ -307,16 +312,20 @@ func (a *Adaptador) Update(ctx context.Context, req channel.UpdateRequest) (chan
 		}
 	}
 	avisos := []string{feed.Aviso()}
+	pendientes := sinVeredicto(nil, feed)
 
 	// Las imágenes van en su propia escritura, igual que en Publish.
-	avisoImgs, err := a.imagenesDe(ctx, req.Ref.SKU, req.Product.Images)
+	avisoImgs, feedImgs, err := a.imagenesDe(ctx, req.Ref.SKU, req.Product.Images)
 	if err != nil {
 		return channel.UpdateResult{}, err
 	}
 	if avisoImgs != "" {
 		avisos = append(avisos, avisoImgs)
 	}
-	return channel.UpdateResult{Ref: req.Ref, Warnings: avisos}, nil
+	return channel.UpdateResult{
+		Ref: req.Ref, Warnings: avisos,
+		FeedsPendientes: sinVeredicto(pendientes, feedImgs),
+	}, nil
 }
 
 // UpdatePrice aprovecha el lote: Falabella acepta hasta 50 por feed, así que
@@ -947,21 +956,50 @@ func (a *Adaptador) enviarImagenes(ctx context.Context, sku string, imagenes []c
 // el feed las rechazó. Se devuelve error a propósito: dar la publicación por
 // buena guardaría el hash y la dejaría sin fotos para siempre, mientras que
 // reintentar es inocuo porque Action=Image reemplaza la lista entera.
-func (a *Adaptador) imagenesDe(ctx context.Context, sku string, imagenes []channel.Image) (string, error) {
+func (a *Adaptador) imagenesDe(ctx context.Context, sku string, imagenes []channel.Image) (string, Feed, error) {
 	feed, err := a.enviarImagenes(ctx, sku, imagenes)
 	if err != nil {
-		return "", err
+		return "", Feed{}, err
 	}
 	if feed.ID == "" {
-		return "", nil
+		return "", Feed{}, nil
 	}
 	if motivo := feed.Rechazo(sku); motivo != "" {
-		return "", &channel.Error{
+		return "", feed, &channel.Error{
 			Kind: channel.Falabella, Code: "feed_imagenes",
 			Message: "las imágenes de " + sku + " fueron rechazadas: " + motivo,
 		}
 	}
-	return "imágenes: " + feed.Aviso(), nil
+	return "imágenes: " + feed.Aviso(), feed, nil
+}
+
+// sinVeredicto acumula los feeds que se enviaron y todavía no terminaron.
+//
+// Es la lista que separa «Seller Center lo aceptó» de «Seller Center lo
+// aplicó»: entre lo uno y lo otro pueden pasar minutos, y el sondeo corto de
+// enviarFeed solo alcanza a ver los feeds rápidos.
+func sinVeredicto(feeds []string, f Feed) []string {
+	if f.ID == "" || f.Terminado() {
+		return feeds
+	}
+	return append(feeds, f.ID)
+}
+
+// VeredictoDeFeed responde por una escritura asíncrona que quedó sin
+// confirmar. Es lo que permite sellar el hash cuando el feed termina bien —o
+// dejarlo sin sellar y con el motivo anotado cuando el Seller Center lo
+// rechaza minutos después de haberlo aceptado.
+func (a *Adaptador) VeredictoDeFeed(ctx context.Context, feedID, sku string) (channel.Veredicto, error) {
+	f, err := a.EstadoFeed(ctx, feedID)
+	if err != nil {
+		return channel.Veredicto{}, err
+	}
+	// EstadoFeed devuelve el identificador que trae el cuerpo; si viniera
+	// vacío, Rechazo() lo nombraría con una cadena en blanco.
+	f.ID = feedID
+	return channel.Veredicto{
+		Terminado: f.Terminado(), Estado: f.Estado, Rechazo: f.Rechazo(sku),
+	}, nil
 }
 
 // enviarFeed manda un cuerpo XML a una acción de escritura y espera a saber
@@ -1242,10 +1280,17 @@ func (a *Adaptador) llamar(ctx context.Context, metodo string, params map[string
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return &channel.Error{
+		e := &channel.Error{
 			Kind: channel.Falabella, StatusCode: resp.StatusCode,
 			Message: recortarRunes(string(datos), 300),
 		}
+		// Seller Center corta con 429 cuando se pasa el cupo. Sin leer el
+		// plazo, la cola reintentaba a los 30 s contra una API que ya había
+		// pedido parar, y cada reintento alarga el corte.
+		if resp.StatusCode == http.StatusTooManyRequests {
+			e.RetryAfter = conectores.EsperaTrasCupo(resp.Header)
+		}
+		return e
 	}
 
 	// Seller Center devuelve 200 con ErrorResponse en el cuerpo: sin esta
@@ -1279,6 +1324,10 @@ func resultadoDe(ref channel.ExternalRef, feed Feed, err error) channel.OpResult
 	if err != nil {
 		return r
 	}
+	// Un feed que sigue en cola no dice nada todavía: darlo por bueno es lo
+	// que sellaba el hash de un precio o de una bajada de stock que el Seller
+	// Center podía rechazar diez minutos después.
+	r.FeedPendiente = feed.ID != "" && !feed.Terminado()
 	if motivo := feed.Rechazo(ref.SKU); motivo != "" {
 		r.OK = false
 		r.Error = &channel.Error{Kind: channel.Falabella, Code: "feed", Message: motivo}

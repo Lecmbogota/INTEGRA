@@ -3,6 +3,7 @@ package falabella
 import (
 	"context"
 	"encoding/xml"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -935,5 +936,137 @@ func TestListaSCAceptaLasTresFormas(t *testing.T) {
 				t.Fatalf("%s: se esperaban %d y llegaron %d", nombre, c.cuantos, len(out))
 			}
 		})
+	}
+}
+
+// -------------------------------------------- feeds que tardan más que el sondeo
+
+// El sondeo de la escritura son tres esperas: 1 s, 2 s y 4 s. Un feed que
+// Seller Center procesa en minutos —lo normal cuando hay cola— sigue en
+// «Queued» cuando se acaban, y darlo entonces por bueno es lo que sellaba el
+// hash de un producto que el canal podía rechazar después.
+func TestUnFeedQueSigueEnColaNoSeDaPorAplicado(t *testing.T) {
+	s := nuevoServidor(t)
+	s.responde("GetProducts", `{"SuccessResponse":{"Body":{"Products":{"Product":[]}}}}`)
+	s.escrituraOK()
+	s.feedStatus(`{"Feed":"FEED-1","Status":"Queued","TotalRecords":"1",
+		"ProcessedRecords":"0","FailedRecords":"0","FeedErrors":""}`)
+
+	res, err := s.adaptador().Publish(context.Background(),
+		channel.PublishRequest{Product: productoDePrueba()})
+	if err != nil {
+		t.Fatalf("un feed en cola no es un fallo: %v", err)
+	}
+	if len(res.FeedsPendientes) != 1 || res.FeedsPendientes[0] != "FEED-1" {
+		t.Fatalf("el feed sin veredicto tiene que salir como pendiente: %v", res.FeedsPendientes)
+	}
+}
+
+// El de las imágenes es otro feed y también puede quedarse en cola: el hash de
+// contenido cubre las fotos, así que sellarlo dejaría la publicación sin ellas
+// para siempre.
+func TestElFeedDeImagenesSinVeredictoTambienQuedaPendiente(t *testing.T) {
+	s := nuevoServidor(t)
+	s.responde("GetProducts", `{"SuccessResponse":{"Body":{"Products":{"Product":[]}}}}`)
+	s.escrituraOK()
+	s.feedStatusImagenes(`{"Feed":"FEED-IMG","Status":"Processing","TotalRecords":"1",
+		"ProcessedRecords":"0","FailedRecords":"0","FeedErrors":""}`)
+
+	res, err := s.adaptador().Publish(context.Background(),
+		channel.PublishRequest{Product: productoDePrueba()})
+	if err != nil {
+		t.Fatalf("Publish devolvió error: %v", err)
+	}
+	if len(res.FeedsPendientes) != 1 || res.FeedsPendientes[0] != "FEED-IMG" {
+		t.Fatalf("la ficha se confirmó y las fotos no: %v", res.FeedsPendientes)
+	}
+}
+
+// El precio y el stock viajan por lote y su feed tarda igual: un OpResult
+// «OK» sobre un feed en cola es lo que congelaba una bajada de stock.
+func TestUnPrecioEnviadoEnUnFeedEnColaQuedaMarcadoComoPendiente(t *testing.T) {
+	s := nuevoServidor(t)
+	s.escrituraOK()
+	s.feedStatus(`{"Feed":"FEED-1","Status":"Queued","FeedErrors":""}`)
+
+	res, err := s.adaptador().UpdatePrice(context.Background(), []channel.PriceUpdate{
+		{Ref: channel.ExternalRef{SKU: "A-1"}, RegularPrice: 1500},
+	})
+	if err != nil {
+		t.Fatalf("UpdatePrice devolvió error: %v", err)
+	}
+	if !res[0].OK {
+		t.Fatal("un feed en cola no es un rechazo")
+	}
+	if !res[0].FeedPendiente || res[0].FeedID != "FEED-1" {
+		t.Fatalf("el envío quedó sin veredicto y tiene que decirlo: %+v", res[0])
+	}
+}
+
+// VeredictoDeFeed es lo que consulta el trabajo de verificación diferida: sin
+// él, un feed lento no tiene quién lo mire cuando termina.
+func TestVeredictoDeFeedSeparaLoTerminadoDeLoRechazado(t *testing.T) {
+	s := nuevoServidor(t)
+	s.detalleFeed("FEED-9", `{"Feed":"FEED-9","Status":"Queued","FeedErrors":""}`)
+	ad := s.adaptador()
+	ctx := context.Background()
+
+	v, err := ad.VeredictoDeFeed(ctx, "FEED-9", "A-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Terminado || v.Rechazo != "" {
+		t.Fatalf("mientras esté en cola no hay veredicto: %+v", v)
+	}
+
+	s.detalleFeed("FEED-9", `{"Feed":"FEED-9","Status":"Finished","TotalRecords":"1",
+		"ProcessedRecords":"0","FailedRecords":"1","FeedErrors":{"Error":{
+		"Message":"mandatory attribute missing","SellerSku":"A-1","ErrorCode":"31"}}}`)
+	v, err = ad.VeredictoDeFeed(ctx, "FEED-9", "A-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !v.Terminado {
+		t.Fatalf("Finished es un veredicto: %+v", v)
+	}
+	if !strings.Contains(v.Rechazo, "mandatory attribute missing") {
+		t.Fatalf("el rechazo tiene que decir por qué: %+v", v)
+	}
+	if v.Estado != "Finished" {
+		t.Fatalf("el estado del canal viaja tal cual para el panel: %q", v.Estado)
+	}
+
+	s.detalleFeed("FEED-9", `{"Feed":"FEED-9","Status":"Finished","TotalRecords":"1",
+		"ProcessedRecords":"1","FailedRecords":"0","FeedErrors":""}`)
+	v, err = ad.VeredictoDeFeed(ctx, "FEED-9", "A-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !v.Terminado || v.Rechazo != "" {
+		t.Fatalf("un feed limpio es la única forma de sellar el hash: %+v", v)
+	}
+}
+
+// Seller Center corta con 429 cuando se pasa el cupo. Sin leer el plazo, la
+// cola reintentaba a los 30 s contra una API que ya había pedido parar.
+func TestUn429DelSellerCenterTraeSuPlazo(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "900")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"ErrorResponse":{"Head":{"ErrorCode":"429","ErrorMessage":"Too many requests"}}}`)
+	}))
+	defer srv.Close()
+
+	ad := &Adaptador{
+		userID: "vendedor@mdv.co", apiKey: "clave", operador: "faco",
+		base: srv.URL + "/", cli: srv.Client(), esperas: []time.Duration{0},
+	}
+	_, err := ad.VeredictoDeFeed(context.Background(), "FEED-1", "A-1")
+	var e *channel.Error
+	if !errors.As(err, &e) {
+		t.Fatalf("se esperaba un error de canal: %v", err)
+	}
+	if e.RetryAfter != 15*time.Minute {
+		t.Fatalf("el plazo del 429 tiene que llegar a la cola: %v", e.RetryAfter)
 	}
 }

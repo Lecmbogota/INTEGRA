@@ -61,6 +61,35 @@ type Adapter interface {
 	AckOrder(ctx context.Context, ref ExternalRef, f Fulfillment) error
 }
 
+// ConFeeds lo cumplen los canales cuyo Capabilities declara AsyncFeeds: sus
+// escrituras devuelven un identificador y el veredicto llega minutos después.
+//
+// Va fuera de Adapter a propósito. Meterlo en el contrato obligaría a los
+// otros tres canales a inventarse un veredicto que no tienen; así el núcleo
+// pregunta capacidades, hace la aserción de tipo y solo el que escribe por
+// feeds la responde.
+type ConFeeds interface {
+	// VeredictoDeFeed dice cómo terminó una escritura asíncrona para un SKU.
+	// Se puede llamar tantas veces como haga falta: es una consulta.
+	VeredictoDeFeed(ctx context.Context, feedID, sku string) (Veredicto, error)
+}
+
+// Veredicto es lo que el canal responde sobre un feed ya enviado.
+//
+// No lleva los estados del canal como valores con significado —el núcleo no
+// puede saber qué es "Queued" en Seller Center—: Terminado y Rechazo son la
+// decisión ya tomada, y Estado viaja solo para enseñárselo al operador.
+type Veredicto struct {
+	// Terminado es falso mientras el canal siga procesando el feed. Hay que
+	// volver a preguntar: nada de lo enviado se puede dar por aplicado.
+	Terminado bool
+	// Estado es el nombre que le da el canal, tal cual, para el panel.
+	Estado string
+	// Rechazo explica por qué el canal no aplicó lo enviado para ese SKU.
+	// Vacío con Terminado cierto significa que sí lo aplicó.
+	Rechazo string
+}
+
 // Capabilities describe qué sabe hacer un canal.
 //
 // Es lo que evita los condicionales por canal dentro del núcleo. Ejemplo: si
@@ -192,6 +221,13 @@ type PublishResult struct {
 	Permalink   string
 	VariantRefs map[string]ExternalRef // SKU → referencia
 	Warnings    []string
+
+	// FeedsPendientes son las escrituras asíncronas que el canal aceptó pero
+	// cuyo resultado todavía no dio. Mientras no esté vacía, lo enviado NO se
+	// puede dar por publicado: el canal aún puede rechazarlo. Publicar manda
+	// dos feeds —la ficha y las imágenes— y por eso es una lista. Los canales
+	// síncronos no la rellenan nunca.
+	FeedsPendientes []string
 }
 
 type UpdateRequest struct {
@@ -205,6 +241,9 @@ type UpdateRequest struct {
 type UpdateResult struct {
 	Ref      ExternalRef
 	Warnings []string
+	// FeedsPendientes tiene el mismo significado que en PublishResult: lo que
+	// el canal aceptó pero todavía no resolvió.
+	FeedsPendientes []string
 }
 
 type StockUpdate struct {
@@ -229,6 +268,10 @@ type OpResult struct {
 	Error error
 	// FeedID lo rellenan los canales asíncronos, para consultar el resultado.
 	FeedID string
+	// FeedPendiente dice que ese feed todavía no tiene veredicto: la escritura
+	// se aceptó y nada más. Quien llama no puede sellar el hash de lo enviado
+	// hasta preguntar por el feed con ConFeeds.
+	FeedPendiente bool
 }
 
 type ListingStatus struct {
@@ -336,6 +379,12 @@ func (e *Error) Error() string {
 }
 
 func (e *Error) Unwrap() error { return e.Err }
+
+// EsperaAntesDeReintentar expone RetryAfter como método para que la cola de
+// trabajos pueda respetarlo sin importar este paquete: jobs declara una
+// interfaz con este único método y sigue sin saber qué es un canal. Cuando el
+// canal dice «para una hora», reintentar a los 30 s alarga el bloqueo.
+func (e *Error) EsperaAntesDeReintentar() time.Duration { return e.RetryAfter }
 
 // ErrNoEncontrado indica que la publicación ya no existe en el canal.
 var ErrNoEncontrado = errors.New("la publicación no existe en el canal")
