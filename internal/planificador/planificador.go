@@ -36,6 +36,18 @@ type Planificador struct {
 	// sincronizar dispara la lectura de Odoo. Se inyecta para no depender
 	// aquí del motor de sincronización.
 	sincronizar func(context.Context) (string, error)
+	// notificar saca las alertas hacia donde alguien las vea. Nulo = no hay
+	// salida configurada y las alertas se quedan solo en el panel.
+	notificar func(context.Context) error
+}
+
+// ConNotificaciones engancha la salida de alertas.
+//
+// Va aparte del constructor para que el planificador no dependa del paquete
+// de notificaciones: aquí solo se sabe que hay algo que despachar avisos.
+func (p *Planificador) ConNotificaciones(f func(context.Context) error) *Planificador {
+	p.notificar = f
+	return p
 }
 
 func Nuevo(st *store.Store, cola *jobs.Cola, log *slog.Logger, tick time.Duration,
@@ -76,6 +88,13 @@ func (p *Planificador) pasada(ctx context.Context) {
 	}
 	if err := p.Vigilar(ctx); err != nil {
 		p.log.Error("vigilancia", "error", err)
+	}
+	// Después de vigilar, para que los avisos que acaba de levantar salgan en
+	// esta misma pasada y no en la siguiente.
+	if p.notificar != nil {
+		if err := p.notificar(ctx); err != nil {
+			p.log.Error("enviando notificaciones", "error", err)
+		}
 	}
 }
 

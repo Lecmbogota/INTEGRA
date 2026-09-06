@@ -7,11 +7,12 @@
 odoo-report.json
 *-report.json
 
-# Binarios
+# Binarios compilados en la raiz. Con barra inicial: sin ella, el patron
+# 'integra' tambien ignoraba el directorio cmd/integra.
 /bin/
 *.exe
-integra
-odoo-explorer
+/integra
+/odoo-explorer
 
 # Herramientas
 .idea/
