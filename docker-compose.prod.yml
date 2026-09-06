@@ -60,11 +60,18 @@ services:
       driver: json-file
       options: { max-size: "10m", max-file: "5" }
 
-  # Copias de seguridad de PostgreSQL.
+  # Copias de seguridad.
   #
   # Un contenedor que duerme y vuelca una vez al día. No usa cron del sistema
   # para no depender de la configuración del host: si el compose está arriba,
   # las copias se hacen.
+  #
+  # Vuelca dos cosas, y las dos hacen falta para volver a operar:
+  #   - PostgreSQL, que tiene el catálogo comercial (precios propios de
+  #     Integra, marcas, descripciones y atributos), que no está en Odoo.
+  #   - El banco de imágenes, que son fotos buscadas, recortadas y verificadas
+  #     una a una. Las de Odoo son miniaturas que los marketplaces rechazan,
+  #     así que perderlas es rehacer semanas de trabajo a mano.
   backup:
     image: postgres:16-alpine
     container_name: integra-backup
@@ -74,33 +81,130 @@ services:
       # Cuántos días se conservan. Treinta cubre el tiempo que se tarda en
       # notar que algo se corrompió hace semanas.
       RETENCION_DIAS: ${BACKUP_RETENCION_DIAS:-30}
+      # Las fotos pesan cientos de megas por copia y cambian poco: guardarlas
+      # treinta días llenaría el disco sin comprar nada. Una semana basta
+      # para volver atrás si alguien borra el banco por error.
+      RETENCION_IMAGENES_DIAS: ${BACKUP_RETENCION_IMAGENES_DIAS:-7}
+      # Cada cuánto se vuelca. Es también el periodo que se declara en el
+      # latido, así que bajarlo hace que la vigilancia sea más exigente.
+      INTERVALO_SEGUNDOS: ${BACKUP_INTERVALO_SEGUNDOS:-86400}
     volumes:
       - ./datos/backups:/backups
+      # Solo lectura: este contenedor copia las fotos, no tiene por qué poder
+      # tocarlas.
+      - imagenes_data:/imagenes:ro
     depends_on:
       postgres:
         condition: service_healthy
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
-        echo "copias de seguridad activas; destino /backups, retencion $${RETENCION_DIAS} dias"
+        echo "copias activas; destino /backups, retencion $${RETENCION_DIAS}d (fotos $${RETENCION_IMAGENES_DIAS}d)"
+
+        # El latido es lo que convierte una copia que dejo de hacerse en un
+        # correo. Se escribe SOLO cuando la pasada entera salio bien: si el
+        # volcado falla o sale corrupto, el latido envejece y la API acaba
+        # avisando. Sin esto, una copia rota se ve igual que una buena.
+        latido() {
+          psql -h postgres -U integra -d integra -q -v ON_ERROR_STOP=1 -c "INSERT INTO process_heartbeats (component, beat_at, period_secs, detail)
+             VALUES ('$$1', $$2, $${INTERVALO_SEGUNDOS}, '$$3')
+             ON CONFLICT (component) DO UPDATE SET beat_at = EXCLUDED.beat_at,
+               period_secs = EXCLUDED.period_secs, detail = EXCLUDED.detail" || echo "aviso: no se pudo registrar el latido de $$1"
+        }
+
         while true; do
-          archivo="/backups/integra-$$(date +%Y%m%d-%H%M%S).sql.gz"
-          if pg_dump -h postgres -U integra -d integra | gzip > "$$archivo"; then
+          sello=$$(date +%Y%m%d-%H%M%S)
+          base="/backups/integra-$${sello}.sql.gz"
+          fotos="/backups/imagenes-$${sello}.tar.gz"
+          ok=1
+
+          # Comprime el propio pg_dump (-Z) en vez de pasar por una tuberia
+          # hacia gzip: en "pg_dump | gzip" el codigo de salida que se mira es
+          # el de gzip, que comprime tan contento la nada que sale de un
+          # pg_dump que fallo. El resultado era un .sql.gz vacio que pasaba el
+          # gzip -t y se daba por copia buena.
+          if pg_dump -h postgres -U integra -d integra -Z 6 -f "$$base"; then
             # Un volcado vacio o truncado es peor que ninguno, porque da
             # sensacion de estar cubierto: se comprueba que se puede leer
             # entero antes de darlo por bueno.
-            if gzip -t "$$archivo"; then
-              echo "copia hecha: $$archivo ($$(du -h "$$archivo" | cut -f1))"
+            if gzip -t "$$base"; then
+              echo "copia de la base hecha: $$base ($$(du -h "$$base" | cut -f1))"
               find /backups -name 'integra-*.sql.gz' -mtime +$${RETENCION_DIAS} -delete
             else
-              echo "ERROR: la copia $$archivo esta corrupta, se descarta"
-              rm -f "$$archivo"
+              echo "ERROR: la copia $$base esta corrupta, se descarta"
+              rm -f "$$base"; ok=0
             fi
           else
             echo "ERROR: fallo el volcado de PostgreSQL"
-            rm -f "$$archivo"
+            rm -f "$$base"; ok=0
           fi
-          sleep 86400
+
+          if tar czf "$$fotos" -C /imagenes . && gzip -t "$$fotos"; then
+            echo "copia de las fotos hecha: $$fotos ($$(du -h "$$fotos" | cut -f1))"
+            find /backups -name 'imagenes-*.tar.gz' -mtime +$${RETENCION_IMAGENES_DIAS} -delete
+          else
+            echo "ERROR: fallo la copia del banco de imagenes"
+            rm -f "$$fotos"; ok=0
+          fi
+
+          if [ "$$ok" = 1 ]; then
+            latido copias "now()" "base $$(du -h "$$base" | cut -f1), fotos $$(du -h "$$fotos" | cut -f1)"
+          fi
+
+          # La copia remota la hace otro contenedor, que no trae cliente de
+          # PostgreSQL: deja la fecha de su ultima subida buena en un archivo
+          # y la publica este. Sin latido propio, una copia remota que lleva
+          # un mes fallando se ve igual que una que va bien.
+          if [ -f /backups/.remoto-ok ]; then
+            latido copias_remotas "'$$(cat /backups/.remoto-ok)'::timestamptz" "ultima subida fuera de la maquina"
+          fi
+
+          sleep $${INTERVALO_SEGUNDOS}
+        done
+
+  # Las copias fuera de la máquina.
+  #
+  # Un disco que muere se lleva la base y sus copias a la vez, y con ellas el
+  # catálogo comercial y el banco de fotos: semanas de trabajo que no están en
+  # ningún otro sitio. Esto las sube a donde diga el cliente (S3, Backblaze,
+  # Drive, otro servidor por SFTP: rclone habla con todos).
+  #
+  # Va en un perfil porque necesita dos cosas que solo el cliente tiene —el
+  # destino y sus credenciales— y un servicio que no puede arrancar rompería
+  # el `docker compose up` de todos los demás. Se enciende así:
+  #
+  #   docker compose --profile remoto -f docker-compose.yml -f docker-compose.prod.yml up -d
+  backup-remoto:
+    image: rclone/rclone:1
+    container_name: integra-backup-remoto
+    profiles: ["remoto"]
+    restart: unless-stopped
+    environment:
+      DESTINO: ${BACKUP_REMOTO_DESTINO:-}
+      INTERVALO_SEGUNDOS: ${BACKUP_INTERVALO_SEGUNDOS:-86400}
+    volumes:
+      # De escritura porque deja aquí la marca de su última subida buena, que
+      # es lo que el contenedor de copias convierte en latido.
+      - ./datos/backups:/datos
+      - ./datos/rclone.conf:/config/rclone/rclone.conf:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        while true; do
+          if [ -z "$$DESTINO" ]; then
+            echo "ERROR: define BACKUP_REMOTO_DESTINO en .env (ej: s3mdv:integra-copias)"
+            sleep 3600
+            continue
+          fi
+          # --checksum y no --size-only: dos volcados del mismo dia pesan casi
+          # igual y subir el equivocado es no tener copia.
+          if rclone sync /datos "$$DESTINO" --checksum --exclude '.*'; then
+            date -u +%Y-%m-%dT%H:%M:%SZ > /datos/.remoto-ok
+            echo "copias subidas a $$DESTINO"
+          else
+            echo "ERROR: fallo la subida a $$DESTINO"
+          fi
+          sleep $${INTERVALO_SEGUNDOS}
         done
 
 volumes:

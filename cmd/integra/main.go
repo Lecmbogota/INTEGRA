@@ -1168,6 +1168,11 @@ func cmdServe(ctx context.Context) error {
 
 	return api.Nuevo(st, log, cfg.HTTPAddr, alm, cif, jobs.NuevaCola(st.Pool()), sincronizar).
 		ConInterfaz(cfg.WebDir).
+		// La API es quien echa en falta al worker: el planificador, que avisa
+		// de todo lo demás, corre dentro del worker y no puede avisar de que
+		// el worker se murió. Por eso el despacho de correo se engancha
+		// también aquí.
+		ConVigilanciaDeProcesos(notificaciones.Nuevo(st, cif, log).Despachar).
 		Escuchar(ctx)
 }
 

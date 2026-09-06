@@ -53,6 +53,9 @@ type Server struct {
 	// inyecta solo en las pruebas: en producción vale nil y se usa el envío
 	// real por SMTP.
 	enviarCorreo notificaciones.Enviador
+	// notificar saca los avisos de la vigilancia de latidos. Nulo = la alerta
+	// se queda en el panel (ver vigilancia.go).
+	notificar func(context.Context) error
 
 	// masivo es el estado del barrido de imágenes en curso, en memoria.
 	masivoMu sync.Mutex
@@ -65,6 +68,7 @@ func Nuevo(st *store.Store, log *slog.Logger, addr string, alm *imagen.Almacen, 
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.salud)
+	mux.HandleFunc("GET /estado", s.estado)
 	// Comodín: lo que no case con ninguna ruta de la API es la interfaz. Se
 	// registra sin método a propósito: con "GET /", un POST a una ruta
 	// inexistente pasaría a responder 405 en vez de 404, porque el enrutador
@@ -167,6 +171,10 @@ func (s *Server) servirEstatico(w http.ResponseWriter, r *http.Request) {
 
 // Escuchar arranca el servidor y lo apaga con orden al cancelarse el contexto.
 func (s *Server) Escuchar(ctx context.Context) error {
+	// La vigilancia de latidos corre desde aquí, en la API, porque el proceso
+	// que puede estar muerto es el otro (ver vigilancia.go).
+	go s.vigilarEnBucle(ctx)
+
 	errc := make(chan error, 1)
 	go func() {
 		s.log.Info("servidor escuchando", "addr", s.http.Addr)

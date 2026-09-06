@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"time"
 
 	"github.com/mdv/integra/internal/jobs"
@@ -69,6 +70,12 @@ func Nuevo(st *store.Store, cola *jobs.Cola, log *slog.Logger, tick time.Duratio
 // Ejecutar corre hasta que se cancele el contexto.
 func (p *Planificador) Ejecutar(ctx context.Context) error {
 	p.log.Info("planificador en marcha", "tick", p.tick.String())
+
+	// El latido va en su propia gorutina y no al final de cada pasada: una
+	// sincronización completa de Odoo tarda minutos dentro de la pasada, y un
+	// latido atado a ella daría por muerto al worker justo cuando más trabaja.
+	go p.latir(ctx)
+
 	t := time.NewTicker(p.tick)
 	defer t.Stop()
 
@@ -83,6 +90,39 @@ func (p *Planificador) Ejecutar(ctx context.Context) error {
 			return nil
 		case <-t.C:
 			p.pasada(ctx)
+		}
+	}
+}
+
+// latir deja en base la constancia de que este proceso sigue vivo.
+//
+// Es lo único que permite echarlo en falta. Todo lo que vigila Integra lo
+// vigila el planificador, y el planificador corre dentro del worker: cuando el
+// que se muere es el worker, no queda nadie aquí dentro para contarlo y el
+// panel se queda en verde mientras dejan de entrar pedidos. Quien mira este
+// latido es la API, que es otro proceso.
+func (p *Planificador) latir(ctx context.Context) {
+	// El host distingue de cuál de los contenedores viene el latido cuando
+	// alguien levanta un segundo worker y solo uno de los dos se cae.
+	host, _ := os.Hostname()
+	registrar := func() {
+		if err := p.st.RegistrarLatido(ctx, store.ComponenteWorker, p.tick, "worker en "+host); err != nil {
+			p.log.Error("registrando el latido del worker", "error", err)
+		}
+	}
+
+	// Uno al arrancar: así un worker que acaba de volver deja de darse por
+	// muerto sin esperar al primer tick.
+	registrar()
+
+	t := time.NewTicker(p.tick)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			registrar()
 		}
 	}
 }
