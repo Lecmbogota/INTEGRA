@@ -1049,8 +1049,8 @@ type recalculadorPrecios interface {
 // el recálculo se quedaría a medias.
 //
 // El error no se le devuelve a quien edita: el precio ya está guardado y su
-// edición fue correcta. Queda en el log y en la siguiente pasada del
-// planificador, que recalcula igualmente.
+// edición fue correcta. Queda en el log y en el siguiente horario, que
+// recalcula antes de planificar.
 func (s *Server) refrescarPreciosEfectivos(ctx context.Context) {
 	if err := refrescarPreciosEfectivos(ctx, s.st); err != nil {
 		s.log.Error("recalculando los precios efectivos tras editar el precio", "error", err)

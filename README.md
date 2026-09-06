@@ -402,3 +402,8 @@ go test ./...
 
 Los tests de `internal/migrate` verifican que las migraciones reales del
 proyecto se trocean bien y que todas tienen sección `Down`.
+
+Con `INTEGRA_DATABASE_URL` en el entorno corren además los de integración,
+contra esa base y escribiendo en ella. En ese caso conviene lanzarlos en serie
+(`go test -p 1 ./...`): varios paquetes crean y borran variantes de prueba a la
+vez, y el recálculo de precios efectivos recorre el catálogo entero.
