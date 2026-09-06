@@ -163,12 +163,34 @@ func (s *Server) crearUsuario(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_ = s.st.RegistrarAuditoria(r.Context(), &claims.UserID, "create", "users", strconv.FormatInt(id, 10), nil, req, r.RemoteAddr)
+	_ = s.st.RegistrarAuditoria(r.Context(), &claims.UserID, "create", "users",
+		strconv.FormatInt(id, 10), nil, sinPassword(req.Email, req.Name, req.Role, req.Password), r.RemoteAddr)
 
 	escribir(w, http.StatusCreated, map[string]any{
 		"ok": true,
 		"id": id,
 	})
+}
+
+// sinPassword arma lo que se guarda en la auditoría de un alta o una edición
+// de usuario.
+//
+// El registro de auditoría se consulta por API y se conserva indefinidamente:
+// volcar ahí el cuerpo de la petición tal cual dejaba la contraseña en claro
+// en una tabla aparte, con lo que el bcrypt de `users` no protegía nada.
+// Queda constancia de que la contraseña se fijó, nunca de cuál era.
+func sinPassword(email, nombre, rol, password string, activo ...bool) map[string]any {
+	m := map[string]any{"name": nombre, "role": rol}
+	if email != "" {
+		m["email"] = email
+	}
+	if len(activo) > 0 {
+		m["active"] = activo[0]
+	}
+	if password != "" {
+		m["password"] = "(fijada, no se registra)"
+	}
+	return m
 }
 
 func (s *Server) editarUsuario(w http.ResponseWriter, r *http.Request) {
@@ -221,7 +243,9 @@ func (s *Server) editarUsuario(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	_ = s.st.RegistrarAuditoria(r.Context(), &claims.UserID, "update", "users", strconv.FormatInt(id, 10), prev, req, r.RemoteAddr)
+	_ = s.st.RegistrarAuditoria(r.Context(), &claims.UserID, "update", "users",
+		strconv.FormatInt(id, 10), prev,
+		sinPassword("", req.Name, req.Role, req.Password, req.Active), r.RemoteAddr)
 
 	escribir(w, http.StatusOK, map[string]any{"ok": true})
 }

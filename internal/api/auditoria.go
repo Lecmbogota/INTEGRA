@@ -13,7 +13,10 @@ func (s *Server) registrarAuditoria(mux *http.ServeMux) {
 }
 
 func (s *Server) consultarAuditoria(w http.ResponseWriter, r *http.Request) {
-	if !s.exigirRol(w, r, auth.RolViewer) {
+	// Solo administradores: el registro dice quién hizo qué, con qué IP y con
+	// qué valores, y es justo lo que sirve para preparar un abuso. Un rol de
+	// solo lectura no necesita verlo.
+	if !s.exigirRol(w, r, auth.RolAdmin) {
 		return
 	}
 
