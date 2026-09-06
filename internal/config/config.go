@@ -47,6 +47,18 @@ type Config struct {
 	// imágenes de producto. En desarrollo apunta al localhost; en producción
 	// debe ser una URL pública o los canales publicarán fichas sin fotos.
 	PublicBaseURL string
+
+	// ConciliacionCada es cada cuánto se vuelve a preguntar al canal si una
+	// publicación sigue viva. Un día equilibra enterarse pronto de una baja
+	// con no gastar en el informe el cupo de API que necesitan los envíos de
+	// stock, que son los urgentes.
+	ConciliacionCada time.Duration
+
+	// RecrearPublicacionesCaidas decide qué hacer con una publicación que
+	// desapareció del canal: volver a crearla sola —lo que viene puesto,
+	// porque si no el producto se queda fuera de la venta hasta que alguien lo
+	// note— o solo marcarla y avisar para que lo decida una persona.
+	RecrearPublicacionesCaidas bool
 }
 
 // Load lee la configuración del entorno (cargando .env si existe) y la valida.
@@ -65,6 +77,9 @@ func Load() (*Config, error) {
 		ImageDir:             env("INTEGRA_IMAGE_DIR", "./datos/imagenes"),
 		WebDir:               env("INTEGRA_WEB_DIR", ""),
 		PublicBaseURL:        strings.TrimSuffix(env("INTEGRA_PUBLIC_BASE_URL", "http://localhost:8080"), "/"),
+
+		ConciliacionCada:           envDuration("INTEGRA_CONCILIACION_CADA", 24*time.Hour),
+		RecrearPublicacionesCaidas: envBool("INTEGRA_RECREAR_PUBLICACIONES_CAIDAS", true),
 	}
 	if err := c.validar(); err != nil {
 		return nil, err
@@ -119,6 +134,12 @@ func (c *Config) validar() error {
 	if c.SchedulerTick < time.Second {
 		fallos = append(fallos, "INTEGRA_SCHEDULER_TICK debe ser de al menos 1s")
 	}
+	// Con un periodo demasiado corto, la conciliación consulta el catálogo
+	// entero una y otra vez y se lleva por delante el cupo de API que
+	// necesitan los envíos de precio y stock.
+	if c.ConciliacionCada < time.Minute {
+		fallos = append(fallos, "INTEGRA_CONCILIACION_CADA debe ser de al menos 1m")
+	}
 
 	switch c.LogLevel {
 	case "debug", "info", "warn", "error":
@@ -150,6 +171,20 @@ func envInt(clave string, porDefecto int) int {
 		return porDefecto
 	}
 	return n
+}
+
+// envBool acepta las formas que la gente escribe de verdad en un .env. Un
+// valor que no se entiende deja el valor por defecto: apagar sin querer una
+// salvaguarda por una errata es peor que ignorar la línea.
+func envBool(clave string, porDefecto bool) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(clave))) {
+	case "1", "true", "si", "sí", "yes":
+		return true
+	case "0", "false", "no":
+		return false
+	default:
+		return porDefecto
+	}
 }
 
 func envDuration(clave string, porDefecto time.Duration) time.Duration {

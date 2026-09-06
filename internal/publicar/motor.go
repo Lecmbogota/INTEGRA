@@ -20,15 +20,25 @@ import (
 
 // Tipos de trabajo que atiende el worker.
 const (
-	TrabajoPublicar = "publicar_producto"
-	TrabajoPrecio   = "actualizar_precio"
-	TrabajoStock    = "actualizar_stock"
+	TrabajoPublicar  = "publicar_producto"
+	TrabajoPrecio    = "actualizar_precio"
+	TrabajoStock     = "actualizar_stock"
+	TrabajoPausar    = "pausar_publicacion"
+	TrabajoReanudar  = "reanudar_publicacion"
+	TrabajoConciliar = "conciliar_publicaciones"
 )
 
 // PayloadPublicar identifica qué publicar y dónde.
 type PayloadPublicar struct {
 	CuentaID   int64 `json:"cuenta_id"`
 	VarianteID int64 `json:"variante_id"`
+}
+
+// PayloadCuenta es el de los trabajos que barren una cuenta entera. La
+// conciliación no tiene una variante que nombrar: elige ella misma cuáles
+// contrasta en cada pasada.
+type PayloadCuenta struct {
+	CuentaID int64 `json:"cuenta_id"`
 }
 
 // Plan es el resultado de comparar catálogo contra lo publicado.
@@ -41,6 +51,11 @@ type Plan struct {
 	// BajoCosto: variantes cuyo precio no cubre el coste y a las que se les
 	// retuvo el envío de precio.
 	BajoCosto int `json:"bajo_costo"`
+	// Pausar cuenta lo que sigue abierto en el canal sin producto detrás;
+	// Reanudar, lo que vuelve a abrirse porque el producto regresó al
+	// catálogo.
+	Pausar   int `json:"pausar"`
+	Reanudar int `json:"reanudar"`
 }
 
 // catalogo y encolador son lo que Planificar necesita del store y de la cola.
@@ -48,6 +63,7 @@ type Plan struct {
 // *store.Store y *jobs.Cola las cumplen sin tocar a quien las llama.
 type catalogo interface {
 	CandidatosPublicacion(ctx context.Context, cuentaID int64) ([]store.CandidatoPublicacion, error)
+	PublicacionesHuerfanas(ctx context.Context, cuentaID int64) ([]store.PublicacionViva, error)
 }
 
 type encolador interface {
@@ -88,6 +104,20 @@ func Planificar(ctx context.Context, st catalogo, cola encolador, cuentaID int64
 		hContenido := HashContenido(c)
 		hPrecio := HashPrecio(c)
 		hStock := HashStock(c)
+
+		// Una publicación que Integra pausó al salir el producto del catálogo
+		// tiene que volver a abrirse cuando el producto vuelve, y no lo haría
+		// sola: los hashes siguen coincidiendo —la ficha del canal no cambió
+		// mientras estaba pausada— así que ninguna de las tres ramas de abajo
+		// se dispararía y la ficha se quedaría cerrada para siempre. La que
+		// pausó el canal no se toca: reabrir una baja por infracción es lo que
+		// convierte un aviso en una sanción.
+		if c.EstadoPublicacion == "paused" && c.PausaMotivo == store.PausaCatalogo {
+			if err := encolar(ctx, cola, TrabajoReanudar, cuentaID, c.VarianteID, 50); err != nil {
+				return nil, err
+			}
+			p.Reanudar++
+		}
 
 		switch {
 		// Sin publicación previa: la creación lleva precio y stock dentro del
@@ -136,7 +166,42 @@ func Planificar(ctx context.Context, st catalogo, cola encolador, cuentaID int64
 			}
 		}
 	}
+
+	// Lo que se quedó fuera del catálogo no aparece en el bucle de arriba: al
+	// archivarlo en Odoo o al borrarle el SKU deja de ser candidato y
+	// desaparece de la planificación, pero su ficha sigue viva en el canal
+	// vendiendo con la última cantidad conocida. Retirarla es el trabajo de
+	// pausa; lo caro es que alguien compre un producto que la empresa ya no
+	// tiene y haya que cancelarle la venta.
+	huerfanas, err := st.PublicacionesHuerfanas(ctx, cuentaID)
+	if err != nil {
+		return nil, err
+	}
+	for _, h := range huerfanas {
+		if err := encolar(ctx, cola, TrabajoPausar, cuentaID, h.VarianteID, 20); err != nil {
+			return nil, err
+		}
+		p.Pausar++
+	}
 	return p, nil
+}
+
+// EncolarConciliacion pide contrastar contra el canal lo que Integra da por
+// publicado en una cuenta.
+//
+// Va aparte de Planificar porque no compara catálogo contra hashes sino
+// Integra contra el canal, y es lo único que descubre una publicación que el
+// marketplace dio de baja por su cuenta. Se pide en cada pasada del
+// planificador y el trabajo se reparte él mismo por tandas, así que pedirlo de
+// más no cuesta peticiones.
+func EncolarConciliacion(ctx context.Context, cola encolador, cuentaID int64) error {
+	_, err := cola.Encolar(ctx, TrabajoConciliar, PayloadCuenta{CuentaID: cuentaID},
+		jobs.Opciones{
+			UniqueKey: fmt.Sprintf("%s:%d", TrabajoConciliar, cuentaID),
+			Priority:  200, // detrás de todo lo que sí escribe en el canal
+			CuentaID:  cuentaID,
+		})
+	return err
 }
 
 func encolar(ctx context.Context, cola encolador, kind string, cuentaID, varianteID int64, prioridad int) error {

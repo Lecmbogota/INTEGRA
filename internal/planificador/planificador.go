@@ -30,6 +30,10 @@ const (
 	AlertaCuentaSinBodegas = "cuenta_sin_bodegas"
 	AlertaSKURenombrado    = "sku_renombrado"
 	AlertaPrecioBajoCosto  = "precio_bajo_costo"
+	// Lo que la conciliación encontró distinto de lo que Integra creía: fichas
+	// que el canal retiró por su cuenta y fichas que ya no existen.
+	AlertaPublicacionRetirada = "publicacion_retirada_por_el_canal"
+	AlertaPublicacionCaida    = "publicacion_desaparecida"
 )
 
 type Planificador struct {
@@ -214,6 +218,15 @@ func (p *Planificador) planificarTodas(ctx context.Context, h store.Horario) err
 		if err := ordenes.EncolarIngesta(ctx, p.cola, c.ID); err != nil {
 			return err
 		}
+		// Y se contrasta contra el canal lo que Integra da por publicado. Los
+		// hashes no lo ven: comparan catálogo contra lo último enviado, así
+		// que una ficha que MercadoLibre bajó por infracción, o que alguien
+		// borró a mano en la tienda, sigue contando como publicada para
+		// siempre. El trabajo se reparte solo por tandas y respeta su propio
+		// periodo, de modo que pedirlo en cada pasada no gasta peticiones.
+		if err := publicar.EncolarConciliacion(ctx, p.cola, c.ID); err != nil {
+			return err
+		}
 	}
 	// Antes de encolar montajes, se rescata lo que falló por un SKU que
 	// todavía no estaba sincronizado: si el catálogo ya lo tiene, la línea se
@@ -340,6 +353,21 @@ func (p *Planificador) Vigilar(ctx context.Context) error {
 	if n, err := p.st.VariantesBajoCosto(ctx); err == nil && n > 0 {
 		_ = p.st.CrearAlerta(ctx, AlertaPrecioBajoCosto, "error", nil,
 			fmt.Sprintf("%d productos tienen un precio que no cubre el coste", n), nil)
+	}
+
+	// Lo que la conciliación vio en el canal y no cuadra. La retirada es la
+	// grave: detrás suele haber una infracción, Integra no la reabre sola a
+	// propósito y sin este aviso nadie se entera de que el producto lleva días
+	// sin venderse.
+	if retiradas, caidas, err := p.st.DesajustesDePublicacion(ctx); err == nil {
+		if retiradas > 0 {
+			_ = p.st.CrearAlerta(ctx, AlertaPublicacionRetirada, "error", nil,
+				fmt.Sprintf("%d publicaciones las retiró el propio canal y siguen fuera de la venta", retiradas), nil)
+		}
+		if caidas > 0 {
+			_ = p.st.CrearAlerta(ctx, AlertaPublicacionCaida, "warning", nil,
+				fmt.Sprintf("%d publicaciones ya no existen en su canal", caidas), nil)
+		}
 	}
 	return nil
 }

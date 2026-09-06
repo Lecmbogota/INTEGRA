@@ -6,6 +6,16 @@ const NOMBRES: Record<string, string> = {
   woocommerce: 'WooCommerce', shopify: 'Shopify',
 }
 
+// Retirar del canal lo que dejó de ser mercancía no es un envío más: es la
+// diferencia entre que alguien compre un producto que la empresa ya no tiene y
+// que no pueda. Solo se nombra cuando ocurre, para no ensuciar el caso normal.
+function retiradas(p: { pausar: number; reanudar: number }): string {
+  const partes: string[] = []
+  if (p.pausar > 0) partes.push(`${num(p.pausar)} publicaciones a pausar`)
+  if (p.reanudar > 0) partes.push(`${num(p.reanudar)} a reabrir`)
+  return partes.length > 0 ? `, ${partes.join(' y ')}` : ''
+}
+
 // Estado de lo publicado en cada canal y disparador de la planificación.
 export function Publicacion() {
   const [filas, setFilas] = useState<ResumenPublicacion[]>([])
@@ -40,7 +50,7 @@ export function Publicacion() {
     setPlan(null)
     try {
       const p = await api.planificar(c.id)
-      const total = p.publicar + p.precio + p.stock
+      const total = p.publicar + p.precio + p.stock + p.pausar + p.reanudar
       // Lo retenido por coste se nombra siempre: sin esto, un catálogo entero
       // frenado por precios a pérdida se anunciaba como «ya está todo al día».
       const retenidos = p.bajo_costo > 0
@@ -48,7 +58,7 @@ export function Publicacion() {
         : ''
       setPlan(total === 0
         ? `${nombre}: nada que enviar. ${num(p.sin_cambios)} productos ya están al día${p.no_listos > 0 ? `, ${num(p.no_listos)} aún no cumplen los requisitos` : ''}.${retenidos}`
-        : `${nombre}: ${num(total)} envíos encolados — ${num(p.publicar)} publicaciones, ${num(p.precio)} precios, ${num(p.stock)} stock. El worker los procesa en segundo plano.${retenidos}`)
+        : `${nombre}: ${num(total)} envíos encolados — ${num(p.publicar)} publicaciones, ${num(p.precio)} precios, ${num(p.stock)} stock${retiradas(p)}. El worker los procesa en segundo plano.${retenidos}`)
       void cargar()
     } catch (e) {
       setError(`No se pudo planificar los envíos de ${nombre}: ${e instanceof Error ? e.message : String(e)}`)

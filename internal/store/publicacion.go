@@ -39,6 +39,13 @@ type CandidatoPublicacion struct {
 	PriceHash   string
 	StockHash   string
 
+	// EstadoPublicacion y PausaMotivo son lo que Integra sabe de la ficha en
+	// el canal. Antes el motor solo miraba si había external_id, así que una
+	// publicación pausada seguía contando como viva y nadie la reabría cuando
+	// el producto volvía al catálogo.
+	EstadoPublicacion string
+	PausaMotivo       string
+
 	// Listo indica que cumple todo lo exigible antes de intentar publicar.
 	Listo bool
 
@@ -103,6 +110,7 @@ func (s *Store) CandidatosPublicacion(ctx context.Context, cuentaID int64) ([]Ca
 		       EXISTS (SELECT 1 FROM attention_queue aq
 		               WHERE aq.variant_id = v.id AND aq.channel_account_id = $1
 		                 AND aq.reason = 'price_below_cost' AND aq.resolved_at IS NULL),
+		       COALESCE(vcl.status::text, ''), COALESCE(vcl.pausada_motivo, ''),
 		       COALESCE(ARRAY(
 		           SELECT i.sha256 FROM producto_imagenes pi
 		           JOIN imagenes i ON i.id = pi.imagen_id
@@ -154,8 +162,18 @@ func (s *Store) CandidatosPublicacion(ctx context.Context, cuentaID int64) ([]Ca
 		if err := filas.Scan(&c.VarianteID, &c.ProductoID, &c.SKU, &c.Titulo, &c.Descripcion,
 			&c.Marca, &c.Barcode, &c.Peso, &c.LargoCm, &c.AnchoCm, &c.AltoCm, &c.CategoriaCanal,
 			&c.PrecioBase, &precioEfectivo, &c.Stock,
-			&c.ExternalID, &c.ContentHash, &c.PriceHash, &c.StockHash, &bajoCosto, &c.Imagenes); err != nil {
+			&c.ExternalID, &c.ContentHash, &c.PriceHash, &c.StockHash, &bajoCosto,
+			&c.EstadoPublicacion, &c.PausaMotivo, &c.Imagenes); err != nil {
 			return nil, err
+		}
+		// Una publicación que la conciliación dio por muerta en el canal no
+		// puede seguir prestando ni su referencia ni sus hashes: mientras lo
+		// hacía, el motor la trataba como viva y la actualizaba contra una
+		// ficha que ya no existe, sin recrearla jamás. La referencia viene
+		// además de la fila de producto, que sobrevive a la baja de una de sus
+		// variantes.
+		if c.EstadoPublicacion == "deleted" {
+			c.ExternalID, c.ContentHash, c.PriceHash, c.StockHash = "", "", "", ""
 		}
 		c.Moneda = "COP"
 		if precioEfectivo > 0 {

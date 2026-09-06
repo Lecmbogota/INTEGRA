@@ -228,3 +228,20 @@ func TestUnaAsignacionInvalidaNoTocaLaQueHabia(t *testing.T) {
 		})
 	}
 }
+
+// asignarBodegaDePrueba le da a una cuenta de prueba una bodega cualquiera.
+//
+// Desde que se exige la asignación (ver ErrCuentaSinBodegas), una cuenta sin
+// ninguna no publica nada. Toda cobaya que llegue a CandidatosPublicacion la
+// necesita, y sin esto la prueba deja de medir lo suyo para medir esa regla:
+// ya ha pasado tres veces al integrar ramas distintas, así que vive aquí y no
+// copiada en cada fichero.
+func asignarBodegaDePrueba(t *testing.T, st *Store, ctx context.Context, cuentaID int64) {
+	t.Helper()
+	if _, err := st.pool.Exec(ctx, `
+		INSERT INTO channel_account_warehouses (channel_account_id, odoo_warehouse_id)
+		SELECT $1, id FROM odoo_warehouses WHERE active ORDER BY id LIMIT 1
+		ON CONFLICT DO NOTHING`, cuentaID); err != nil {
+		t.Fatalf("asignando la bodega de prueba: %v", err)
+	}
+}

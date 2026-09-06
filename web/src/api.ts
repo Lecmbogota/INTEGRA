@@ -839,7 +839,13 @@ export const api = {
 
   publicaciones: () => pedir<ResumenPublicacion[]>('/api/publicaciones'),
   planificar: (cuentaId: number) =>
-    pedir<{ publicar: number; precio: number; stock: number; sin_cambios: number; no_listos: number; bajo_costo: number }>(
+    pedir<{
+      publicar: number; precio: number; stock: number; sin_cambios: number; no_listos: number
+      // Los que no salen porque su precio no cubre el coste.
+      bajo_costo: number
+      // Lo que se retira del canal por haber salido del catálogo, y lo que vuelve a abrirse al regresar.
+      pausar: number; reanudar: number
+    }>(
       `/api/cuentas/${cuentaId}/planificar`, { method: 'POST' }),
 
   cuentas: () => pedir<CuentaCanal[]>('/api/cuentas'),

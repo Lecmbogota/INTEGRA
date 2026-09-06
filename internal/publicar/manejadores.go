@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/mdv/integra/internal/channel"
 	"github.com/mdv/integra/internal/conectores"
@@ -43,6 +44,15 @@ type almacen interface {
 	// veredicto: es lo único que explica después por qué un producto que se
 	// mandó no aparece en el canal.
 	AnotarFeed(ctx context.Context, cuentaID, productoID int64, feedID, estado string) error
+
+	// Lo que necesita la conciliación: qué contrastar con el canal y qué
+	// anotar según lo que el canal conteste.
+	PublicacionesPorConciliar(ctx context.Context, cuentaID int64, limite int, periodo time.Duration) ([]store.PublicacionViva, error)
+	MarcarPublicacionViva(ctx context.Context, cuentaID, varianteID int64, estadoCanal string) error
+	MarcarPublicacionCaida(ctx context.Context, cuentaID, varianteID int64, estadoCanal string) error
+	MarcarPublicacionRetirada(ctx context.Context, cuentaID, varianteID int64, estadoCanal string) error
+	MarcarPublicacionPausada(ctx context.Context, cuentaID, varianteID int64, motivo string) error
+	MarcarPublicacionReanudada(ctx context.Context, cuentaID, varianteID int64) error
 }
 
 // Servicio ejecuta los trabajos de publicación contra los canales.
@@ -58,11 +68,21 @@ type Servicio struct {
 	// baseURL es el origen público desde el que los canales descargan las
 	// imágenes. Sin él, se publican productos sin fotos.
 	baseURL string
+	// periodo es cada cuánto se vuelve a preguntar al canal por la misma
+	// publicación; recrearCaidas, si una publicación que ya no existe se
+	// vuelve a crear sola. Los dos son decisión del dueño y llegan por
+	// configuración: ver ConConciliacion.
+	periodo       time.Duration
+	recrearCaidas bool
 }
 
 func NuevoServicio(st *store.Store, cif *crypto.Cifrador, log *slog.Logger, baseURL string) *Servicio {
 	return &Servicio{
 		st: st, log: log, baseURL: baseURL,
+		// Recrear lo que desapareció del canal es el valor por defecto porque
+		// la alternativa es que el producto se quede fuera de la venta hasta
+		// que alguien lo note, y Publish adopta el SKU si resultara existir.
+		recrearCaidas: true,
 		// El adaptador se construye por trabajo y no se cachea: así una
 		// credencial reemplazada surte efecto en el siguiente envío sin
 		// reiniciar el worker.
@@ -72,13 +92,30 @@ func NuevoServicio(st *store.Store, cif *crypto.Cifrador, log *slog.Logger, base
 	}
 }
 
-// Registrar engancha los tres tipos de trabajo al worker.
+// ConConciliacion afina el contraste contra el canal.
+//
+// Va aparte del constructor, como ConNotificaciones en el planificador, para
+// no arrastrar la configuración hasta aquí: el servicio solo sabe cada cuánto
+// preguntar y si puede recrear lo que ya no existe.
+func (s *Servicio) ConConciliacion(periodo time.Duration, recrearCaidas bool) *Servicio {
+	s.periodo = periodo
+	s.recrearCaidas = recrearCaidas
+	return s
+}
+
+// Registrar engancha al worker los tipos de trabajo del motor.
 func (s *Servicio) Registrar(w *jobs.Worker) {
 	s.cola = w.Cola()
 	w.Registrar(TrabajoPublicar, s.publicar)
 	w.Registrar(TrabajoPrecio, s.actualizarPrecio)
 	w.Registrar(TrabajoStock, s.actualizarStock)
 	w.Registrar(TrabajoVerificarFeed, s.verificarFeed)
+	// Retirar y reabrir fichas es tan parte de mantenerlas al día como
+	// enviarles precio: una ficha viva de un producto que ya no existe vende
+	// lo que no se puede despachar.
+	w.Registrar(TrabajoPausar, s.pausar)
+	w.Registrar(TrabajoReanudar, s.reanudar)
+	w.Registrar(TrabajoConciliar, s.conciliar)
 }
 
 func (s *Servicio) datos(ctx context.Context, t jobs.Trabajo) (*store.CandidatoPublicacion, channel.Adapter, PayloadPublicar, error) {

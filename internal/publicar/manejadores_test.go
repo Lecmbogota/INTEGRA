@@ -37,7 +37,13 @@ type almacenFalso struct {
 	// feedsAnotados guarda lo que se escribió en last_feed_id/last_feed_status:
 	// es el único rastro de una escritura asíncrona sin resolver.
 	feedsAnotados []string
+
+	porConciliar []store.PublicacionViva
+	marcas       map[int64]marca
 }
+
+// marca es el veredicto que la conciliación escribió sobre una variante.
+type marca struct{ veredicto, detalle string }
 
 type publicacionGuardada struct {
 	externalID, varianteExterna       string
@@ -114,6 +120,46 @@ type colaFalsa struct {
 	cargas    []any
 }
 
+// Lo que necesita la conciliación. porConciliar es lo que el doble entrega
+// como "publicado según Integra", y marcas anota qué veredicto se escribió
+// sobre cada variante: es lo único que distingue recrear una ficha muerta de
+// dejar cerrada la que bajó el canal.
+func (a *almacenFalso) PublicacionesPorConciliar(ctx context.Context, cuentaID int64, limite int, periodo time.Duration) ([]store.PublicacionViva, error) {
+	return a.porConciliar, nil
+}
+
+func (a *almacenFalso) MarcarPublicacionViva(ctx context.Context, cuentaID, varianteID int64, estadoCanal string) error {
+	a.anotarMarca(varianteID, "viva", estadoCanal)
+	return nil
+}
+
+func (a *almacenFalso) MarcarPublicacionCaida(ctx context.Context, cuentaID, varianteID int64, estadoCanal string) error {
+	a.anotarMarca(varianteID, "caida", estadoCanal)
+	return nil
+}
+
+func (a *almacenFalso) MarcarPublicacionRetirada(ctx context.Context, cuentaID, varianteID int64, estadoCanal string) error {
+	a.anotarMarca(varianteID, "retirada", estadoCanal)
+	return nil
+}
+
+func (a *almacenFalso) MarcarPublicacionPausada(ctx context.Context, cuentaID, varianteID int64, motivo string) error {
+	a.anotarMarca(varianteID, "pausada", motivo)
+	return nil
+}
+
+func (a *almacenFalso) MarcarPublicacionReanudada(ctx context.Context, cuentaID, varianteID int64) error {
+	a.anotarMarca(varianteID, "reanudada", "")
+	return nil
+}
+
+func (a *almacenFalso) anotarMarca(varianteID int64, veredicto, detalle string) {
+	if a.marcas == nil {
+		a.marcas = map[int64]marca{}
+	}
+	a.marcas[varianteID] = marca{veredicto: veredicto, detalle: detalle}
+}
+
 func (c *colaFalsa) Encolar(ctx context.Context, kind string, payload any, op jobs.Opciones) (int64, error) {
 	c.encolados = append(c.encolados, kind)
 	c.claves = append(c.claves, op.UniqueKey)
@@ -161,6 +207,16 @@ type canalFalso struct {
 	actualizadas    []channel.UpdateRequest
 	preciosEnviados []channel.PriceUpdate
 	stocksEnviados  []channel.StockUpdate
+
+	// estados es lo que el canal contesta a FetchStatus, por identificador de
+	// publicación. Una referencia que no esté en el mapa no sale en la
+	// respuesta, que es como los cuatro canales dicen "esa ya no la tengo".
+	estados   map[string]string
+	errEstado error
+
+	pausadas   []channel.ExternalRef
+	reanudadas []channel.ExternalRef
+	errPausa   error
 }
 
 func (c *canalFalso) Kind() channel.Kind { return channel.Shopify }
@@ -219,10 +275,35 @@ func (c *canalFalso) UpdatePrice(ctx context.Context, ups []channel.PriceUpdate)
 	}}, nil
 }
 
-func (c *canalFalso) Pause(ctx context.Context, ref channel.ExternalRef) error  { return nil }
-func (c *canalFalso) Resume(ctx context.Context, ref channel.ExternalRef) error { return nil }
+func (c *canalFalso) Pause(ctx context.Context, ref channel.ExternalRef) error {
+	if c.errPausa != nil {
+		return c.errPausa
+	}
+	c.pausadas = append(c.pausadas, ref)
+	return nil
+}
+
+func (c *canalFalso) Resume(ctx context.Context, ref channel.ExternalRef) error {
+	if c.errPausa != nil {
+		return c.errPausa
+	}
+	c.reanudadas = append(c.reanudadas, ref)
+	return nil
+}
+
 func (c *canalFalso) FetchStatus(ctx context.Context, refs []channel.ExternalRef) ([]channel.ListingStatus, error) {
-	return nil, nil
+	if c.errEstado != nil {
+		return nil, c.errEstado
+	}
+	var out []channel.ListingStatus
+	for _, r := range refs {
+		est, ok := c.estados[r.ListingID]
+		if !ok {
+			continue // desaparecida: no hay fila que devolver
+		}
+		out = append(out, channel.ListingStatus{Ref: r, Status: est})
+	}
+	return out, nil
 }
 func (c *canalFalso) ListRemote(ctx context.Context, cur channel.Cursor) (channel.RemotePage, error) {
 	return channel.RemotePage{Done: true}, nil
@@ -246,6 +327,9 @@ func servicioDePrueba(st almacen, cola encolador, ad channel.Adapter) *Servicio 
 	return &Servicio{
 		st: st, cola: cola, log: registroMudo(),
 		baseURL: "https://integra.example",
+		// Igual que en producción (NuevoServicio): una publicación que
+		// desapareció del canal se vuelve a crear.
+		recrearCaidas: true,
 		adaptador: func(ctx context.Context, cuentaID int64) (channel.Adapter, error) {
 			return ad, nil
 		},
@@ -526,10 +610,17 @@ func TestUnAltaConFeedPendienteGuardaLaReferenciaYNingunHash(t *testing.T) {
 
 // -------------------------------------------------- planificación (motor)
 
-type catalogoFalso struct{ items []store.CandidatoPublicacion }
+type catalogoFalso struct {
+	items     []store.CandidatoPublicacion
+	huerfanas []store.PublicacionViva
+}
 
 func (c *catalogoFalso) CandidatosPublicacion(ctx context.Context, cuentaID int64) ([]store.CandidatoPublicacion, error) {
 	return c.items, nil
+}
+
+func (c *catalogoFalso) PublicacionesHuerfanas(ctx context.Context, cuentaID int64) ([]store.PublicacionViva, error) {
+	return c.huerfanas, nil
 }
 
 // La rama de contenido era excluyente: cambiar descripción y precio a la vez

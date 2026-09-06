@@ -42,6 +42,28 @@ BACKUP_RETENCION_DIAS=30
 
 `.env` está en `.gitignore` y no debe salir de la máquina.
 
+### Ajustes opcionales
+
+Todo lo demás tiene un valor por defecto pensado para MDV. Estos dos gobiernan
+el contraste periódico contra los canales, que es lo que descubre una
+publicación borrada o retirada por el marketplace:
+
+```
+INTEGRA_CONCILIACION_CADA=24h
+INTEGRA_RECREAR_PUBLICACIONES_CAIDAS=true
+```
+
+- `INTEGRA_CONCILIACION_CADA` es cada cuánto se vuelve a preguntar al canal por
+  la misma publicación. WooCommerce y Shopify cuestan una petición por ficha,
+  así que bajarlo mucho se come el cupo de API que necesitan los envíos de
+  stock. Mínimo aceptado: `1m`.
+- `INTEGRA_RECREAR_PUBLICACIONES_CAIDAS` decide qué hacer con una ficha que ya
+  no existe en el canal (borrada a mano en la tienda, por ejemplo): con `true`
+  Integra la vuelve a crear sola; con `false` solo la marca y levanta el aviso
+  «publicaciones que ya no existen en su canal» para que lo decida una persona.
+  Lo que el propio canal retiró de la venta —una revisión, una infracción— no
+  se reabre nunca solo, con cualquiera de los dos valores.
+
 ## 3. Levantar
 
 ```bash
