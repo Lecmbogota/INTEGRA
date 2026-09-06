@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -93,21 +94,40 @@ func probarWoo(ctx context.Context, c Credenciales) (string, error) {
 		return "", fmt.Errorf("faltan la URL de la tienda y las claves consumer key/secret")
 	}
 	base := strings.TrimSuffix(c.URL, "/")
-	q := url.Values{
-		"consumer_key":    {c.ConsumerKey},
-		"consumer_secret": {c.ConsumerSecret},
-		"per_page":        {"1"},
+	if !strings.HasPrefix(base, "https://") {
+		return "", fmt.Errorf("la tienda tiene que estar en https: sobre http WooCommerce " +
+			"no acepta la clave y el secreto y viajarían en claro por la red")
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		base+"/wp-json/wc/v3/products?"+q.Encode(), nil)
+		base+"/wp-json/wc/v3/products?per_page=1", nil)
 	if err != nil {
 		return "", err
 	}
+	// Las claves van en la cabecera y no en la URL: un fallo de transporte
+	// devuelve la URL dentro del mensaje de error, y ese mensaje se guarda en
+	// la base y se muestra en el panel. En la cadena de consulta el secreto
+	// acabaría en texto plano en ambos sitios.
+	req.SetBasicAuth(c.ConsumerKey, c.ConsumerSecret)
+
 	var cuerpo []any
 	if err := hacer(req, &cuerpo); err != nil {
 		return "", err
 	}
 	return "conectado a " + base, nil
+}
+
+// sinURL quita la dirección del mensaje de los errores de transporte.
+//
+// net/http envuelve los fallos de red en *url.Error, cuyo Error() incluye la
+// URL completa. Con credenciales en la cadena de consulta, ese texto acaba
+// guardado en channel_accounts.config, en jobs.last_error y en el panel, en
+// claro. Aquí se conserva la causa y se descarta la dirección.
+func sinURL(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return fmt.Errorf("%s: %w", ue.Op, ue.Err)
+	}
+	return err
 }
 
 // FirmarFalabella construye la cadena de consulta firmada que exige Seller
@@ -125,13 +145,24 @@ func FirmarFalabella(params map[string]string, apiKey string) string {
 	sort.Strings(claves)
 	var partes []string
 	for _, k := range claves {
-		partes = append(partes, url.QueryEscape(k)+"="+url.QueryEscape(params[k]))
+		partes = append(partes, escaparRFC3986(k)+"="+escaparRFC3986(params[k]))
 	}
 	base := strings.Join(partes, "&")
 
 	mac := hmac.New(sha256.New, []byte(apiKey))
 	mac.Write([]byte(base))
 	return base + "&Signature=" + hex.EncodeToString(mac.Sum(nil))
+}
+
+// escaparRFC3986 codifica como espera la firma del Seller Center.
+//
+// url.QueryEscape aplica la codificación de formularios, que convierte el
+// espacio en '+'. Falabella recalcula la firma con codificación RFC 3986, que
+// lo convierte en %20: cualquier parámetro con espacios —un nombre de
+// producto, una marca de tiempo con formato distinto— producía una firma que
+// el servidor rechazaba, y el error que devuelve es solo "firma inválida".
+func escaparRFC3986(s string) string {
+	return strings.ReplaceAll(url.QueryEscape(s), "+", "%20")
 }
 
 // ParamsFalabella arma los parámetros comunes de toda llamada.
@@ -271,7 +302,7 @@ func hacer(req *http.Request, out any) error {
 	req.Header.Set("Accept", "application/json")
 	resp, err := cliente.Do(req)
 	if err != nil {
-		return err
+		return sinURL(err)
 	}
 	defer resp.Body.Close()
 	cuerpo, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
