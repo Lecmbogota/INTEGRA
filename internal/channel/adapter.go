@@ -184,7 +184,12 @@ type PublishResult struct {
 	// Adopted es cierto cuando el producto ya existía en el canal y se adoptó
 	// en vez de crearse. Con catálogo vivo en Falabella y MercadoLibre, este
 	// es el camino habitual en la primera sincronización.
-	Adopted     bool
+	Adopted bool
+	// Permalink es la direccion publica de la ficha recien creada, cuando el
+	// canal la devuelve. Se guarda para poder abrir el producto en la tienda
+	// desde Integra: sin ella la columna external_url quedaba siempre vacia y
+	// no habia forma de saltar a lo que se acababa de publicar.
+	Permalink   string
 	VariantRefs map[string]ExternalRef // SKU → referencia
 	Warnings    []string
 }

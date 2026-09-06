@@ -308,8 +308,12 @@ func (s *Server) servirImagen(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "banco de imágenes no configurado", http.StatusServiceUnavailable)
 		return
 	}
-	sha := strings.TrimSuffix(r.PathValue("sha"), ".jpg")
-	variante := r.PathValue("variante")
+	// La extension se admite en cualquiera de los dos tramos y se descarta:
+	// las URL que se publican la llevan al final porque algunos canales
+	// deducen el tipo del fichero por ahi —WordPress rechaza la descarga sin
+	// ella— pero lo que identifica al fichero es el hash, no el nombre.
+	sha := recortarExtension(r.PathValue("sha"))
+	variante := recortarExtension(r.PathValue("variante"))
 
 	ruta, err := s.st.RutaDeImagen(r.Context(), sha, variante)
 	if err != nil {
@@ -354,4 +358,18 @@ func decorar(imgs []store.ImagenGuardada) []map[string]any {
 		})
 	}
 	return out
+}
+
+// recortarExtension quita la extension de imagen de un tramo de la ruta.
+//
+// Se acepta cualquiera de las tres que sabe servir el banco, y no solo .jpg,
+// para que una URL publicada antes de un cambio de formato siga resolviendo:
+// el fichero se busca por hash y el nombre es solo cosmetico.
+func recortarExtension(s string) string {
+	for _, ext := range []string{".jpg", ".jpeg", ".png", ".webp"} {
+		if strings.HasSuffix(strings.ToLower(s), ext) {
+			return s[:len(s)-len(ext)]
+		}
+	}
+	return s
 }

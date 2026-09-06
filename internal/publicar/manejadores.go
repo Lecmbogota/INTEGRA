@@ -151,7 +151,10 @@ func (s *Servicio) publicar(ctx context.Context, t jobs.Trabajo) error {
 	// stock en el mismo cuerpo: los tres hashes describen lo que tiene el
 	// canal.
 	return s.st.GuardarPublicacion(ctx, p.CuentaID, c.ProductoID, c.VarianteID,
-		res.Ref.ListingID, "", res.Ref.VariantID,
+		// El enlace publico se guarda tal como lo devuelve el canal. Antes se
+		// pasaba la cadena vacia y external_url quedaba a NULL siempre, asi que
+		// desde Integra no habia forma de abrir la ficha recien publicada.
+		res.Ref.ListingID, res.Permalink, res.Ref.VariantID,
 		HashContenido(*c), HashPrecio(*c), HashStock(*c), c.PrecioCanal, c.Stock)
 }
 
@@ -266,7 +269,13 @@ func (s *Servicio) producto(c *store.CandidatoPublicacion, cap channel.Capabilit
 	var imgs []channel.Image
 	for i, sha := range c.Imagenes {
 		imgs = append(imgs, channel.Image{
-			URL:      s.baseURL + "/imagenes/" + sha + "/cuadrada_1200",
+			// La extension no es decorativa. WordPress deduce el tipo del
+			// fichero por el final de la URL, no por el Content-Type, y sin
+			// ella rechaza la descarga con «no tienes permiso para subir este
+			// tipo de fichero»: la ficha entera se cae y el motivo que se lee
+			// no tiene nada que ver con la causa. Todas las variantes se
+			// codifican en JPEG (internal/imagen), asi que .jpg siempre vale.
+			URL:      s.baseURL + "/imagenes/" + sha + "/cuadrada_1200.jpg",
 			Position: i, Hash: sha,
 		})
 	}

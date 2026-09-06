@@ -157,7 +157,8 @@ func (a *Adaptador) Publish(ctx context.Context, req channel.PublishRequest) (ch
 	}
 	ref := channel.ExternalRef{ListingID: fmt.Sprint(resp.ID), VariantID: fmt.Sprint(resp.ID), SKU: v.SKU}
 	return channel.PublishResult{
-		Ref: ref, VariantRefs: map[string]channel.ExternalRef{v.SKU: ref},
+		Ref: ref, Permalink: resp.Permalink,
+		VariantRefs: map[string]channel.ExternalRef{v.SKU: ref},
 	}, nil
 }
 

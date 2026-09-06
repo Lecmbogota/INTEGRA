@@ -510,3 +510,30 @@ func TestSobreUnCanalRealElContenidoYElPrecioSalenPorLaRed(t *testing.T) {
 		t.Fatal("tras enviarlo de verdad, el hash de precio sí se guarda")
 	}
 }
+
+// La URL que se publica tiene que terminar en un nombre de fichero con
+// extension. WordPress —y con el cualquier canal que use la biblioteca de
+// medios de WordPress— mira el final de la URL para decidir el tipo del
+// fichero, ignora el Content-Type, y sin extension responde «no tienes
+// permiso para subir este tipo de fichero». La ficha entera se rechaza y el
+// mensaje no menciona la URL, asi que el motivo real no se ve por ningun lado.
+func TestLaURLDeLaImagenPublicadaLlevaExtension(t *testing.T) {
+	s := &Servicio{baseURL: "https://integra.ejemplo.com"}
+	p := s.producto(&store.CandidatoPublicacion{
+		SKU:      "SKU-1",
+		Titulo:   "Un producto",
+		Imagenes: []string{"abc123"},
+	}, channel.Capabilities{})
+
+	if len(p.Images) != 1 {
+		t.Fatalf("se esperaba una imagen, hay %d", len(p.Images))
+	}
+	quiero := "https://integra.ejemplo.com/imagenes/abc123/cuadrada_1200.jpg"
+	if p.Images[0].URL != quiero {
+		t.Errorf("URL de imagen sin extension: %q", p.Images[0].URL)
+	}
+	// El hash sigue siendo el identificador: la extension es solo del nombre.
+	if p.Images[0].Hash != "abc123" {
+		t.Errorf("el hash cambio: %q", p.Images[0].Hash)
+	}
+}

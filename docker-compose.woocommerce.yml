@@ -40,6 +40,13 @@ services:
         condition: service_healthy
     ports:
       - "8090:80"
+    # WordPress comprueba la URL de cada imagen antes de descargarla, y para
+    # eso usa gethostbyname(), que es solo IPv4. Docker Desktop publica
+    # host.docker.internal unicamente por IPv6, asi que la comprobacion
+    # fallaba con «A valid URL was not provided» y ninguna publicacion
+    # llegaba a la tienda. Esta entrada le da tambien una direccion IPv4.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       WORDPRESS_DB_HOST: woo-db:3306
       WORDPRESS_DB_NAME: wordpress
@@ -115,6 +122,21 @@ services:
         # Permalinks bonitos: la API REST devuelve 404 con los de por defecto.
         wp rewrite structure '/%postname%/' --hard --path=/var/www/html
         wp rewrite flush --hard --path=/var/www/html
+
+        # WordPress se niega a descargar imagenes de direcciones privadas: es
+        # su defensa contra SSRF. La API de Integra corre en el anfitrion, que
+        # desde este contenedor es una IP privada, asi que hay que permitir ese
+        # host --y solo ese-- o ninguna ficha llega con foto. Es exclusivo de
+        # esta tienda de pruebas: en produccion Integra sirve las fotos desde
+        # su dominio publico y WordPress las acepta sin nada de esto.
+        mkdir -p /var/www/html/wp-content/mu-plugins
+        printf '%s\n' \
+          '<?php' \
+          '// Solo para la tienda de pruebas local. Ver docker-compose.woocommerce.yml.' \
+          'add_filter("http_request_host_is_external", function ($$ext, $$host) {' \
+          '    return "host.docker.internal" === $$host ? true : $$ext;' \
+          '}, 10, 2);' \
+          > /var/www/html/wp-content/mu-plugins/integra-pruebas.php
 
         # Claves de la API REST. Se crean directamente en la tabla porque
         # WooCommerce no expone un comando de wp-cli para esto.
