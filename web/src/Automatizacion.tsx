@@ -31,20 +31,28 @@ export function Automatizacion() {
   }, [])
   useEffect(() => { cargar() }, [cargar])
 
-  async function alternar(h: Horario) {
-    await api.guardarHorario({ ...h, activo: !h.activo })
-    cargar()
+  // Estas tres acciones fallaban en silencio: la promesa se rompía, nadie la
+  // recogía y la pantalla se quedaba igual. Pausar una automatización y creer
+  // que quedó pausada es peor que ver el error, porque se sigue publicando.
+  async function conAviso(que: string, accion: () => Promise<unknown>) {
+    setError(null)
+    try {
+      await accion()
+      cargar()
+    } catch (e) {
+      setError(`No se pudo ${que}: ${e instanceof Error ? e.message : String(e)}`)
+    }
   }
 
-  async function borrar(id: number) {
-    await api.borrarHorario(id)
-    cargar()
-  }
+  const alternar = (h: Horario) =>
+    conAviso(h.activo ? 'pausar la automatización' : 'reanudar la automatización',
+      () => api.guardarHorario({ ...h, activo: !h.activo }))
 
-  async function reconocer(id: number) {
-    await api.reconocerAlerta(id)
-    cargar()
-  }
+  const borrar = (id: number) =>
+    conAviso('borrar la automatización', () => api.borrarHorario(id))
+
+  const reconocer = (id: number) =>
+    conAviso('marcar el aviso como visto', () => api.reconocerAlerta(id))
 
   return (
     <>

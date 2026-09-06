@@ -27,10 +27,26 @@ export default function App() {
     alCaducarSesion(() => { borrarSesion(); setSesion(null) })
   }, [])
 
+  // Salir tiene que cerrar la sesión en el servidor, no solo olvidarla aquí:
+  // el login deja una cookie que el servidor acepta como credencial durante
+  // 24 h, así que borrando solo el navegador quedaba viva. En un equipo
+  // compartido bastaba con pedir /api/productos desde la barra de
+  // direcciones para seguir viendo el catálogo del usuario anterior.
+  const salir = useCallback(async () => {
+    try {
+      await api.cerrarSesion()
+    } catch {
+      // Si el servidor no contesta se sale igual: dejar al usuario dentro
+      // porque falló la red sería peor. La cookie caduca sola.
+    }
+    borrarSesion()
+    setSesion(null)
+  }, [])
+
   if (!sesion) {
     return <Login onEntrar={setSesion} />
   }
-  return <Aplicacion sesion={sesion} onSalir={() => { borrarSesion(); setSesion(null) }} />
+  return <Aplicacion sesion={sesion} onSalir={salir} />
 }
 
 function Aplicacion({ sesion, onSalir }: { sesion: Sesion; onSalir: () => void }) {

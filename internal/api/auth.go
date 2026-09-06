@@ -113,6 +113,23 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
+	// Borrar la cookie solo afecta a este navegador. El token es un HMAC sin
+	// estado, así que sin revocarlo seguiría valiendo hasta su caducidad para
+	// cualquiera que tenga una copia: en un equipo compartido basta con
+	// pedir /api/productos desde la barra de direcciones.
+	if tok := tokenDe(r); tok != "" {
+		caduca := time.Now().Add(24 * time.Hour)
+		if c := s.extraerClaims(r); c != nil && !c.ExpiresAt.IsZero() {
+			caduca = c.ExpiresAt
+		}
+		tokensRevocados.Revocar(tok, caduca)
+		if c := s.extraerClaims(r); c != nil {
+			// Se tira también la caché de vigencia, para que el cierre se
+			// note en el acto y no dentro de treinta segundos.
+			s.sesiones.olvidar(c.UserID)
+		}
+	}
+
 	http.SetCookie(w, &http.Cookie{
 		Name:     "integra_token",
 		Value:    "",

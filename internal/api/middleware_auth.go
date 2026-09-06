@@ -83,6 +83,14 @@ func (s *Server) exigirSesion(siguiente http.Handler) http.Handler {
 			return
 		}
 
+		// Un token de una sesión cerrada no vale, aunque su firma y su fecha
+		// sigan siendo buenas.
+		if tokensRevocados.EstaRevocado(tokenDe(r)) {
+			escribir(w, http.StatusUnauthorized,
+				map[string]string{"error": "la sesión se cerró"})
+			return
+		}
+
 		estado, err := s.vigencia(r.Context(), claims.UserID)
 		if err != nil {
 			// La base no contesta. No es culpa de quien pide, y devolver 401

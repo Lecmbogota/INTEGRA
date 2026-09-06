@@ -487,6 +487,10 @@ export const api = {
     return pedir<PaginaProductos>(`/api/productos?${qs}`)
   },
 
+  // Cierra la sesión en el servidor. Sin esto, la cookie que dejó el login
+  // sigue siendo una credencial válida hasta 24 h después.
+  cerrarSesion: () => pedir<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
+
   sincronizar: () => pedir<{ estado: string }>('/api/sincronizar', { method: 'POST' }),
 
   editarProducto: (varianteId: number, campos: EdicionProducto) =>

@@ -105,6 +105,7 @@ export function PanelAtributos({ varianteId }: { varianteId: number }) {
   const [anadidos, setAnadidos] = useState<Set<string>>(new Set())
   const [buscando, setBuscando] = useState(false)
   const [filtro, setFiltro] = useState('')
+  const [errorGuardado, setErrorGuardado] = useState<string | null>(null)
 
   const cargar = () => {
     setCargado(false)
@@ -122,9 +123,16 @@ export function PanelAtributos({ varianteId }: { varianteId: number }) {
 
   async function guardar(a: AtributoProducto) {
     setGuardando(a.attribute_id)
+    setErrorGuardado(null)
     try {
       await api.guardarAtributo(varianteId, a.attribute_id, borrador[a.attribute_id] ?? '', '', canal)
       cargar()
+    } catch (e) {
+      // Sin esto el fallo no se veía: el valor seguía escrito en pantalla y
+      // parecía guardado. Un atributo obligatorio que en realidad falta hace
+      // que el canal rechace la publicación entera, y nadie sabría por qué.
+      setErrorGuardado(`No se pudo guardar «${a.nombre || a.attribute_id}»: ${
+        e instanceof Error ? e.message : String(e)}`)
     } finally {
       setGuardando(null)
     }
@@ -156,6 +164,8 @@ export function PanelAtributos({ varianteId }: { varianteId: number }) {
           ? <span className="pastilla bloqueante">{faltan} obligatorios sin valor</span>
           : <span className="pastilla ok">Completos</span>)}
       </div>
+
+      {errorGuardado && <div className="aviso-caja">{errorGuardado}</div>}
 
       {!cargado && <div className="vacio">Cargando…</div>}
 
