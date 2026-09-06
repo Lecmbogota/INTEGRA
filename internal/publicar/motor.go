@@ -33,11 +33,22 @@ type PayloadPublicar struct {
 
 // Plan es el resultado de comparar catálogo contra lo publicado.
 type Plan struct {
-	Publicar int `json:"publicar"`
-	Precio   int `json:"precio"`
-	Stock    int `json:"stock"`
+	Publicar   int `json:"publicar"`
+	Precio     int `json:"precio"`
+	Stock      int `json:"stock"`
 	SinCambios int `json:"sin_cambios"`
 	NoListos   int `json:"no_listos"`
+}
+
+// catalogo y encolador son lo que Planificar necesita del store y de la cola.
+// Son interfaces para poder planificar contra dobles en las pruebas;
+// *store.Store y *jobs.Cola las cumplen sin tocar a quien las llama.
+type catalogo interface {
+	CandidatosPublicacion(ctx context.Context, cuentaID int64) ([]store.CandidatoPublicacion, error)
+}
+
+type encolador interface {
+	Encolar(ctx context.Context, kind string, payload any, op jobs.Opciones) (int64, error)
 }
 
 // Planificar recorre el catálogo publicable de una cuenta, calcula los hashes
@@ -45,7 +56,7 @@ type Plan struct {
 //
 // Es idempotente: la clave única del trabajo impide que dos planificaciones
 // seguidas encolen dos veces el mismo envío.
-func Planificar(ctx context.Context, st *store.Store, cola *jobs.Cola, cuentaID int64) (*Plan, error) {
+func Planificar(ctx context.Context, st catalogo, cola encolador, cuentaID int64) (*Plan, error) {
 	candidatos, err := st.CandidatosPublicacion(ctx, cuentaID)
 	if err != nil {
 		return nil, err
@@ -63,15 +74,27 @@ func Planificar(ctx context.Context, st *store.Store, cola *jobs.Cola, cuentaID 
 		hStock := HashStock(c)
 
 		switch {
-		// Sin publicación previa o con el contenido cambiado: publicación
-		// completa, que ya lleva precio y stock consigo.
-		case c.ExternalID == "" || c.ContentHash != hContenido:
+		// Sin publicación previa: la creación lleva precio y stock dentro del
+		// mismo envío, así que basta con encolarla.
+		case c.ExternalID == "":
 			if err := encolar(ctx, cola, TrabajoPublicar, cuentaID, c.VarianteID, 100); err != nil {
 				return nil, err
 			}
 			p.Publicar++
 		default:
 			cambio := false
+			// Sobre una publicación que ya existe, el contenido se manda con
+			// Update, que no lleva precio ni stock. Por eso las tres ramas se
+			// evalúan a la vez: si fueran excluyentes, editar la descripción
+			// y subir el precio en la misma tanda dejaría el precio sin
+			// enviar y con su hash dado por bueno.
+			if c.ContentHash != hContenido {
+				if err := encolar(ctx, cola, TrabajoPublicar, cuentaID, c.VarianteID, 100); err != nil {
+					return nil, err
+				}
+				p.Publicar++
+				cambio = true
+			}
 			if c.PriceHash != hPrecio {
 				if err := encolar(ctx, cola, TrabajoPrecio, cuentaID, c.VarianteID, 50); err != nil {
 					return nil, err
@@ -96,7 +119,7 @@ func Planificar(ctx context.Context, st *store.Store, cola *jobs.Cola, cuentaID 
 	return p, nil
 }
 
-func encolar(ctx context.Context, cola *jobs.Cola, kind string, cuentaID, varianteID int64, prioridad int) error {
+func encolar(ctx context.Context, cola encolador, kind string, cuentaID, varianteID int64, prioridad int) error {
 	_, err := cola.Encolar(ctx, kind, PayloadPublicar{CuentaID: cuentaID, VarianteID: varianteID},
 		jobs.Opciones{
 			UniqueKey: fmt.Sprintf("%s:%d:%d", kind, cuentaID, varianteID),

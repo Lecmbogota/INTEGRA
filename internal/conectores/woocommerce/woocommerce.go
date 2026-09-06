@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,12 +21,19 @@ import (
 	"github.com/mdv/integra/internal/channel"
 )
 
+// formatoFecha es el ISO 8601 sin zona que espera la API: tanto los filtros de
+// fecha como los campos *_gmt se envían siempre en UTC.
+const formatoFecha = "2006-01-02T15:04:05"
+
 func init() {
 	channel.Register(channel.WooCommerce, func(cfg channel.Config) (channel.Adapter, error) {
-		base := strings.TrimSuffix(cfg.Credentials["url"], "/")
+		base, err := ValidarURLTienda(cfg.Credentials["url"])
+		if err != nil {
+			return nil, err
+		}
 		ck := cfg.Credentials["consumer_key"]
 		cs := cfg.Credentials["consumer_secret"]
-		if base == "" || ck == "" || cs == "" {
+		if ck == "" || cs == "" {
 			return nil, fmt.Errorf("faltan la URL de la tienda y las claves consumer key/secret")
 		}
 		return &Adaptador{
@@ -33,6 +41,32 @@ func init() {
 			cli: &http.Client{Timeout: 30 * time.Second},
 		}, nil
 	})
+}
+
+// ValidarURLTienda normaliza la URL de la tienda y exige HTTPS.
+//
+// WooCommerce solo admite la clave y el secreto (por cabecera Basic o por
+// query) cuando is_ssl() es cierto; sobre HTTP exige OAuth 1.0a de una pata,
+// que este adaptador no implementa. Sin esta comprobación, una cuenta dada de
+// alta con http:// falla con un 401 opaco en cada llamada y, de paso, el
+// consumer secret viaja en claro por el cable y queda escrito en el log de
+// acceso del servidor y de cualquier proxy intermedio. Es preferible rechazar
+// la cuenta al darla de alta. Se exporta para que la prueba de conexión
+// (conectores.probarWoo) pueda aplicar el mismo criterio.
+func ValidarURLTienda(bruta string) (string, error) {
+	base := strings.TrimSuffix(strings.TrimSpace(bruta), "/")
+	if base == "" {
+		return "", fmt.Errorf("falta la URL de la tienda")
+	}
+	u, err := url.Parse(base)
+	if err != nil {
+		return "", fmt.Errorf("la URL de la tienda no es válida: %w", err)
+	}
+	if !strings.EqualFold(u.Scheme, "https") || u.Host == "" {
+		return "", fmt.Errorf("la URL de la tienda debe empezar por https:// (llegó %q): "+
+			"sobre HTTP WooCommerce solo admite OAuth 1.0a y el consumer secret viajaría en claro", base)
+	}
+	return base, nil
 }
 
 type Adaptador struct {
@@ -56,6 +90,7 @@ func (a *Adaptador) Capabilities() channel.Capabilities {
 		RequiresOAuthRefresh: false,
 		MaxTitleLength:       255,
 		RequiresDescription:  false,
+
 		RequiresCategoryMapping: false,
 	}
 }
@@ -70,42 +105,43 @@ func (a *Adaptador) Publish(ctx context.Context, req channel.PublishRequest) (ch
 	if ref, err := a.buscarPorSKU(ctx, v.SKU); err != nil {
 		return channel.PublishResult{}, err
 	} else if ref != nil {
-		return channel.PublishResult{
+		res := channel.PublishResult{
 			Ref: *ref, Adopted: true,
 			Warnings:    []string{"ya existía en la tienda con el mismo SKU: se adoptó la publicación"},
 			VariantRefs: map[string]channel.ExternalRef{v.SKU: *ref},
-		}, nil
+		}
+		if req.DryRun {
+			return res, nil
+		}
+		// La adopción tiene que escribir el contenido: el motor guarda el hash
+		// de contenido como enviado en cuanto Publish responde bien, así que si
+		// aquí no se hace el PUT, un título, una descripción o una foto nuevos
+		// se pierden para siempre y nadie vuelve a encolar el trabajo.
+		if err := a.llamar(ctx, http.MethodPut, "/products/"+ref.ListingID, nil,
+			cuerpoContenido(p), nil); err != nil {
+			return channel.PublishResult{}, err
+		}
+		return res, nil
 	}
 	if req.DryRun {
 		return channel.PublishResult{Ref: channel.ExternalRef{SKU: v.SKU}}, nil
 	}
 
-	cuerpo := map[string]any{
-		"name":              p.Title,
-		"type":              "simple",
-		"status":            "draft", // igual que en Shopify: activar es decisión humana
-		"description":       p.Description,
-		"short_description": "",
-		"sku":               v.SKU,
-		// Woo espera el precio como cadena; un número se acepta pero devuelve
-		// avisos y redondeos inesperados.
-		"regular_price":  strconv.FormatFloat(v.RegularPrice, 'f', 2, 64),
-		"manage_stock":   true,
-		"stock_quantity": v.Quantity,
-		"weight":         strconv.FormatFloat(p.Weight, 'f', 3, 64),
-		"images":         imagenesDe(p.Images),
-	}
-	if p.Brand != "" {
-		// Woo no tiene campo de marca en el núcleo: va como atributo visible.
-		cuerpo["attributes"] = []map[string]any{{
-			"name": "Marca", "visible": true, "options": []string{p.Brand},
-		}}
-	}
+	cuerpo := cuerpoContenido(p)
+	cuerpo["type"] = "simple"
+	cuerpo["status"] = "draft" // igual que en Shopify: activar es decisión humana
+	cuerpo["short_description"] = ""
+	cuerpo["sku"] = v.SKU
+	// Woo espera el precio como cadena; un número se acepta pero devuelve
+	// avisos y redondeos inesperados.
+	cuerpo["regular_price"] = strconv.FormatFloat(v.RegularPrice, 'f', 2, 64)
+	cuerpo["manage_stock"] = true
+	cuerpo["stock_quantity"] = v.Quantity
 
 	var resp struct {
-		ID          int64  `json:"id"`
-		Permalink   string `json:"permalink"`
-		SKU         string `json:"sku"`
+		ID        int64  `json:"id"`
+		Permalink string `json:"permalink"`
+		SKU       string `json:"sku"`
 	}
 	if err := a.llamar(ctx, http.MethodPost, "/products", nil, cuerpo, &resp); err != nil {
 		return channel.PublishResult{}, err
@@ -123,11 +159,34 @@ func (a *Adaptador) Update(ctx context.Context, req channel.UpdateRequest) (chan
 	if req.DryRun {
 		return channel.UpdateResult{Ref: req.Ref}, nil
 	}
-	cuerpo := map[string]any{
-		"name": req.Product.Title, "description": req.Product.Description,
-	}
-	err := a.llamar(ctx, http.MethodPut, "/products/"+req.Ref.ListingID, nil, cuerpo, nil)
+	err := a.llamar(ctx, http.MethodPut, "/products/"+req.Ref.ListingID, nil,
+		cuerpoContenido(req.Product), nil)
 	return channel.UpdateResult{Ref: req.Ref}, err
+}
+
+// cuerpoContenido reúne los campos de ficha que Integra posee.
+//
+// Es el mismo cuerpo al crear, al adoptar y al actualizar: todos entran en el
+// hash de contenido del motor, de modo que si uno no viaja, el motor lo da por
+// sincronizado y la tienda se queda con el valor viejo indefinidamente.
+func cuerpoContenido(p channel.Product) map[string]any {
+	c := map[string]any{
+		"name":        p.Title,
+		"description": p.Description,
+		"weight":      strconv.FormatFloat(p.Weight, 'f', 3, 64),
+	}
+	// "images": [] borra la foto principal y toda la galería; si el producto
+	// no trae imágenes se omite la clave para no vaciar las de la tienda.
+	if len(p.Images) > 0 {
+		c["images"] = imagenesDe(p.Images)
+	}
+	if p.Brand != "" {
+		// Woo no tiene campo de marca en el núcleo: va como atributo visible.
+		c["attributes"] = []map[string]any{{
+			"name": "Marca", "visible": true, "options": []string{p.Brand},
+		}}
+	}
+	return c
 }
 
 func (a *Adaptador) UpdatePrice(ctx context.Context, ups []channel.PriceUpdate) ([]channel.OpResult, error) {
@@ -138,21 +197,34 @@ func (a *Adaptador) UpdatePrice(ctx context.Context, ups []channel.PriceUpdate) 
 		}
 		// El precio de oferta con fechas es nativo: no hacen falta los dos
 		// trabajos (aplicar y revertir) que necesitan Shopify y MercadoLibre.
+		//
+		// La ventana viaja por los campos *_gmt: date_on_sale_from se
+		// interpreta en la hora del sitio, así que una promoción de Colombia
+		// entraría y saldría cinco horas corrida.
 		if u.SalePrice > 0 {
 			cuerpo["sale_price"] = strconv.FormatFloat(u.SalePrice, 'f', 2, 64)
-			if u.StartsAt != nil {
-				cuerpo["date_on_sale_from"] = u.StartsAt.Format("2006-01-02T15:04:05")
-			}
-			if u.EndsAt != nil {
-				cuerpo["date_on_sale_to"] = u.EndsAt.Format("2006-01-02T15:04:05")
-			}
+			cuerpo["date_on_sale_from_gmt"] = fechaGMT(u.StartsAt)
+			cuerpo["date_on_sale_to_gmt"] = fechaGMT(u.EndsAt)
 		} else {
+			// Se limpia también la ventana: una fecha heredada de la promoción
+			// anterior deja is_on_sale() en falso y la tienda seguiría vendiendo
+			// al precio normal aunque el precio de oferta sí se hubiera escrito.
 			cuerpo["sale_price"] = ""
+			cuerpo["date_on_sale_from_gmt"] = ""
+			cuerpo["date_on_sale_to_gmt"] = ""
 		}
 		err := a.llamar(ctx, http.MethodPut, "/products/"+u.Ref.ListingID, nil, cuerpo, nil)
 		out = append(out, channel.OpResult{Ref: u.Ref, OK: err == nil, Error: err})
 	}
 	return out, nil
+}
+
+// fechaGMT devuelve la fecha en UTC, o cadena vacía para que Woo la borre.
+func fechaGMT(t *time.Time) string {
+	if t == nil {
+		return ""
+	}
+	return t.UTC().Format(formatoFecha)
 }
 
 func (a *Adaptador) UpdateStock(ctx context.Context, ups []channel.StockUpdate) ([]channel.OpResult, error) {
@@ -185,7 +257,15 @@ func (a *Adaptador) FetchStatus(ctx context.Context, refs []channel.ExternalRef)
 			StockQuantity *int   `json:"stock_quantity"`
 		}
 		if err := a.llamar(ctx, http.MethodGet, "/products/"+ref.ListingID, nil, nil, &resp); err != nil {
-			continue
+			// Que el producto ya no exista en la tienda es justo lo que se
+			// venía a averiguar: se reporta como eliminado. Cualquier otro
+			// error se devuelve, porque tragárselo hace pasar una tienda caída
+			// por "todo en orden" y el informe sale incompleto sin decirlo.
+			if errors.Is(err, channel.ErrNoEncontrado) {
+				out = append(out, channel.ListingStatus{Ref: ref, Status: "eliminado"})
+				continue
+			}
+			return out, err
 		}
 		st := channel.ListingStatus{Ref: ref, Status: resp.Status, Permalink: resp.Permalink}
 		st.Price, _ = strconv.ParseFloat(resp.Price, 64)
@@ -212,7 +292,8 @@ func (a *Adaptador) ListRemote(ctx context.Context, cur channel.Cursor) (channel
 		Price         string `json:"price"`
 		StockQuantity *int   `json:"stock_quantity"`
 	}
-	if err := a.llamar(ctx, http.MethodGet, "/products", q, nil, &resp); err != nil {
+	cab, err := a.llamarCab(ctx, http.MethodGet, "/products", q, nil, &resp)
+	if err != nil {
 		return channel.RemotePage{}, err
 	}
 
@@ -220,8 +301,8 @@ func (a *Adaptador) ListRemote(ctx context.Context, cur channel.Cursor) (channel
 	for _, p := range resp {
 		precio, _ := strconv.ParseFloat(p.Price, 64)
 		l := channel.RemoteListing{
-			Ref:    channel.ExternalRef{ListingID: fmt.Sprint(p.ID), VariantID: fmt.Sprint(p.ID), SKU: p.SKU},
-			Title:  p.Name, Status: p.Status, Price: precio,
+			Ref:   channel.ExternalRef{ListingID: fmt.Sprint(p.ID), VariantID: fmt.Sprint(p.ID), SKU: p.SKU},
+			Title: p.Name, Status: p.Status, Price: precio,
 		}
 		if p.StockQuantity != nil {
 			l.Quantity = *p.StockQuantity
@@ -231,26 +312,47 @@ func (a *Adaptador) ListRemote(ctx context.Context, cur channel.Cursor) (channel
 	return channel.RemotePage{
 		Items: items,
 		Next:  channel.Cursor{Page: pagina + 1},
-		Done:  len(resp) < 100,
+		Done:  esUltimaPagina(cab, pagina, len(resp)),
 	}, nil
 }
 
 func (a *Adaptador) FetchOrders(ctx context.Context, desde time.Time, cur channel.Cursor) (channel.OrderPage, error) {
-	q := url.Values{"per_page": {"100"}, "orderby": {"date"}, "order": {"asc"}}
+	pagina := cur.Page
+	if pagina <= 0 {
+		pagina = 1
+	}
+	q := url.Values{
+		"per_page": {"100"},
+		// Sin la página, el bucle de ingesta pedía cuarenta veces la primera y
+		// una tienda con más de cien pedidos en la ventana no pasaba de ahí.
+		"page":    {strconv.Itoa(pagina)},
+		"orderby": {"date"},
+		"order":   {"asc"},
+		// Sin dates_are_gmt, WooCommerce compara el filtro contra post_modified,
+		// que está en la hora local del sitio: en una tienda en UTC-5 los pedidos
+		// de las cinco horas de desfase quedan por debajo de la marca de agua y
+		// no se ingieren jamás.
+		"dates_are_gmt": {"true"},
+	}
 	if !desde.IsZero() {
-		q.Set("after", desde.UTC().Format("2006-01-02T15:04:05"))
+		// modified_after y no after: la marca de agua avanza con la última
+		// modificación (ordenes.go usa UpdatedAt cuando el canal la da), así
+		// que filtrar por la fecha de creación dejaría fuera pedidos creados
+		// antes de esa marca. De paso vuelven los cambios de estado.
+		q.Set("modified_after", desde.UTC().Format(formatoFecha))
 	}
 
 	var resp []struct {
-		ID          int64  `json:"id"`
-		Number      string `json:"number"`
-		Status      string `json:"status"`
-		DateCreated string `json:"date_created_gmt"`
-		Currency    string `json:"currency"`
-		Total       string `json:"total"`
-		TotalTax    string `json:"total_tax"`
-		ShippingTot string `json:"shipping_total"`
-		Billing     struct {
+		ID           int64  `json:"id"`
+		Number       string `json:"number"`
+		Status       string `json:"status"`
+		DateCreated  string `json:"date_created_gmt"`
+		DateModified string `json:"date_modified_gmt"`
+		Currency     string `json:"currency"`
+		Total        string `json:"total"`
+		TotalTax     string `json:"total_tax"`
+		ShippingTot  string `json:"shipping_total"`
+		Billing      struct {
 			FirstName string `json:"first_name"`
 			LastName  string `json:"last_name"`
 			Email     string `json:"email"`
@@ -263,15 +365,16 @@ func (a *Adaptador) FetchOrders(ctx context.Context, desde time.Time, cur channe
 			Country   string `json:"country"`
 		} `json:"billing"`
 		LineItems []struct {
-			ID       int64  `json:"id"`
-			Name     string `json:"name"`
-			SKU      string `json:"sku"`
-			Quantity int    `json:"quantity"`
+			ID       int64   `json:"id"`
+			Name     string  `json:"name"`
+			SKU      string  `json:"sku"`
+			Quantity int     `json:"quantity"`
 			Price    float64 `json:"price"`
-			Total    string `json:"total"`
+			Total    string  `json:"total"`
 		} `json:"line_items"`
 	}
-	if err := a.llamar(ctx, http.MethodGet, "/orders", q, nil, &resp); err != nil {
+	cab, err := a.llamarCab(ctx, http.MethodGet, "/orders", q, nil, &resp)
+	if err != nil {
 		return channel.OrderPage{}, err
 	}
 
@@ -281,11 +384,12 @@ func (a *Adaptador) FetchOrders(ctx context.Context, desde time.Time, cur channe
 		imp, _ := strconv.ParseFloat(o.TotalTax, 64)
 		envio, _ := strconv.ParseFloat(o.ShippingTot, 64)
 		// Woo entrega la fecha GMT sin zona; se interpreta como UTC.
-		fecha, _ := time.Parse("2006-01-02T15:04:05", o.DateCreated)
+		fecha, _ := time.Parse(formatoFecha, o.DateCreated)
+		modificado, _ := time.Parse(formatoFecha, o.DateModified)
 
 		ord := channel.Order{
 			ExternalID: fmt.Sprint(o.ID), Number: o.Number, Status: o.Status,
-			OrderedAt: fecha, Currency: o.Currency,
+			OrderedAt: fecha, UpdatedAt: modificado, Currency: o.Currency,
 			Total: total, Tax: imp, Shipping: envio,
 			Buyer: channel.Buyer{
 				Name:  strings.TrimSpace(o.Billing.FirstName + " " + o.Billing.LastName),
@@ -306,14 +410,58 @@ func (a *Adaptador) FetchOrders(ctx context.Context, desde time.Time, cur channe
 		}
 		out = append(out, ord)
 	}
-	return channel.OrderPage{Orders: out, Done: len(resp) < 100}, nil
+	return channel.OrderPage{
+		Orders: out,
+		Next:   channel.Cursor{Page: pagina + 1},
+		Done:   esUltimaPagina(cab, pagina, len(resp)),
+	}, nil
+}
+
+// esUltimaPagina decide si queda algo por pedir.
+//
+// La API anuncia el total de páginas en X-WP-TotalPages; pedir una página
+// posterior a la última responde error, así que se prefiere la cabecera y solo
+// se cae en el conteo de elementos cuando el servidor no la manda.
+func esUltimaPagina(cab http.Header, pagina, recibidos int) bool {
+	if total, err := strconv.Atoi(strings.TrimSpace(cab.Get("X-WP-TotalPages"))); err == nil && total > 0 {
+		return pagina >= total
+	}
+	return recibidos < 100
 }
 
 func (a *Adaptador) AckOrder(ctx context.Context, ref channel.ExternalRef, f channel.Fulfillment) error {
 	// Woo no tiene fulfillment nativo: marcar completado es lo que hace la
-	// tienda. El número de guía va como nota del pedido.
+	// tienda. El número de guía va como nota del pedido, y visible para el
+	// comprador: es el único sitio del pedido donde puede leerlo, porque el
+	// correo de "pedido completado" no la lleva.
+	//
+	// La nota va antes del cambio de estado: si fallara después, el pedido
+	// quedaría completado sin rastro de la guía y el trabajo no se reintenta.
+	if nota := notaDeGuia(f); nota != "" {
+		if err := a.llamar(ctx, http.MethodPost, "/orders/"+ref.ListingID+"/notes", nil,
+			map[string]any{"note": nota, "customer_note": true}, nil); err != nil {
+			return err
+		}
+	}
 	return a.llamar(ctx, http.MethodPut, "/orders/"+ref.ListingID, nil,
 		map[string]any{"status": "completed"}, nil)
+}
+
+func notaDeGuia(f channel.Fulfillment) string {
+	var partes []string
+	if c := strings.TrimSpace(f.Carrier); c != "" {
+		partes = append(partes, "Transportadora: "+c)
+	}
+	if g := strings.TrimSpace(f.TrackingNumber); g != "" {
+		partes = append(partes, "Guía: "+g)
+	}
+	if len(partes) == 0 {
+		return ""
+	}
+	if !f.ShippedAt.IsZero() {
+		partes = append(partes, "Despachado: "+f.ShippedAt.Format("2006-01-02"))
+	}
+	return strings.Join(partes, " · ")
 }
 
 // ------------------------------------------------------------- auxiliares
@@ -349,19 +497,22 @@ func imagenesDe(imgs []channel.Image) []map[string]any {
 }
 
 func (a *Adaptador) llamar(ctx context.Context, metodo, ruta string, q url.Values, cuerpo any, out any) error {
+	_, err := a.llamarCab(ctx, metodo, ruta, q, cuerpo, out)
+	return err
+}
+
+// llamarCab hace la petición y devuelve además las cabeceras, que es donde
+// viaja la paginación (X-WP-TotalPages).
+func (a *Adaptador) llamarCab(ctx context.Context, metodo, ruta string, q url.Values, cuerpo any, out any) (http.Header, error) {
 	if q == nil {
 		q = url.Values{}
 	}
-	// Woo admite las claves por query sobre HTTPS. Es lo que documenta para
-	// clientes que no implementan OAuth 1.0a.
-	q.Set("consumer_key", a.ck)
-	q.Set("consumer_secret", a.cs)
 
 	var body io.Reader
 	if cuerpo != nil {
 		j, err := json.Marshal(cuerpo)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		body = bytes.NewReader(j)
 	}
@@ -369,8 +520,14 @@ func (a *Adaptador) llamar(ctx context.Context, metodo, ruta string, q url.Value
 	req, err := http.NewRequestWithContext(ctx, metodo,
 		a.base+"/wp-json/wc/v3"+ruta+"?"+q.Encode(), body)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	// Las claves van por cabecera, no por la cadena de consulta: en la query
+	// acaban en el log de acceso del servidor, en el de cualquier proxy y —lo
+	// que de verdad las expone— dentro del texto de los errores de red, que se
+	// guardan en channel_accounts.probada_msg y en jobs.last_error y la API
+	// devuelve a cualquier usuario.
+	req.SetBasicAuth(a.ck, a.cs)
 	req.Header.Set("Accept", "application/json")
 	if cuerpo != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -378,12 +535,14 @@ func (a *Adaptador) llamar(ctx context.Context, metodo, ruta string, q url.Value
 
 	resp, err := a.cli.Do(req)
 	if err != nil {
-		return &channel.Error{Kind: channel.WooCommerce, Message: err.Error(), Err: err}
+		// El error de net/http incorpora la URL completa de la petición; se
+		// conserva solo la causa para no arrastrarla a los mensajes guardados.
+		return nil, &channel.Error{Kind: channel.WooCommerce, Message: causaDe(err), Err: err}
 	}
 	defer resp.Body.Close()
 	datos, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {
-		return err
+		return resp.Header, err
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -394,12 +553,22 @@ func (a *Adaptador) llamar(ctx context.Context, metodo, ruta string, q url.Value
 		if resp.StatusCode == http.StatusNotFound {
 			e.Err = channel.ErrNoEncontrado
 		}
-		return e
+		return resp.Header, e
 	}
 	if out == nil {
-		return nil
+		return resp.Header, nil
 	}
-	return json.Unmarshal(datos, out)
+	return resp.Header, json.Unmarshal(datos, out)
+}
+
+// causaDe desenvuelve el *url.Error de net/http para quedarse con el motivo
+// («connection refused», «no such host») sin la URL de la petición.
+func causaDe(err error) string {
+	var ue *url.Error
+	if errors.As(err, &ue) && ue.Err != nil {
+		return ue.Err.Error()
+	}
+	return err.Error()
 }
 
 func recortar(s string, n int) string {

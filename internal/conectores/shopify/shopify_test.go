@@ -1,0 +1,748 @@
+package shopify
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/mdv/integra/internal/channel"
+)
+
+// tienda imita lo justo de la Admin API de Shopify para probar el adaptador
+// sin red ni credenciales. Cada prueba siembra las páginas que le importan.
+//
+// Se registran todas las llamadas porque la mitad de los defectos de este
+// adaptador no se ven en el valor devuelto sino en la petición que NO se hizo
+// (el PUT de contenido, el inventory_levels/set, la segunda página).
+type tienda struct {
+	t *testing.T
+	*httptest.Server
+
+	mu       sync.Mutex
+	llamadas []llamada
+
+	paginasProductos [][]map[string]any
+	paginasPedidos   [][]map[string]any
+	ubicaciones      []map[string]any
+	// respuestaPost es lo que devuelve POST /products.json.
+	respuestaPost map[string]any
+	// inventarioVariante es el inventory_item_id que devuelven las variantes.
+	inventarioVariante int64
+	// estadoProducto responde a GET /products/{id}.json: código y cuerpo.
+	estadoProducto func(id string) (int, map[string]any)
+}
+
+type llamada struct {
+	Metodo   string
+	Ruta     string // sin el prefijo /admin/api/<version>
+	Completa string
+	Query    url.Values
+	Cuerpo   map[string]any
+}
+
+func nuevaTienda(t *testing.T) *tienda {
+	t.Helper()
+	s := &tienda{
+		t:                  t,
+		ubicaciones:        []map[string]any{{"id": 111, "active": true}},
+		inventarioVariante: 888,
+	}
+	s.Server = httptest.NewServer(http.HandlerFunc(s.manejar))
+	t.Cleanup(s.Close)
+	return s
+}
+
+func (s *tienda) prefijo() string { return "/admin/api/" + VersionAPI }
+
+func (s *tienda) manejar(w http.ResponseWriter, r *http.Request) {
+	cuerpo := map[string]any{}
+	if r.Body != nil {
+		datos, _ := io.ReadAll(r.Body)
+		if len(datos) > 0 {
+			_ = json.Unmarshal(datos, &cuerpo)
+		}
+	}
+	ruta := strings.TrimPrefix(r.URL.Path, s.prefijo())
+	s.mu.Lock()
+	s.llamadas = append(s.llamadas, llamada{
+		Metodo: r.Method, Ruta: ruta, Completa: r.URL.Path,
+		Query: r.URL.Query(), Cuerpo: cuerpo,
+	})
+	s.mu.Unlock()
+
+	if !strings.HasPrefix(r.URL.Path, s.prefijo()+"/") {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, `{"errors":"esta prueba solo sirve la version `+VersionAPI+`"}`)
+		return
+	}
+	if r.Header.Get("X-Shopify-Access-Token") == "" {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"errors":"[API] Invalid API key or access token"}`)
+		return
+	}
+
+	switch {
+	case r.Method == http.MethodGet && ruta == "/products.json":
+		s.pagina(w, r, "products", s.paginasProductos)
+	case r.Method == http.MethodPost && ruta == "/products.json":
+		resp := s.respuestaPost
+		if resp == nil {
+			resp = map[string]any{"product": map[string]any{
+				"id": 55, "handle": "producto-nuevo",
+				"variants": []map[string]any{{"id": 66, "sku": "SKU-001", "inventory_item_id": 99}},
+			}}
+		}
+		responder(w, resp)
+	case r.Method == http.MethodGet && ruta == "/orders.json":
+		s.pagina(w, r, "orders", s.paginasPedidos)
+	case r.Method == http.MethodGet && ruta == "/locations.json":
+		responder(w, map[string]any{"locations": s.ubicaciones})
+	case r.Method == http.MethodPost && ruta == "/inventory_levels/set.json":
+		responder(w, map[string]any{"inventory_level": map[string]any{
+			"inventory_item_id": cuerpo["inventory_item_id"],
+			"location_id":       cuerpo["location_id"],
+			"available":         cuerpo["available"],
+		}})
+	case r.Method == http.MethodPut && strings.HasPrefix(ruta, "/products/"):
+		responder(w, map[string]any{"product": map[string]any{"id": idDe(ruta, "/products/")}})
+	case r.Method == http.MethodGet && strings.HasPrefix(ruta, "/products/"):
+		if s.estadoProducto == nil {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, `{"errors":"Not Found"}`)
+			return
+		}
+		codigo, cuerpo := s.estadoProducto(idDe(ruta, "/products/"))
+		if codigo != http.StatusOK {
+			w.WriteHeader(codigo)
+			_, _ = io.WriteString(w, `{"errors":"fallo simulado"}`)
+			return
+		}
+		responder(w, cuerpo)
+	case strings.HasPrefix(ruta, "/variants/"):
+		responder(w, map[string]any{"variant": map[string]any{
+			"id": idDe(ruta, "/variants/"), "inventory_item_id": s.inventarioVariante,
+		}})
+	default:
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, `{"errors":"ruta no simulada: `+ruta+`"}`)
+	}
+}
+
+// pagina sirve la página que pida page_info y anuncia la siguiente en el Link
+// header, que es como pagina de verdad la REST de Shopify.
+func (s *tienda) pagina(w http.ResponseWriter, r *http.Request, clave string, paginas [][]map[string]any) {
+	i := 0
+	if t := r.URL.Query().Get("page_info"); t != "" {
+		if _, err := fmt.Sscanf(t, "pag%d", &i); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"errors":"page_info invalido"}`)
+			return
+		}
+	}
+	var items []map[string]any
+	if i < len(paginas) {
+		items = paginas[i]
+	}
+	if i+1 < len(paginas) {
+		w.Header().Set("Link", "<"+s.URL+s.prefijo()+"/"+clave+".json?limit=250&page_info=pag"+
+			fmt.Sprint(i+1)+">; rel=\"next\"")
+	}
+	responder(w, map[string]any{clave: items})
+}
+
+func idDe(ruta, prefijo string) string {
+	return strings.TrimSuffix(strings.TrimPrefix(ruta, prefijo), ".json")
+}
+
+func responder(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+func (s *tienda) adaptador(t *testing.T, cred map[string]string) *Adaptador {
+	t.Helper()
+	viejo := esquemaAPI
+	esquemaAPI = "http"
+	t.Cleanup(func() { esquemaAPI = viejo })
+
+	if cred == nil {
+		cred = map[string]string{}
+	}
+	cred["tienda"] = strings.TrimPrefix(s.URL, "http://")
+	if cred["token"] == "" {
+		cred["token"] = "shpat_prueba"
+	}
+	ad, err := channel.New(channel.Shopify, channel.Config{Credentials: cred})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ad.(*Adaptador)
+}
+
+func (s *tienda) buscarLlamada(metodo, ruta string) *llamada {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.llamadas {
+		if s.llamadas[i].Metodo == metodo && s.llamadas[i].Ruta == ruta {
+			return &s.llamadas[i]
+		}
+	}
+	return nil
+}
+
+func (s *tienda) contar(metodo, ruta string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, l := range s.llamadas {
+		if l.Metodo == metodo && l.Ruta == ruta {
+			n++
+		}
+	}
+	return n
+}
+
+// producto es el producto normalizado que manda el motor de publicación.
+func producto() channel.Product {
+	return channel.Product{
+		SKU: "SKU-300", Title: "Impresora térmica 80mm", Description: "<p>Ficha nueva</p>",
+		Brand: "Xprinter", Weight: 1.2,
+		Images: []channel.Image{{URL: "https://integra.example/imagenes/abc/cuadrada_1200"}},
+		Variants: []channel.Variant{{
+			SKU: "SKU-300", Barcode: "7898095297749",
+			RegularPrice: 150000, Currency: "COP", Quantity: 40,
+		}},
+	}
+}
+
+// catalogo arma una página de productos con SKUs correlativos.
+func catalogo(desde, n int) []map[string]any {
+	var out []map[string]any
+	for i := desde; i < desde+n; i++ {
+		out = append(out, map[string]any{
+			"id": 1000 + i,
+			"variants": []map[string]any{{
+				"id": 2000 + i, "sku": fmt.Sprintf("SKU-%03d", i), "inventory_item_id": 3000 + i,
+			}},
+		})
+	}
+	return out
+}
+
+// ---------------------------------------------------------------- pruebas
+
+// El defecto crítico: con una sola página, el SKU 300 de un catálogo de 452
+// no se encuentra y Publish crea un duplicado en una tienda viva.
+func TestAdoptaUnSKUQueEstaMasAllaDeLaPrimeraPagina(t *testing.T) {
+	s := nuevaTienda(t)
+	s.paginasProductos = [][]map[string]any{catalogo(0, 250), catalogo(250, 202)}
+
+	ad := s.adaptador(t, nil)
+	res, err := ad.Publish(context.Background(), channel.PublishRequest{Product: producto()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Adopted {
+		t.Fatal("el SKU existe en la segunda página: había que adoptarlo, no crear otro")
+	}
+	if res.Ref.ListingID != "1300" || res.Ref.VariantID != "2300" {
+		t.Errorf("ref = %+v, quería el producto 1300 / variante 2300", res.Ref)
+	}
+	if n := s.contar(http.MethodPost, "/products.json"); n != 0 {
+		t.Errorf("se crearon %d productos: eso es un SKU duplicado en la tienda", n)
+	}
+	if n := s.contar(http.MethodGet, "/products.json"); n != 2 {
+		t.Errorf("se pidieron %d páginas del catálogo, quería 2 (hay que agotarlo)", n)
+	}
+}
+
+// Un SKU que de verdad no existe se sigue creando, y solo entonces.
+func TestPublicaCuandoElSKUNoEstaEnNingunaPagina(t *testing.T) {
+	s := nuevaTienda(t)
+	s.paginasProductos = [][]map[string]any{catalogo(0, 250), catalogo(250, 20)}
+
+	ad := s.adaptador(t, nil)
+	res, err := ad.Publish(context.Background(), channel.PublishRequest{Product: producto()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Adopted || res.Ref.ListingID != "55" {
+		t.Fatalf("res = %+v, quería una publicación nueva", res)
+	}
+}
+
+// Adoptar y devolver éxito sin escribir dejaba el cambio de ficha marcado
+// como sincronizado para siempre: el motor guarda los tres hashes en cuanto
+// Publish devuelve bien.
+func TestLaAdopcionEnviaContenidoPrecioYStock(t *testing.T) {
+	s := nuevaTienda(t)
+	s.paginasProductos = [][]map[string]any{{{
+		"id": 1300,
+		"variants": []map[string]any{{
+			"id": 2300, "sku": "SKU-300", "inventory_item_id": 3300,
+		}},
+	}}}
+
+	ad := s.adaptador(t, nil)
+	if _, err := ad.Publish(context.Background(), channel.PublishRequest{Product: producto()}); err != nil {
+		t.Fatal(err)
+	}
+
+	put := s.buscarLlamada(http.MethodPut, "/products/1300.json")
+	if put == nil {
+		t.Fatal("la adopción no mandó el contenido: la tienda se queda con la ficha vieja")
+	}
+	prod, _ := put.Cuerpo["product"].(map[string]any)
+	if prod["title"] != "Impresora térmica 80mm" {
+		t.Errorf("title = %v", prod["title"])
+	}
+	if prod["body_html"] != "<p>Ficha nueva</p>" {
+		t.Errorf("body_html = %v", prod["body_html"])
+	}
+	if _, hay := prod["images"]; !hay {
+		t.Error("las imágenes entran en el hash de contenido: tienen que viajar")
+	}
+
+	precio := s.buscarLlamada(http.MethodPut, "/variants/2300.json")
+	if precio == nil {
+		t.Fatal("la adopción no mandó el precio")
+	}
+	if v, _ := precio.Cuerpo["variant"].(map[string]any); v["price"] != "150000.00" {
+		t.Errorf("price = %v", v["price"])
+	}
+
+	stock := s.buscarLlamada(http.MethodPost, "/inventory_levels/set.json")
+	if stock == nil {
+		t.Fatal("la adopción no fijó el stock")
+	}
+	if stock.Cuerpo["available"] != float64(40) {
+		t.Errorf("available = %v, quería 40", stock.Cuerpo["available"])
+	}
+}
+
+// inventory_quantity es de solo lectura: el producto nacía con 0 disponibles
+// mientras Integra guardaba el stock_hash como enviado.
+func TestLaPublicacionNuevaFijaElStockConNivelesDeInventario(t *testing.T) {
+	s := nuevaTienda(t)
+
+	ad := s.adaptador(t, nil)
+	res, err := ad.Publish(context.Background(), channel.PublishRequest{Product: producto()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Ref.VariantID != "66" {
+		t.Fatalf("ref = %+v", res.Ref)
+	}
+
+	post := s.buscarLlamada(http.MethodPost, "/products.json")
+	prod, _ := post.Cuerpo["product"].(map[string]any)
+	vars, _ := prod["variants"].([]any)
+	v, _ := vars[0].(map[string]any)
+	if _, hay := v["inventory_quantity"]; hay {
+		t.Error("inventory_quantity es de solo lectura: mandarlo hace creer que el stock viajó")
+	}
+
+	stock := s.buscarLlamada(http.MethodPost, "/inventory_levels/set.json")
+	if stock == nil {
+		t.Fatal("no se fijó el stock tras crear el producto: nace con 0 disponibles")
+	}
+	if stock.Cuerpo["inventory_item_id"] != float64(99) {
+		t.Errorf("inventory_item_id = %v, quería el de la variante recién creada", stock.Cuerpo["inventory_item_id"])
+	}
+	if stock.Cuerpo["available"] != float64(40) {
+		t.Errorf("available = %v, quería 40", stock.Cuerpo["available"])
+	}
+	if stock.Cuerpo["location_id"] != float64(111) {
+		t.Errorf("location_id = %v", stock.Cuerpo["location_id"])
+	}
+}
+
+// Si el stock no se puede fijar, Publish tiene que fallar: si devolviera bien,
+// el motor guardaría el stock_hash y no volvería a intentarlo.
+func TestPublicarFallaSiNoSePuedeFijarElStock(t *testing.T) {
+	s := nuevaTienda(t)
+	s.ubicaciones = []map[string]any{{"id": 111, "active": false}}
+
+	ad := s.adaptador(t, nil)
+	if _, err := ad.Publish(context.Background(), channel.PublishRequest{Product: producto()}); err == nil {
+		t.Fatal("sin ubicación activa el stock no llega: Publish no puede devolver éxito")
+	}
+}
+
+// El precio de línea de Shopify es antes de descuentos: el sale.order de Odoo
+// quedaba por encima de lo cobrado.
+func TestElPrecioDeLineaDescuentaElCupon(t *testing.T) {
+	s := nuevaTienda(t)
+	s.paginasPedidos = [][]map[string]any{{{
+		"id": 5001, "name": "#1001", "financial_status": "paid",
+		"created_at": "2026-09-01T10:01:50-05:00", "updated_at": "2026-09-01T10:05:00-05:00",
+		"currency": "COP", "total_price": "103920.00", "total_tax": "0.00",
+		"line_items": []map[string]any{{
+			"id": 7001, "sku": "SKU-300", "title": "Impresora", "quantity": 1,
+			"price": "129900.00", "total_discount": "25980.00",
+			"discount_allocations": []map[string]any{{"amount": "25980.00"}},
+		}},
+	}}}
+
+	ad := s.adaptador(t, nil)
+	pag, err := ad.FetchOrders(context.Background(), time.Time{}, channel.Cursor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := pag.Orders[0].Lines[0]
+	if l.UnitPrice != 103920 {
+		t.Errorf("UnitPrice = %v, quería 103920 (lo cobrado, no el precio de lista)", l.UnitPrice)
+	}
+	if l.TotalPrice != 103920 {
+		t.Errorf("TotalPrice = %v, quería 103920", l.TotalPrice)
+	}
+	if suma := l.TotalPrice; suma != pag.Orders[0].Total {
+		t.Errorf("las líneas suman %v y el pedido dice %v: el sale.order no cuadraría",
+			suma, pag.Orders[0].Total)
+	}
+}
+
+// Sin leer el Link header la ingesta repetía la misma primera página 40 veces
+// por ronda y solo entraban 100 pedidos.
+func TestLosPedidosPasanDePaginaConElLinkHeader(t *testing.T) {
+	s := nuevaTienda(t)
+	pedido := func(id int) map[string]any {
+		return map[string]any{
+			"id": id, "name": fmt.Sprintf("#%d", id), "financial_status": "paid",
+			"created_at": "2026-09-01T10:00:00-05:00", "updated_at": "2026-09-01T10:00:00-05:00",
+			"currency": "COP", "total_price": "1000.00",
+		}
+	}
+	s.paginasPedidos = [][]map[string]any{{pedido(1), pedido(2)}, {pedido(3)}}
+
+	ad := s.adaptador(t, nil)
+	desde := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	pag, err := ad.FetchOrders(context.Background(), desde, channel.Cursor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pag.Done || pag.Next.Token == "" {
+		t.Fatalf("había una página más: Done=%v Next=%q", pag.Done, pag.Next.Token)
+	}
+
+	pag2, err := ad.FetchOrders(context.Background(), desde, pag.Next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pag2.Orders) != 1 || pag2.Orders[0].ExternalID != "3" {
+		t.Fatalf("la segunda página trajo %+v", pag2.Orders)
+	}
+	if !pag2.Done {
+		t.Error("la segunda página es la última")
+	}
+
+	s.mu.Lock()
+	ultima := s.llamadas[len(s.llamadas)-1]
+	s.mu.Unlock()
+	if ultima.Query.Get("page_info") == "" {
+		t.Error("la segunda petición no llevó el cursor: se repetiría la página 1")
+	}
+	// Shopify rechaza con 400 cualquier parámetro que no sea limit o fields
+	// junto a page_info.
+	if ultima.Query.Get("status") != "" || ultima.Query.Get("updated_at_min") != "" {
+		t.Errorf("con page_info solo viajan limit y fields, y viajó %v", ultima.Query)
+	}
+}
+
+// La marca de agua del núcleo avanza con UpdatedAt: si el filtro fuera
+// created_at_min, un pedido viejo modificado la empujaría por encima de
+// pedidos nuevos que aún no se han traído.
+func TestElFiltroDePedidosVaPorFechaDeModificacion(t *testing.T) {
+	s := nuevaTienda(t)
+	s.paginasPedidos = [][]map[string]any{{}}
+
+	ad := s.adaptador(t, nil)
+	desde := time.Date(2026, 9, 1, 15, 0, 0, 0, time.UTC)
+	if _, err := ad.FetchOrders(context.Background(), desde, channel.Cursor{}); err != nil {
+		t.Fatal(err)
+	}
+	l := s.buscarLlamada(http.MethodGet, "/orders.json")
+	if l.Query.Get("updated_at_min") != "2026-09-01T15:00:00Z" {
+		t.Errorf("updated_at_min = %q", l.Query.Get("updated_at_min"))
+	}
+	if l.Query.Get("created_at_min") != "" {
+		t.Error("con created_at_min un cambio de estado deja pedidos nuevos bajo la marca de agua")
+	}
+}
+
+// El comprador de una compra como invitado venía en la carga y se tiraba:
+// Odoo acababa con un res.partner «Comprador SHOPIFY» por pedido.
+func TestElPedidoSinCustomerUsaElCorreoYLaDireccionDeEnvio(t *testing.T) {
+	s := nuevaTienda(t)
+	s.paginasPedidos = [][]map[string]any{{{
+		"id": 5002, "name": "#1002", "financial_status": "paid",
+		"created_at": "2026-09-02T09:00:00-05:00", "updated_at": "2026-09-02T09:00:00-05:00",
+		"currency": "COP", "total_price": "50000.00",
+		"email": "ana@example.com", "customer": nil,
+		"shipping_address": map[string]any{
+			"name": "Ana Pérez", "phone": "3001234567", "address1": "Calle 10 # 5-20",
+			"city": "Bogotá", "province": "Bogotá D.C.", "zip": "110111", "country": "Colombia",
+		},
+	}}}
+
+	ad := s.adaptador(t, nil)
+	pag, err := ad.FetchOrders(context.Background(), time.Time{}, channel.Cursor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := pag.Orders[0].Buyer
+	if c.Email != "ana@example.com" {
+		t.Errorf("Email = %q: sin correo, resolverCliente crea un partner nuevo por pedido", c.Email)
+	}
+	if c.Name != "Ana Pérez" {
+		t.Errorf("Name = %q", c.Name)
+	}
+	if c.Phone != "3001234567" {
+		t.Errorf("Phone = %q", c.Phone)
+	}
+}
+
+// Un pedido cancelado o de la pasarela de pruebas acababa como sale.order:
+// el núcleo encola el montaje de todo lo que se ingiere.
+func TestDescartaLosPedidosCanceladosYDePrueba(t *testing.T) {
+	s := nuevaTienda(t)
+	base := func(id int) map[string]any {
+		return map[string]any{
+			"id": id, "name": fmt.Sprintf("#%d", id), "financial_status": "paid",
+			"created_at": "2026-09-02T09:00:00-05:00", "updated_at": "2026-09-02T09:00:00-05:00",
+			"currency": "COP", "total_price": "1000.00",
+		}
+	}
+	cancelado := base(1)
+	cancelado["cancelled_at"] = "2026-09-02T09:05:00-05:00"
+	prueba := base(2)
+	prueba["test"] = true
+	s.paginasPedidos = [][]map[string]any{{cancelado, prueba, base(3)}}
+
+	ad := s.adaptador(t, nil)
+	pag, err := ad.FetchOrders(context.Background(), time.Time{}, channel.Cursor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pag.Orders) != 1 || pag.Orders[0].ExternalID != "3" {
+		t.Fatalf("entraron %d pedidos, quería solo el bueno: %+v", len(pag.Orders), pag.Orders)
+	}
+}
+
+// El envío va dentro de total_price pero en ninguna línea: sin leerlo, la
+// cabecera del pedido no cuadra con sus líneas ni con el pedido de Odoo.
+func TestLeeElEnvioYConservaLaCargaOriginal(t *testing.T) {
+	s := nuevaTienda(t)
+	s.paginasPedidos = [][]map[string]any{{{
+		"id": 5003, "name": "#1003", "financial_status": "paid",
+		"created_at": "2026-09-02T09:00:00-05:00", "updated_at": "2026-09-02T10:00:00-05:00",
+		"currency": "COP", "total_price": "115000.00", "total_tax": "0.00",
+		"total_shipping_price_set": map[string]any{
+			"shop_money": map[string]any{"amount": "15000.00", "currency_code": "COP"},
+		},
+		"line_items": []map[string]any{{
+			"id": 7003, "sku": "SKU-300", "title": "Impresora", "quantity": 1, "price": "100000.00",
+		}},
+	}}}
+
+	ad := s.adaptador(t, nil)
+	pag, err := ad.FetchOrders(context.Background(), time.Time{}, channel.Cursor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := pag.Orders[0]
+	if o.Shipping != 15000 {
+		t.Errorf("Shipping = %v, quería 15000", o.Shipping)
+	}
+	if o.Lines[0].TotalPrice+o.Shipping != o.Total {
+		t.Errorf("líneas (%v) + envío (%v) != total (%v)", o.Lines[0].TotalPrice, o.Shipping, o.Total)
+	}
+	if len(o.Raw) == 0 {
+		t.Error("Raw vacío: el pedido quedaría en raw_payload como '{}' e imposible de reprocesar")
+	}
+	if o.UpdatedAt.IsZero() {
+		t.Error("UpdatedAt vacío: un cambio de estado posterior no volvería a entrar")
+	}
+}
+
+// Fijar una versión retirada no congela nada: Shopify hace fall-forward y
+// sirve la petición con otra versión, que cambia cada trimestre.
+func TestLaVersionDeAPIEstaSoportada(t *testing.T) {
+	// Versiones vivas a la fecha de este arreglo (septiembre de 2026); cada
+	// una se soporta doce meses desde su salida.
+	soportadas := map[string]string{
+		"2025-10": "vence el 16/10/2026",
+		"2026-01": "vence el 16/01/2027",
+		"2026-04": "vence el 16/04/2027",
+		"2026-07": "vence el 16/07/2027",
+	}
+	if _, ok := soportadas[VersionAPI]; !ok {
+		t.Fatalf("la versión %s no está soportada: Shopify serviría otra sin avisar", VersionAPI)
+	}
+
+	s := nuevaTienda(t)
+	ad := s.adaptador(t, nil)
+	if _, err := ad.ListRemote(context.Background(), channel.Cursor{}); err != nil {
+		t.Fatal(err)
+	}
+	l := s.buscarLlamada(http.MethodGet, "/products.json")
+	if !strings.HasPrefix(l.Completa, "/admin/api/"+VersionAPI+"/") {
+		t.Errorf("la petición fue a %q: hay otra versión pegada en el código", l.Completa)
+	}
+}
+
+func TestListRemoteDevuelveElCursorDeLaSiguientePagina(t *testing.T) {
+	s := nuevaTienda(t)
+	s.paginasProductos = [][]map[string]any{
+		{{"id": 1, "title": "Uno", "status": "active", "variants": []map[string]any{
+			{"id": 11, "sku": "SKU-001", "price": "1000.00", "inventory_quantity": 3}}}},
+		{{"id": 2, "title": "Dos", "status": "active"}},
+	}
+
+	ad := s.adaptador(t, nil)
+	p1, err := ad.ListRemote(context.Background(), channel.Cursor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p1.Done || p1.Next.Token == "" {
+		t.Fatalf("hay una segunda página: Done=%v Next=%q", p1.Done, p1.Next.Token)
+	}
+	p2, err := ad.ListRemote(context.Background(), p1.Next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p2.Items) != 1 || p2.Items[0].Ref.ListingID != "2" {
+		t.Fatalf("la segunda página trajo %+v", p2.Items)
+	}
+	if !p2.Done {
+		t.Error("la segunda página es la última")
+	}
+}
+
+// La capacidad NativeCompareAtPrice se declaraba y no se escribía nunca.
+func TestElPrecioDeOfertaViajaEnCompareAtPrice(t *testing.T) {
+	s := nuevaTienda(t)
+	ad := s.adaptador(t, nil)
+	ref := channel.ExternalRef{ListingID: "1", VariantID: "77", SKU: "SKU-300"}
+
+	res, err := ad.UpdatePrice(context.Background(), []channel.PriceUpdate{
+		{Ref: ref, RegularPrice: 150000, SalePrice: 120000, Currency: "COP"},
+	})
+	if err != nil || !res[0].OK {
+		t.Fatalf("err=%v res=%+v", err, res)
+	}
+	v, _ := s.buscarLlamada(http.MethodPut, "/variants/77.json").Cuerpo["variant"].(map[string]any)
+	if v["price"] != "120000.00" {
+		t.Errorf("price = %v, quería la oferta", v["price"])
+	}
+	if v["compare_at_price"] != "150000.00" {
+		t.Errorf("compare_at_price = %v, quería el precio de lista tachado", v["compare_at_price"])
+	}
+
+	// Al terminar la oferta hay que vaciar el tachado, o la tienda seguiría
+	// mostrando un descuento que ya no existe.
+	s.mu.Lock()
+	s.llamadas = nil
+	s.mu.Unlock()
+	if _, err := ad.UpdatePrice(context.Background(), []channel.PriceUpdate{
+		{Ref: ref, RegularPrice: 150000, Currency: "COP"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	v, _ = s.buscarLlamada(http.MethodPut, "/variants/77.json").Cuerpo["variant"].(map[string]any)
+	if v["price"] != "150000.00" {
+		t.Errorf("price = %v", v["price"])
+	}
+	if valor, hay := v["compare_at_price"]; !hay || valor != nil {
+		t.Errorf("compare_at_price = %v, quería null para borrar el tachado", valor)
+	}
+}
+
+// Con dos ubicaciones activas, «la primera que llegue» reparte el stock en la
+// equivocada; la cuenta puede fijarla.
+func TestLaUbicacionSeTomaDeLasCredencialesYSeCachea(t *testing.T) {
+	s := nuevaTienda(t)
+	s.ubicaciones = []map[string]any{
+		{"id": 222, "active": true}, // el punto de venta, que Shopify puede listar primero
+		{"id": 111, "active": true},
+	}
+	ad := s.adaptador(t, map[string]string{"location_id": "111"})
+
+	ups := []channel.StockUpdate{
+		{Ref: channel.ExternalRef{VariantID: "77"}, Quantity: 5},
+		{Ref: channel.ExternalRef{VariantID: "78"}, Quantity: 6},
+	}
+	res, err := ad.UpdateStock(context.Background(), ups)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, r := range res {
+		if !r.OK {
+			t.Fatalf("res[%d] = %+v", i, r)
+		}
+	}
+	if n := s.contar(http.MethodGet, "/locations.json"); n != 0 {
+		t.Errorf("se consultaron las ubicaciones %d veces teniendo location_id en la cuenta", n)
+	}
+	l := s.buscarLlamada(http.MethodPost, "/inventory_levels/set.json")
+	if l.Cuerpo["location_id"] != float64(111) {
+		t.Errorf("location_id = %v, quería la de la cuenta", l.Cuerpo["location_id"])
+	}
+}
+
+func TestSinCredencialLaUbicacionSeDescubreUnaSolaVez(t *testing.T) {
+	s := nuevaTienda(t)
+	s.ubicaciones = []map[string]any{{"id": 222, "active": true}, {"id": 111, "active": true}}
+	ad := s.adaptador(t, nil)
+
+	if _, err := ad.UpdateStock(context.Background(), []channel.StockUpdate{
+		{Ref: channel.ExternalRef{VariantID: "77"}, Quantity: 5},
+		{Ref: channel.ExternalRef{VariantID: "78"}, Quantity: 6},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if n := s.contar(http.MethodGet, "/locations.json"); n != 1 {
+		t.Errorf("se consultaron las ubicaciones %d veces por lote, quería 1", n)
+	}
+}
+
+// FetchStatus se tragaba los errores: una publicación borrada desaparecía del
+// informe sin ruido.
+func TestFetchStatusReportaLaPublicacionBorradaYElFalloDelCanal(t *testing.T) {
+	s := nuevaTienda(t)
+	s.estadoProducto = func(id string) (int, map[string]any) {
+		switch id {
+		case "1":
+			return http.StatusOK, map[string]any{"product": map[string]any{
+				"status": "active", "handle": "uno",
+				"variants": []map[string]any{{"price": "1000.00", "inventory_quantity": 4}},
+			}}
+		case "2":
+			return http.StatusNotFound, nil
+		default:
+			return http.StatusInternalServerError, nil
+		}
+	}
+
+	ad := s.adaptador(t, nil)
+	out, err := ad.FetchStatus(context.Background(), []channel.ExternalRef{
+		{ListingID: "1"}, {ListingID: "2"}, {ListingID: "3"},
+	})
+	if err == nil {
+		t.Error("el 500 del canal tiene que salir del informe, no perderse")
+	}
+	if len(out) != 2 {
+		t.Fatalf("out = %+v", out)
+	}
+	if out[1].Status != "no_encontrado" {
+		t.Errorf("la publicación borrada quedó como %q", out[1].Status)
+	}
+}

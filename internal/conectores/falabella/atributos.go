@@ -4,27 +4,43 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/mdv/integra/internal/conectores"
 )
 
 // AtributoCategoria es un atributo que Seller Center pide en una categoría.
 type AtributoCategoria struct {
-	Nombre      string          `json:"Name"`
-	Etiqueta    string          `json:"Label"`
-	TipoDato    string          `json:"AttributeType"`
-	Obligatorio json.Number     `json:"isMandatory"`
-	Opciones    []OpcionAtributo `json:"Options"`
+	Nombre      string    `json:"Name"`
+	Etiqueta    string    `json:"Label"`
+	TipoDato    string    `json:"AttributeType"`
+	Obligatorio numOTexto `json:"isMandatory"`
+	Opciones    opciones  `json:"Options"`
 }
 
 type OpcionAtributo struct {
 	Nombre string `json:"Name"`
 }
 
-// EsObligatorio: Seller Center devuelve 1/0 como número, no un booleano.
+// opciones acepta las dos formas con las que llega la lista de valores: el
+// array plano y el anidado en Options.Option, que además colapsa a objeto
+// cuando la categoría solo ofrece un valor.
+type opciones []OpcionAtributo
+
+func (o *opciones) UnmarshalJSON(b []byte) error {
+	lista, err := listaSC[OpcionAtributo](json.RawMessage(b), "Option")
+	if err != nil {
+		return err
+	}
+	*o = lista
+	return nil
+}
+
+// EsObligatorio: Seller Center devuelve 1/0, unas veces como número y otras
+// como cadena, así que se compara el texto en vez de exigir un tipo.
 func (a AtributoCategoria) EsObligatorio() bool {
-	n, err := a.Obligatorio.Int64()
-	return err == nil && n == 1
+	v := strings.TrimSpace(string(a.Obligatorio))
+	return v == "1" || strings.EqualFold(v, "true")
 }
 
 // AtributosDeCategoria consulta qué pide una categoría de Falabella.
@@ -38,11 +54,11 @@ func (a *Adaptador) AtributosDeCategoria(ctx context.Context, categoriaID string
 
 	var resp struct {
 		SuccessResponse struct {
-			Body []AtributoCategoria `json:"Body"`
+			Body json.RawMessage `json:"Body"`
 		} `json:"SuccessResponse"`
 	}
 	if err := a.llamar(ctx, http.MethodGet, p, nil, &resp); err != nil {
 		return nil, err
 	}
-	return resp.SuccessResponse.Body, nil
+	return listaSC[AtributoCategoria](resp.SuccessResponse.Body, "Attribute")
 }

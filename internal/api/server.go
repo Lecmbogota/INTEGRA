@@ -324,17 +324,7 @@ func (s *Server) confirmarMapeo(w http.ResponseWriter, r *http.Request) {
 // búsqueda"), que es donde estaba el trabajo tedioso: poner precio a 157
 // productos sin coste conocido, uno por uno.
 func (s *Server) editarMasivo(w http.ResponseWriter, r *http.Request) {
-	var cuerpo struct {
-		IDs    []int64 `json:"ids"`
-		Filtro *struct {
-			Busqueda      string `json:"q"`
-			Marca         string `json:"marca"`
-			SoloProblemas bool   `json:"problemas"`
-			VerExcluidos  bool   `json:"excluidos"`
-			SoloSinPrecio bool   `json:"sin_precio"`
-		} `json:"filtro"`
-		Operacion store.OperacionMasiva `json:"operacion"`
-	}
+	var cuerpo cuerpoMasivo
 	if err := json.NewDecoder(r.Body).Decode(&cuerpo); err != nil {
 		escribir(w, http.StatusBadRequest, map[string]string{"error": "cuerpo JSON inválido"})
 		return
@@ -343,13 +333,7 @@ func (s *Server) editarMasivo(w http.ResponseWriter, r *http.Request) {
 	ids := cuerpo.IDs
 	if len(ids) == 0 && cuerpo.Filtro != nil {
 		var err error
-		ids, err = s.st.IDsDeFiltro(r.Context(), store.FiltroProductos{
-			Busqueda:      cuerpo.Filtro.Busqueda,
-			Marca:         cuerpo.Filtro.Marca,
-			SoloProblemas: cuerpo.Filtro.SoloProblemas,
-			VerExcluidos:  cuerpo.Filtro.VerExcluidos,
-			SoloSinPrecio: cuerpo.Filtro.SoloSinPrecio,
-		})
+		ids, err = idsDelFiltro(r.Context(), s.st, cuerpo.Filtro.aFiltro())
 		if err != nil {
 			s.fallo(w, err)
 			return
@@ -361,7 +345,87 @@ func (s *Server) editarMasivo(w http.ResponseWriter, r *http.Request) {
 		escribir(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
 		return
 	}
+	// Una edición de precios que ya se escribió deja los precios efectivos
+	// viejos apuntando al valor anterior; sin refrescarlos, el motor compara
+	// hashes contra el precio de antes y no encola nada.
+	if !res.Simulado && tocaPrecio(cuerpo.Operacion) {
+		s.refrescarPreciosEfectivos(r.Context())
+	}
 	escribir(w, http.StatusOK, res)
+}
+
+// cuerpoMasivo es lo que manda la pantalla de catálogo al editar en masa.
+type cuerpoMasivo struct {
+	IDs       []int64               `json:"ids"`
+	Filtro    *filtroMasivo         `json:"filtro"`
+	Operacion store.OperacionMasiva `json:"operacion"`
+}
+
+// filtroMasivo son las mismas claves que /api/productos recibe por query, tal
+// y como las manda la pantalla en el cuerpo (web/src/Catalogo.tsx).
+//
+// Que estén TODAS importa: una clave que falte aquí Go la descarta en
+// silencio, y el alcance «todos los del filtro actual» pasa a ser un conjunto
+// mayor que el que el operador está mirando. Reprecificar el catálogo entero
+// creyendo que se tocan doce productos no tiene deshacer.
+type filtroMasivo struct {
+	Busqueda      string `json:"q"`
+	Marca         string `json:"marca"`
+	Categoria     string `json:"categoria"`
+	SoloProblemas bool   `json:"problemas"`
+	VerExcluidos  bool   `json:"excluidos"`
+	SoloSinPrecio bool   `json:"sin_precio"`
+}
+
+func (f *filtroMasivo) aFiltro() store.FiltroProductos {
+	return store.FiltroProductos{
+		Busqueda:      f.Busqueda,
+		Marca:         f.Marca,
+		Categoria:     f.Categoria,
+		SoloProblemas: f.SoloProblemas,
+		VerExcluidos:  f.VerExcluidos,
+		SoloSinPrecio: f.SoloSinPrecio,
+	}
+}
+
+// catalogo es lo que necesita idsDelFiltro del store. Interfaz mínima para
+// poder probar la resolución del alcance sin una base de datos detrás.
+type catalogo interface {
+	IDsDeFiltro(context.Context, store.FiltroProductos) ([]int64, error)
+	ListarProductos(context.Context, store.FiltroProductos) ([]store.FilaProducto, int, error)
+}
+
+// topeMasivo es el mismo tope que aplica IDsDeFiltro en SQL. EditarMasivo
+// rechaza por encima de esa cifra, así que pedir más no serviría de nada.
+const topeMasivo = 2000
+
+// idsDelFiltro resuelve el alcance «todos los del filtro actual».
+//
+// IDsDeFiltro no aplica la categoría —su SQL no tiene la condición sobre
+// categ_path que sí tienen ListarProductos y FilasParaPlantilla—, así que
+// mientras siga así la categoría se resuelve con la consulta del catálogo, que
+// devuelve exactamente las mismas filas que el operador tiene delante. En
+// cuanto el store filtre por categoría, esta bifurcación sobra.
+func idsDelFiltro(ctx context.Context, cat catalogo, f store.FiltroProductos) ([]int64, error) {
+	if strings.TrimSpace(f.Categoria) == "" {
+		return cat.IDsDeFiltro(ctx, f)
+	}
+
+	f.Limite = 500
+	var out []int64
+	for f.Offset = 0; f.Offset < topeMasivo; f.Offset += f.Limite {
+		filas, total, err := cat.ListarProductos(ctx, f)
+		if err != nil {
+			return nil, err
+		}
+		for _, fila := range filas {
+			out = append(out, fila.ID)
+		}
+		if len(filas) == 0 || len(out) >= total {
+			break
+		}
+	}
+	return out, nil
 }
 
 func (s *Server) horarios(w http.ResponseWriter, r *http.Request) {
@@ -904,7 +968,70 @@ func (s *Server) editarProducto(w http.ResponseWriter, r *http.Request) {
 		s.fallo(w, err)
 		return
 	}
+
+	// Un precio nuevo en la ficha no vale de nada mientras effective_prices
+	// siga con el viejo: CandidatosPublicacion prefiere ese valor para el
+	// precio y para el hash, así que el motor no vería el cambio y el canal
+	// seguiría vendiendo al precio anterior.
+	if _, hay := campos["precio"]; hay {
+		s.refrescarPreciosEfectivos(r.Context())
+	}
 	escribir(w, http.StatusOK, map[string]string{"estado": "guardado"})
+}
+
+// tocaPrecio dice si una operación masiva cambia el PVP, y por tanto obliga a
+// rehacer los precios efectivos.
+func tocaPrecio(op store.OperacionMasiva) bool {
+	switch op.Tipo {
+	case store.MasivoPrecioDesdeCoste, store.MasivoPrecioFijo,
+		store.MasivoPrecioAjustar, store.MasivoBorrarPrecio:
+		return true
+	}
+	return false
+}
+
+// recalculadorPrecios es lo que necesita refrescarPreciosEfectivos. Interfaz
+// mínima para poder probar el refresco sin base de datos.
+type recalculadorPrecios interface {
+	ListarCuentas(context.Context) ([]store.CuentaCanal, error)
+	RecalcularPreciosCuenta(context.Context, int64) (int, error)
+}
+
+// refrescarPreciosEfectivos rehace effective_prices de todas las cuentas
+// activas tras un cambio de precio hecho desde la interfaz.
+//
+// Se recalcula la cuenta entera porque es lo único que expone el store: es más
+// trabajo del necesario para una variante, pero cuesta una consulta y un lote
+// de UPSERT, y evita el fallo caro: publicar el precio viejo. Va dentro de la
+// petición a propósito —en una goroutine el contexto muere con la respuesta y
+// el recálculo se quedaría a medias.
+//
+// El error no se le devuelve a quien edita: el precio ya está guardado y su
+// edición fue correcta. Queda en el log y en la siguiente pasada del
+// planificador, que recalcula igualmente.
+func (s *Server) refrescarPreciosEfectivos(ctx context.Context) {
+	if err := refrescarPreciosEfectivos(ctx, s.st); err != nil {
+		s.log.Error("recalculando los precios efectivos tras editar el precio", "error", err)
+	}
+}
+
+func refrescarPreciosEfectivos(ctx context.Context, rp recalculadorPrecios) error {
+	cuentas, err := rp.ListarCuentas(ctx)
+	if err != nil {
+		return err
+	}
+	// Un canal caído no puede impedir que se refresquen los demás: se sigue
+	// con todos y se devuelve lo que haya fallado.
+	var fallos []error
+	for _, c := range cuentas {
+		if !c.Activa {
+			continue
+		}
+		if _, err := rp.RecalcularPreciosCuenta(ctx, c.ID); err != nil {
+			fallos = append(fallos, fmt.Errorf("cuenta %d (%s): %w", c.ID, c.CanalCodigo, err))
+		}
+	}
+	return errors.Join(fallos...)
 }
 
 func (s *Server) lanzarSync(w http.ResponseWriter, r *http.Request) {
