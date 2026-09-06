@@ -212,6 +212,7 @@ button.dia.activo { background: var(--acento); border-color: transparent; color:
 
 /* Detalle de un pedido desplegado */
 .detalle-pedido { background: var(--surface-3); padding: 12px 16px; }
+.detalle-pedido .grupo-acciones { margin-top: 12px; }
 .tabla-lineas { margin-top: 8px; font-size: 12px; }
 .tabla-lineas th { font-size: 10px; }
 .tabla-lineas td, .tabla-lineas th { padding: 6px 8px; }

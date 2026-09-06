@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -316,6 +317,129 @@ func (s *Store) MarcarOrdenFallida(ctx context.Context, ordenID int64, causa str
 		    sync_attempts = sync_attempts + 1, updated_at = now()
 		WHERE id = $1`, ordenID, causa)
 	return err
+}
+
+// Motivos por los que un pedido no se puede devolver a la cola de montaje.
+var (
+	ErrOrdenNoExiste  = errors.New("el pedido no existe")
+	ErrOrdenYaEnOdoo  = errors.New("el pedido ya está creado en Odoo: no hay nada que reintentar")
+	ErrOrdenCancelada = errors.New("el canal canceló el pedido: no hay nada que montar en Odoo")
+)
+
+// Reintento es el resultado de devolver a mano un pedido a la cola de montaje.
+type Reintento struct {
+	CuentaID int64
+	Numero   string
+	Canal    string
+	// SinMapear son los SKU que siguen sin variante en el catálogo. Si no está
+	// vacío, el pedido NO se reactivó: volvería a fallar por lo mismo y solo
+	// gastaría intentos. Es lo que hay que arreglar antes de volver a probar.
+	SinMapear []string
+	// Lo que había antes de reiniciar, para que la auditoría diga qué se
+	// deshizo: cuántos intentos llevaba y con qué causa.
+	IntentosPrevios int
+	ErrorPrevio     string
+}
+
+// ReintentarOrden devuelve a la cola de montaje un pedido que no llegó a Odoo.
+//
+// Cada fallo del montaje suma un intento y las consultas de pendientes cortan
+// en cinco, así que un pedido cobrado que fallara cinco veces —Odoo caído un
+// cuarto de hora, una tarifa en la moneda del canal que aún no existía— se
+// quedaba fuera de Odoo sin más camino de vuelta que editar sync_attempts a
+// mano en la base. La alerta seguía sonando y el operador no tenía dónde
+// pulsar. Esta es la operación que hay detrás de ese botón.
+//
+// Antes de reiniciar el contador vuelve a emparejar por SKU las líneas de este
+// pedido, y solo de este: quien reintenta suele acabar de sincronizar el
+// catálogo, y sin esa pasada el reintento fallaría con el mismo «el SKU no
+// existe» hasta que el planificador rescatara la línea en su siguiente
+// horario. Si aun así queda alguna línea sin variante, no se reactiva nada y
+// se devuelven los SKU que faltan (sin error: es una respuesta, no un fallo).
+//
+// Lo que ya está en Odoo y lo que el canal canceló no se reintenta: devolverlo
+// a la cola crearía un segundo sale.order o uno de una venta que no existe.
+func (s *Store) ReintentarOrden(ctx context.Context, ordenID int64) (Reintento, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Reintento{}, err
+	}
+	defer tx.Rollback(ctx)
+
+	// FOR UPDATE OF o: el montaje puede estar anotando un fallo de este mismo
+	// pedido en el worker, y el reinicio tiene que ir antes o después de esa
+	// escritura, nunca entre la lectura y el UPDATE. Acotado a channel_orders
+	// para no retener las filas de la cuenta y del canal.
+	var r Reintento
+	var estado string
+	var odooPedidoID *int64
+	err = tx.QueryRow(ctx, `
+		SELECT o.status::text, o.odoo_sale_order_id, o.channel_account_id,
+		       COALESCE(o.external_number, o.external_order_id), ch.code,
+		       o.sync_attempts, COALESCE(o.sync_error,'')
+		FROM channel_orders o
+		JOIN channel_accounts a ON a.id = o.channel_account_id
+		JOIN channels ch ON ch.id = a.channel_id
+		WHERE o.id = $1
+		FOR UPDATE OF o`, ordenID).
+		Scan(&estado, &odooPedidoID, &r.CuentaID, &r.Numero, &r.Canal,
+			&r.IntentosPrevios, &r.ErrorPrevio)
+	if err == pgx.ErrNoRows {
+		return Reintento{}, ErrOrdenNoExiste
+	}
+	if err != nil {
+		return Reintento{}, fmt.Errorf("leyendo el pedido %d para reintentarlo: %w", ordenID, err)
+	}
+	switch {
+	case odooPedidoID != nil || estado == "created_in_odoo":
+		return Reintento{}, ErrOrdenYaEnOdoo
+	case estado == "ignored":
+		return Reintento{}, ErrOrdenCancelada
+	}
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE channel_order_lines l
+		SET variant_id = v.id
+		FROM product_variants v
+		WHERE l.channel_order_id = $1
+		  AND l.variant_id IS NULL
+		  AND l.channel_sku IS NOT NULL
+		  AND lower(v.sku) = lower(l.channel_sku)
+		  AND v.active`, ordenID); err != nil {
+		return Reintento{}, fmt.Errorf("reemparejando las líneas del pedido %d: %w", ordenID, err)
+	}
+
+	filas, err := tx.Query(ctx, `
+		SELECT COALESCE(channel_sku,'') FROM channel_order_lines
+		WHERE channel_order_id = $1 AND variant_id IS NULL ORDER BY id`, ordenID)
+	if err != nil {
+		return Reintento{}, err
+	}
+	for filas.Next() {
+		var sku string
+		if err := filas.Scan(&sku); err != nil {
+			filas.Close()
+			return Reintento{}, err
+		}
+		r.SinMapear = append(r.SinMapear, sku)
+	}
+	filas.Close()
+	if err := filas.Err(); err != nil {
+		return Reintento{}, err
+	}
+	// Las líneas que sí se emparejaron se quedan emparejadas aunque el pedido
+	// no se reactive: es trabajo hecho y no depende de lo que falte.
+	if len(r.SinMapear) > 0 {
+		return r, tx.Commit(ctx)
+	}
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE channel_orders
+		SET status = 'received', sync_attempts = 0, sync_error = NULL, updated_at = now()
+		WHERE id = $1`, ordenID); err != nil {
+		return Reintento{}, fmt.Errorf("reactivando el pedido %d: %w", ordenID, err)
+	}
+	return r, tx.Commit(ctx)
 }
 
 // ListarOrdenes alimenta la pantalla de pedidos.
