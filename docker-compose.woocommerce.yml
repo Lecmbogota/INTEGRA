@@ -1,0 +1,151 @@
+# WooCommerce local para probar la integración de verdad.
+#
+# Va en su propio compose, igual que el Odoo de pruebas: no es parte de
+# Integra, es la contraparte. De los cuatro canales es el único que se puede
+# levantar entero en local, así que es la única forma de ejercitar el ciclo
+# completo —publicar, vender, ingerir el pedido, montarlo en Odoo— sin
+# depender de que un marketplace nos dé credenciales.
+#
+#   docker compose -f docker-compose.woocommerce.yml up -d
+#
+# La tienda queda en http://localhost:8090
+#
+# Puerto 8090 porque 8069 lo tiene el Odoo de pruebas, 8080 la API de Integra
+# y 8088 otro servicio de la máquina.
+
+services:
+  woo-db:
+    image: mariadb:11
+    container_name: integra-woo-db
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: wordpress
+      MARIADB_USER: wordpress
+      MARIADB_PASSWORD: wordpress_dev
+      MARIADB_ROOT_PASSWORD: root_dev
+    volumes:
+      - woo_db:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  woocommerce:
+    image: wordpress:php8.3-apache
+    container_name: integra-woocommerce
+    restart: unless-stopped
+    depends_on:
+      woo-db:
+        condition: service_healthy
+    ports:
+      - "8090:80"
+    environment:
+      WORDPRESS_DB_HOST: woo-db:3306
+      WORDPRESS_DB_NAME: wordpress
+      WORDPRESS_DB_USER: wordpress
+      WORDPRESS_DB_PASSWORD: wordpress_dev
+      # La API REST de WooCommerce solo acepta la clave y el secreto por
+      # cabecera cuando la conexión es HTTPS. En local no hay certificado, y
+      # montar uno para una tienda de pruebas es más problema que solución:
+      # se le dice a WordPress que se considere tras un proxy seguro. Es
+      # exclusivo de este compose de pruebas y no toca nada de producción.
+      WORDPRESS_CONFIG_EXTRA: |
+        define('FORCE_SSL_ADMIN', false);
+        $$_SERVER['HTTPS'] = 'on';
+    volumes:
+      - woo_html:/var/www/html
+
+  # Instala WordPress y WooCommerce sin pasar por el asistente del navegador,
+  # crea las claves de la API y deja la tienda lista para conectar.
+  #
+  # Corre una vez y termina. Volver a ejecutarlo es inofensivo: cada paso
+  # comprueba antes si ya está hecho.
+  woo-init:
+    image: wordpress:cli-php8.3
+    container_name: integra-woo-init
+    depends_on:
+      woo-db:
+        condition: service_healthy
+    environment:
+      WORDPRESS_DB_HOST: woo-db:3306
+      WORDPRESS_DB_NAME: wordpress
+      WORDPRESS_DB_USER: wordpress
+      WORDPRESS_DB_PASSWORD: wordpress_dev
+    volumes:
+      - woo_html:/var/www/html
+    user: "33:33"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "esperando a que WordPress escriba sus ficheros..."
+        for i in $$(seq 1 60); do
+          [ -f /var/www/html/wp-settings.php ] && break
+          sleep 2
+        done
+
+        if ! wp core is-installed --path=/var/www/html 2>/dev/null; then
+          echo "instalando WordPress..."
+          wp core install --path=/var/www/html \
+            --url=http://localhost:8090 \
+            --title="Tienda de pruebas MDV" \
+            --admin_user=admin \
+            --admin_password=admin \
+            --admin_email=pruebas@mdv.test \
+            --skip-email
+        fi
+
+        if ! wp plugin is-active woocommerce --path=/var/www/html 2>/dev/null; then
+          echo "instalando WooCommerce..."
+          # Version fijada: la ultima (11.1.0) exige WordPress 7.0, que aun no
+          # existe como estable, asi que wp-cli se niega a instalarla. La 10.9.4
+          # es la ultima compatible con la 6.9 que trae la imagen. Fijarla ademas
+          # hace la tienda reproducible: sin version, cada arranque instala otra
+          # y una prueba que pasa hoy puede fallar mañana por un cambio del
+          # plugin y no del codigo.
+          wp plugin install woocommerce --version=10.9.4 --activate --path=/var/www/html
+        fi
+
+        # Moneda y país de MDV: sin esto la tienda nace en dólares y los
+        # precios que publique Integra se verían con el símbolo equivocado.
+        wp option update woocommerce_currency COP --path=/var/www/html
+        wp option update woocommerce_default_country CO:DC --path=/var/www/html
+        wp option update woocommerce_store_city "Bogotá" --path=/var/www/html
+        # Permalinks bonitos: la API REST devuelve 404 con los de por defecto.
+        wp rewrite structure '/%postname%/' --hard --path=/var/www/html
+        wp rewrite flush --hard --path=/var/www/html
+
+        # Claves de la API REST. Se crean directamente en la tabla porque
+        # WooCommerce no expone un comando de wp-cli para esto.
+        if [ "$$(wp db query 'SELECT COUNT(*) FROM wp_woocommerce_api_keys' --skip-column-names --path=/var/www/html 2>/dev/null || echo 0)" = "0" ]; then
+          echo "creando las claves de la API..."
+          CK="ck_$$(head -c 20 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+          CS="cs_$$(head -c 20 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+          # WooCommerce guarda la clave pasada por wc_api_hash(), que es
+          # HMAC-SHA256 con la cadena fija 'wc-api', no un MD5: con el resumen
+          # equivocado la API responde 401 a todo y el motivo no se ve por
+          # ninguna parte.
+          HASH=$$(printf '%s' "$$CK" | openssl dgst -sha256 -hmac 'wc-api' -r | cut -d' ' -f1)
+          TRUNC=$$(printf '%s' "$$CK" | tail -c 7)
+          wp db query "INSERT INTO wp_woocommerce_api_keys
+            (user_id, description, permissions, consumer_key, consumer_secret, truncated_key)
+            VALUES (1, 'Integra', 'read_write', '$$HASH', '$$CS', '$$TRUNC')" --path=/var/www/html
+          echo "$$CK" > /var/www/html/integra-consumer-key.txt
+          echo "$$CS" > /var/www/html/integra-consumer-secret.txt
+        fi
+
+        echo ""
+        echo "==================================================="
+        echo " Tienda lista: http://localhost:8090"
+        echo " Administración: http://localhost:8090/wp-admin (admin / admin)"
+        echo ""
+        echo " Credenciales para la pantalla de Cuentas de Integra:"
+        echo "   URL             http://localhost:8090"
+        echo "   Consumer key    $$(cat /var/www/html/integra-consumer-key.txt 2>/dev/null)"
+        echo "   Consumer secret $$(cat /var/www/html/integra-consumer-secret.txt 2>/dev/null)"
+        echo "==================================================="
+
+volumes:
+  woo_db:
+  woo_html:

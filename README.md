@@ -144,6 +144,34 @@ La API de Claude sigue disponible con `IA_PROVEEDOR=anthropic`, para un lote
 donde la redacción importe de verdad. Los prompts son los mismos en los dos
 proveedores, así que comparar la calidad de uno contra otro significa algo.
 
+## Tienda WooCommerce de pruebas
+
+De los cuatro canales, WooCommerce es el único que se puede levantar entero en
+local. Es la única forma de ejercitar el ciclo completo —publicar, vender,
+ingerir el pedido y montarlo en Odoo— sin depender de que un marketplace nos
+dé credenciales.
+
+```bash
+docker compose -f docker-compose.woocommerce.yml up -d
+```
+
+```bash
+docker compose -f docker-compose.woocommerce.yml run --rm woo-init
+```
+
+El segundo comando instala WordPress y WooCommerce, deja la tienda en pesos
+colombianos, crea las claves de la API y las imprime. **La tienda queda en
+http://localhost:8090** y su administración en `/wp-admin` con `admin`/`admin`.
+Volver a ejecutarlo es inofensivo: cada paso comprueba antes si ya está hecho.
+
+Las claves se generan al azar en cada instalación, así que se copian de la
+salida a la pantalla de *Cuentas* de Integra.
+
+> **Dos cosas fijadas a propósito.** La versión de WooCommerce (10.9.4) porque
+> la última exige un WordPress que todavía no existe como estable, y porque una
+> tienda que instala otra versión en cada arranque convierte una prueba que
+> pasa hoy en una que falla mañana por un cambio del plugin y no del código.
+
 ## Odoo de pruebas
 
 Un Odoo 18 local contra el que probar el ciclo completo sin tocar el del
