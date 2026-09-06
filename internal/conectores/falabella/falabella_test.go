@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -26,7 +27,11 @@ type servidorFalso struct {
 	mu        sync.Mutex
 	acciones  map[string]func(*http.Request) string
 	llamadas  []llamada
-	feedFalso string // RequestId que devuelven las escrituras
+	feedFalso string // RequestId que devuelven las escrituras de producto
+	feedImgs  string // RequestId que devuelve Action=Image, que es otro feed
+	// detalles guarda el FeedDetail de cada feed emitido: producto e imágenes
+	// son escrituras asíncronas distintas y pueden terminar distinto.
+	detalles map[string]string
 }
 
 type llamada struct {
@@ -37,7 +42,11 @@ type llamada struct {
 
 func nuevoServidor(t *testing.T) *servidorFalso {
 	t.Helper()
-	s := &servidorFalso{t: t, acciones: map[string]func(*http.Request) string{}, feedFalso: "FEED-1"}
+	s := &servidorFalso{
+		t: t, acciones: map[string]func(*http.Request) string{},
+		feedFalso: "FEED-1", feedImgs: "FEED-IMG",
+		detalles: map[string]string{},
+	}
 	s.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cuerpo, _ := io.ReadAll(r.Body)
 		accion := r.URL.Query().Get("Action")
@@ -71,26 +80,46 @@ func (s *servidorFalso) respondeCon(accion string, f func(*http.Request) string)
 	s.acciones[accion] = f
 }
 
-// escrituraOK prepara ProductCreate/ProductUpdate para que devuelvan el feed en
-// Head.RequestId (donde lo pone Falabella) y FeedStatus para que lo confirme.
+// escrituraOK prepara ProductCreate/ProductUpdate y la carga de imágenes
+// (Action=Image) para que devuelvan su feed en Head.RequestId (donde lo pone
+// Falabella) y FeedStatus para que los confirme.
 func (s *servidorFalso) escrituraOK() {
 	respuesta := `{"SuccessResponse":{"Head":{"RequestId":"` + s.feedFalso +
 		`","RequestAction":"ProductCreate"},"Body":{}}}`
 	s.responde("ProductCreate", respuesta)
 	s.responde("ProductUpdate", respuesta)
-	s.feedStatus(`{"Feed":"` + s.feedFalso + `","Status":"Finished","TotalRecords":"1",` +
-		`"ProcessedRecords":"1","FailedRecords":"0","FeedErrors":""}`)
+	s.responde("Image", `{"SuccessResponse":{"Head":{"RequestId":"`+s.feedImgs+
+		`","RequestAction":"Image"},"Body":{}}}`)
+	s.feedStatus(feedOK(s.feedFalso))
+	s.feedStatusImagenes(feedOK(s.feedImgs))
 }
 
-// feedStatus responde FeedStatus solo si le piden el feed que se emitió: así la
+func feedOK(id string) string {
+	return `{"Feed":"` + id + `","Status":"Finished","TotalRecords":"1",` +
+		`"ProcessedRecords":"1","FailedRecords":"0","FeedErrors":""}`
+}
+
+// feedStatus responde FeedStatus solo si le piden un feed que se emitió: así la
 // prueba detecta que el identificador se sacó de Head.RequestId y no de un
 // Body.FeedId que llega vacío.
-func (s *servidorFalso) feedStatus(detalle string) {
+func (s *servidorFalso) feedStatus(detalle string) { s.detalleFeed(s.feedFalso, detalle) }
+
+// feedStatusImagenes prepara el resultado del feed de Action=Image, que es un
+// feed distinto del de producto.
+func (s *servidorFalso) feedStatusImagenes(detalle string) { s.detalleFeed(s.feedImgs, detalle) }
+
+func (s *servidorFalso) detalleFeed(id, detalle string) {
+	s.mu.Lock()
+	s.detalles[id] = detalle
+	s.mu.Unlock()
 	s.respondeCon("FeedStatus", func(r *http.Request) string {
-		if r.URL.Query().Get("FeedID") != s.feedFalso {
+		s.mu.Lock()
+		d, ok := s.detalles[r.URL.Query().Get("FeedID")]
+		s.mu.Unlock()
+		if !ok {
 			return `{"ErrorResponse":{"Head":{"ErrorCode":"12","ErrorMessage":"E012: Feed not found"}}}`
 		}
-		return `{"SuccessResponse":{"Body":{"FeedDetail":` + detalle + `}}}`
+		return `{"SuccessResponse":{"Body":{"FeedDetail":` + d + `}}}`
 	})
 }
 
@@ -128,6 +157,9 @@ type productoLeido struct {
 	StockPlano      string `xml:"Quantity"`
 	EstadoPlano     string `xml:"Status"`
 	PesoPlano       string `xml:"PackageWeight"`
+	LargoPlano      string `xml:"PackageLength"`
+	AnchoPlano      string `xml:"PackageWidth"`
+	AltoPlano       string `xml:"PackageHeight"`
 	Unidades        struct {
 		Unidad []struct {
 			OperatorCode    string `xml:"OperatorCode"`
@@ -142,6 +174,9 @@ type productoLeido struct {
 	Datos struct {
 		ConditionType string `xml:"ConditionType"`
 		PackageWeight string `xml:"PackageWeight"`
+		PackageHeight string `xml:"PackageHeight"`
+		PackageWidth  string `xml:"PackageWidth"`
+		PackageLength string `xml:"PackageLength"`
 		Atributos     []struct {
 			XMLName xml.Name
 			Valor   string `xml:",chardata"`
@@ -161,6 +196,24 @@ func leerFeed(t *testing.T, cuerpo string) []productoLeido {
 	return req.Producto
 }
 
+// imagenLeida es el sobre de Action=Image tal como lo recibe el servidor:
+// <Request><ProductImage><SellerSku/><Images><Image/></Images></ProductImage>.
+type imagenLeida struct {
+	SellerSku string   `xml:"SellerSku"`
+	Imagenes  []string `xml:"Images>Image"`
+}
+
+func leerImagenes(t *testing.T, cuerpo string) []imagenLeida {
+	t.Helper()
+	var req struct {
+		Imagen []imagenLeida `xml:"ProductImage"`
+	}
+	if err := xml.Unmarshal([]byte(cuerpo), &req); err != nil {
+		t.Fatalf("el feed de imágenes no es XML válido: %v\n%s", err, cuerpo)
+	}
+	return req.Imagen
+}
+
 func (p productoLeido) atributo(nombre string) string {
 	for _, a := range p.Datos.Atributos {
 		if a.XMLName.Local == nombre {
@@ -174,6 +227,9 @@ func productoDePrueba() channel.Product {
 	return channel.Product{
 		SKU: "AO-NU-1001", Title: "Anillo inteligente", Description: "Mide el sueño",
 		Brand: "RingConn", CategoryID: "811", Weight: 0.85,
+		// Las tres aristas del paquete: Falabella las exige dentro de
+		// ProductData y sin ellas el alta se rechaza entera.
+		LengthCm: 12, WidthCm: 8.4, HeightCm: 5,
 		Attributes: map[string]string{"Talla": "M", "Color": "Negro", "vacio": ""},
 		Images:     []channel.Image{{URL: "https://mdv.co/1.jpg"}},
 		Variants: []channel.Variant{{
@@ -332,6 +388,156 @@ func TestPublishFallaSiElFeedRechazaElProducto(t *testing.T) {
 	}
 	if len(s.llamadasDe("FeedStatus")) == 0 {
 		t.Error("no se consultó FeedStatus")
+	}
+}
+
+// TestPublishMandaLasMedidasDelPaquete: PackageHeight, PackageWidth y
+// PackageLength están marcados obligatorios (Sí) en la tabla de ProductData de
+// ProductCreate, junto a ConditionType y PackageWeight, y el ejemplo oficial
+// los muestra los cinco juntos. Sin ellos el feed termina con FailedRecords>0
+// y "atributo obligatorio ausente" por cada SKU: no se publicaba ni un
+// producto en Falabella.
+// https://developers.falabella.com/v600.0.0/reference/productcreate
+func TestPublishMandaLasMedidasDelPaquete(t *testing.T) {
+	s := nuevoServidor(t)
+	s.responde("GetProducts", `{"SuccessResponse":{"Body":{"Products":{"Product":[]}}}}`)
+	s.escrituraOK()
+
+	if _, err := s.adaptador().Publish(context.Background(),
+		channel.PublishRequest{Product: productoDePrueba()}); err != nil {
+		t.Fatalf("Publish devolvió error: %v", err)
+	}
+	pr := leerFeed(t, s.llamadasDe("ProductCreate")[0].Cuerpo)[0]
+
+	// El tipo documentado es entero de centímetros y Integra guarda dos
+	// decimales: 8,4 cm se declara como 9 y no como 8, porque declarar un
+	// paquete menor que el real lo rechaza la bodega.
+	if pr.Datos.PackageLength != "12" || pr.Datos.PackageWidth != "9" || pr.Datos.PackageHeight != "5" {
+		t.Errorf("las medidas del paquete llegaron mal: largo=%q ancho=%q alto=%q",
+			pr.Datos.PackageLength, pr.Datos.PackageWidth, pr.Datos.PackageHeight)
+	}
+	// Y siguen dentro de ProductData, no como hijos sueltos de Product.
+	if pr.LargoPlano != "" || pr.AnchoPlano != "" || pr.AltoPlano != "" {
+		t.Errorf("las medidas no pueden ir como campos planos del producto: %q %q %q",
+			pr.LargoPlano, pr.AnchoPlano, pr.AltoPlano)
+	}
+}
+
+// TestPublishRechazaElProductoSinMedidas: la escritura es asíncrona y cuesta un
+// feed, así que la variante sin largo/ancho/alto se para en local, igual que
+// se hace con el EAN, el peso y la categoría.
+func TestPublishRechazaElProductoSinMedidas(t *testing.T) {
+	s := nuevoServidor(t)
+	s.responde("GetProducts", `{"SuccessResponse":{"Body":{"Products":{"Product":[]}}}}`)
+	s.escrituraOK()
+
+	p := productoDePrueba()
+	p.WidthCm = 0
+
+	_, err := s.adaptador().Publish(context.Background(), channel.PublishRequest{Product: p})
+	if err == nil {
+		t.Fatal("un producto sin medidas del paquete no puede darse por publicado")
+	}
+	if !strings.Contains(err.Error(), "medidas") {
+		t.Errorf("el error no dice que faltan las medidas: %v", err)
+	}
+	if n := len(s.llamadasDe("ProductCreate")); n != 0 {
+		t.Errorf("no había que gastar el feed: hubo %d ProductCreate", n)
+	}
+}
+
+// TestPublishSubeLasImagenesConSuPropiaAccion: <Images> no existe dentro de
+// <Product> en el esquema de ProductCreate, así que colgarlas ahí se acepta y
+// se ignora y la publicación queda sin fotos para siempre (el motor guarda el
+// hash y no la vuelve a encolar). Las carga Action=Image con el sobre
+// <Request><ProductImage>.
+// https://developers.falabella.com/v500/reference/image
+func TestPublishSubeLasImagenesConSuPropiaAccion(t *testing.T) {
+	s := nuevoServidor(t)
+	s.responde("GetProducts", `{"SuccessResponse":{"Body":{"Products":{"Product":[]}}}}`)
+	s.escrituraOK()
+
+	p := productoDePrueba()
+	// Nueve fotos: el endpoint admite ocho como máximo y mandar nueve tumbaría
+	// la llamada entera, dejando el producto sin ninguna.
+	p.Images = nil
+	for i := 1; i <= 9; i++ {
+		p.Images = append(p.Images, channel.Image{
+			URL: "https://mdv.co/" + strconv.Itoa(i) + ".jpg", Position: i - 1,
+		})
+	}
+
+	if _, err := s.adaptador().Publish(context.Background(),
+		channel.PublishRequest{Product: p}); err != nil {
+		t.Fatalf("Publish devolvió error: %v", err)
+	}
+
+	if imgs := leerFeed(t, s.llamadasDe("ProductCreate")[0].Cuerpo)[0].Imagenes; len(imgs) != 0 {
+		t.Errorf("el feed de producto no debe llevar <Images>: %v", imgs)
+	}
+
+	envios := s.llamadasDe("Image")
+	if len(envios) != 1 {
+		t.Fatalf("se esperaba una llamada a Action=Image y hubo %d", len(envios))
+	}
+	fotos := leerImagenes(t, envios[0].Cuerpo)
+	if len(fotos) != 1 || fotos[0].SellerSku != "AO-NU-1001" {
+		t.Fatalf("el sobre <ProductImage> llegó mal: %+v", fotos)
+	}
+	if len(fotos[0].Imagenes) != 8 {
+		t.Fatalf("el endpoint admite 8 imágenes y se mandaron %d", len(fotos[0].Imagenes))
+	}
+	// La primera queda como imagen principal: el orden del producto manda.
+	if fotos[0].Imagenes[0] != "https://mdv.co/1.jpg" {
+		t.Errorf("la principal tiene que ser la primera del producto y llegó %q", fotos[0].Imagenes[0])
+	}
+}
+
+// TestUpdateSubeLasImagenesConSuPropiaAccion: lo mismo en Update, que es por
+// donde viaja el cambio de fotos de un producto ya publicado.
+func TestUpdateSubeLasImagenesConSuPropiaAccion(t *testing.T) {
+	s := nuevoServidor(t)
+	s.escrituraOK()
+
+	_, err := s.adaptador().Update(context.Background(), channel.UpdateRequest{
+		Ref:     channel.ExternalRef{SKU: "AO-NU-1001"},
+		Product: productoDePrueba(),
+	})
+	if err != nil {
+		t.Fatalf("Update devolvió error: %v", err)
+	}
+	if imgs := leerFeed(t, s.llamadasDe("ProductUpdate")[0].Cuerpo)[0].Imagenes; len(imgs) != 0 {
+		t.Errorf("el feed de producto no debe llevar <Images>: %v", imgs)
+	}
+	envios := s.llamadasDe("Image")
+	if len(envios) != 1 {
+		t.Fatalf("se esperaba una llamada a Action=Image y hubo %d", len(envios))
+	}
+	fotos := leerImagenes(t, envios[0].Cuerpo)
+	if len(fotos) != 1 || len(fotos[0].Imagenes) != 1 || fotos[0].Imagenes[0] != "https://mdv.co/1.jpg" {
+		t.Errorf("las imágenes no viajaron en Action=Image: %+v", fotos)
+	}
+}
+
+// TestPublishFallaSiElFeedDeImagenesRechaza: la carga de imágenes es asíncrona
+// y tiene su propio feed. Darla por buena guardaría el hash y la publicación se
+// quedaría sin fotos para siempre; reintentar es inocuo porque Action=Image
+// reemplaza la lista entera.
+func TestPublishFallaSiElFeedDeImagenesRechaza(t *testing.T) {
+	s := nuevoServidor(t)
+	s.responde("GetProducts", `{"SuccessResponse":{"Body":{"Products":{"Product":[]}}}}`)
+	s.escrituraOK()
+	s.feedStatusImagenes(`{"Feed":"FEED-IMG","Status":"Finished","TotalRecords":"1",
+		"ProcessedRecords":"0","FailedRecords":"1","FeedErrors":{"Error":{
+		"Message":"image resolution below 500x500","SellerSku":"AO-NU-1001","ErrorCode":"31"}}}`)
+
+	_, err := s.adaptador().Publish(context.Background(),
+		channel.PublishRequest{Product: productoDePrueba()})
+	if err == nil {
+		t.Fatal("un feed de imágenes rechazado tiene que devolver error")
+	}
+	if !strings.Contains(err.Error(), "image resolution") {
+		t.Errorf("el error no dice qué rechazó Falabella: %v", err)
 	}
 }
 

@@ -118,11 +118,19 @@ func TestLaFactoriaRechazaLasTiendasSinHTTPS(t *testing.T) {
 		url   string
 		falla bool
 	}{
-		{"http://localhost:8080", true},
 		{"HTTP://tienda.com", true},
+		{"http://192.168.1.50", true}, // la red local no es la propia máquina
 		{"tienda.com", true},
 		{"", true},
 		{"https://tienda.com/", false},
+		// Excepción deliberada: en la propia máquina el tráfico no sale a
+		// ninguna red, y sin ella la tienda de pruebas de
+		// docker-compose.woocommerce.yml —el único canal de los cuatro que se
+		// puede ejercitar de verdad sin credenciales ajenas— quedaría
+		// inutilizable. Ponerle un certificado a una tienda de pruebas es más
+		// problema que solución.
+		{"http://localhost:8090", false},
+		{"http://127.0.0.1:8090", false},
 	}
 	for _, c := range casos {
 		_, err := channel.New(channel.WooCommerce, channel.Config{Credentials: map[string]string{
@@ -580,5 +588,91 @@ func TestFetchStatusReportaLoBorradoYNoSeTragaLosFallos(t *testing.T) {
 
 	if _, err := a.FetchStatus(context.Background(), []channel.ExternalRef{{ListingID: "7"}}); err == nil {
 		t.Error("una tienda caída se reportó como «todo en orden»")
+	}
+}
+
+// La guía se despachaba a la dirección de facturación: FetchOrders solo
+// deserializaba `billing` y el objeto `shipping` —el que WooCommerce rellena
+// cuando el comprador marca «enviar a una dirección diferente»— se tiraba.
+// El error es mudo: los campos llegan llenos y con formato válido.
+func TestLaDireccionDelPedidoEsLaDeEnvioYNoLaDeFacturacion(t *testing.T) {
+	td := nuevaTienda(t, func(w http.ResponseWriter, r *http.Request) {
+		responder(w, []map[string]any{{
+			"id": 700, "number": "W700", "status": "processing",
+			"date_created_gmt": "2026-09-01T10:00:00", "date_modified_gmt": "2026-09-01T10:00:00",
+			"currency": "COP", "total": "115000.00",
+			"billing": map[string]any{
+				"first_name": "Ana", "last_name": "Ruiz",
+				"email": "ana@ejemplo.com", "phone": "3001112233",
+				"address_1": "Calle 100 # 8-60", "address_2": "Oficina 402",
+				"city": "Bogotá", "state": "DC", "postcode": "110111", "country": "CO",
+			},
+			"shipping": map[string]any{
+				"first_name": "Pedro", "last_name": "Gómez",
+				"address_1": "Carrera 43A # 1-50", "address_2": "Torre 3 Apto 902",
+				"city": "Medellín", "state": "ANT", "postcode": "050021", "country": "CO",
+			},
+		}})
+	})
+
+	pag, err := td.adaptador().FetchOrders(context.Background(), time.Time{}, channel.Cursor{})
+	if err != nil {
+		t.Fatalf("FetchOrders: %v", err)
+	}
+	if len(pag.Orders) != 1 {
+		t.Fatalf("se esperaba un pedido, llegaron %d", len(pag.Orders))
+	}
+	c := pag.Orders[0].Buyer
+
+	if c.Address.Line1 != "Carrera 43A # 1-50" || c.Address.City != "Medellín" {
+		t.Errorf("dirección = %+v: el paquete se despacharía a la dirección de facturación", c.Address)
+	}
+	if c.Address.Line2 != "Torre 3 Apto 902" || c.Address.State != "ANT" ||
+		c.Address.PostalCode != "050021" || c.Address.Country != "CO" {
+		t.Errorf("dirección = %+v: se mezclaron campos de billing y shipping", c.Address)
+	}
+	if c.Name != "Pedro Gómez" {
+		t.Errorf("destinatario = %q, se esperaba el de shipping: la guía saldría a nombre de quien pagó", c.Name)
+	}
+	// La tabla «Order - Shipping properties» no trae email; el contacto sale
+	// de billing.
+	if c.Email != "ana@ejemplo.com" || c.Phone != "3001112233" {
+		t.Errorf("contacto = %q/%q: email y teléfono solo existen en billing", c.Email, c.Phone)
+	}
+}
+
+// WooCommerce manda siempre el objeto shipping, con los campos en blanco
+// cuando el pedido no requiere envío (producto digital) o cuando el comprador
+// no marcó dirección distinta. Ahí la única dirección utilizable es billing.
+func TestConShippingEnBlancoSeCaeALaDireccionDeFacturacion(t *testing.T) {
+	td := nuevaTienda(t, func(w http.ResponseWriter, r *http.Request) {
+		responder(w, []map[string]any{{
+			"id": 701, "number": "W701", "status": "processing",
+			"date_created_gmt": "2026-09-01T10:00:00", "date_modified_gmt": "2026-09-01T10:00:00",
+			"currency": "COP", "total": "50000.00",
+			"billing": map[string]any{
+				"first_name": "Ana", "last_name": "Ruiz",
+				"email": "ana@ejemplo.com", "phone": "3001112233",
+				"address_1": "Calle 100 # 8-60", "city": "Bogotá",
+				"state": "DC", "postcode": "110111", "country": "CO",
+			},
+			"shipping": map[string]any{
+				"first_name": "", "last_name": "", "company": "",
+				"address_1": "", "address_2": "", "city": "",
+				"state": "", "postcode": "", "country": "",
+			},
+		}})
+	})
+
+	pag, err := td.adaptador().FetchOrders(context.Background(), time.Time{}, channel.Cursor{})
+	if err != nil {
+		t.Fatalf("FetchOrders: %v", err)
+	}
+	c := pag.Orders[0].Buyer
+	if c.Address.Line1 != "Calle 100 # 8-60" || c.Address.City != "Bogotá" {
+		t.Errorf("dirección = %+v: con shipping vacío el pedido llegaría a Odoo sin dirección", c.Address)
+	}
+	if c.Name != "Ana Ruiz" {
+		t.Errorf("comprador = %q: con shipping vacío el pedido llegaría a Odoo sin nombre", c.Name)
 	}
 }

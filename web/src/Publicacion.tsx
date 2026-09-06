@@ -10,30 +10,43 @@ const NOMBRES: Record<string, string> = {
 export function Publicacion() {
   const [filas, setFilas] = useState<ResumenPublicacion[]>([])
   const [cuentas, setCuentas] = useState<CuentaCanal[]>([])
+  const [cargado, setCargado] = useState(false)
+  const [refrescando, setRefrescando] = useState(false)
   const [plan, setPlan] = useState<string | null>(null)
   const [ocupado, setOcupado] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const cargar = useCallback(() => {
-    Promise.all([api.publicaciones(), api.cuentas()])
-      .then(([p, c]) => { setFilas(p); setCuentas(c) })
+    setRefrescando(true)
+    return Promise.all([api.publicaciones(), api.cuentas()])
+      .then(([p, c]) => { setFilas(p); setCuentas(c); setError(null) })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => { setCargado(true); setRefrescando(false) })
   }, [])
-  useEffect(() => { cargar() }, [cargar])
+  useEffect(() => { void cargar() }, [cargar])
 
-  async function planificar(cuentaId: number) {
-    setOcupado(cuentaId)
+  async function planificar(c: CuentaCanal) {
+    const nombre = NOMBRES[c.canal] ?? c.canal
+    // Planificar encola envíos reales al canal. Con la conexión sin probar,
+    // lo más probable es que fallen todos, así que se avisa antes.
+    if (c.probada_ok !== true) {
+      const aviso = c.probada_ok === false
+        ? `La última prueba de conexión de ${nombre} falló. Si planificas ahora, los envíos encolados fallarán uno a uno. ¿Continuar igualmente?`
+        : `La conexión de ${nombre} nunca se probó. Los envíos que se encolen pueden fallar todos. ¿Continuar igualmente?`
+      if (!window.confirm(aviso)) return
+    }
+    setOcupado(c.id)
     setError(null)
     setPlan(null)
     try {
-      const p = await api.planificar(cuentaId)
+      const p = await api.planificar(c.id)
       const total = p.publicar + p.precio + p.stock
       setPlan(total === 0
-        ? `Nada que enviar: ${p.sin_cambios} productos ya están al día${p.no_listos > 0 ? `, ${p.no_listos} aún no cumplen los requisitos` : ''}.`
-        : `${total} envíos encolados — ${p.publicar} publicaciones, ${p.precio} precios, ${p.stock} stock. El worker los procesa en segundo plano.`)
-      cargar()
+        ? `${nombre}: nada que enviar. ${num(p.sin_cambios)} productos ya están al día${p.no_listos > 0 ? `, ${num(p.no_listos)} aún no cumplen los requisitos` : ''}.`
+        : `${nombre}: ${num(total)} envíos encolados — ${num(p.publicar)} publicaciones, ${num(p.precio)} precios, ${num(p.stock)} stock. El worker los procesa en segundo plano.`)
+      void cargar()
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(`No se pudo planificar los envíos de ${nombre}: ${e instanceof Error ? e.message : String(e)}`)
     } finally {
       setOcupado(null)
     }
@@ -46,6 +59,11 @@ export function Publicacion() {
           <h1 className="titulo-seccion">Publicación</h1>
           <div className="sub">Qué está publicado en cada canal y qué falta por enviar</div>
         </div>
+        <div className="acciones-cabecera">
+          <button onClick={() => void cargar()} disabled={refrescando}>
+            {refrescando ? 'Actualizando…' : 'Actualizar'}
+          </button>
+        </div>
       </header>
 
       {error && <div className="aviso-caja">Error: {error}</div>}
@@ -54,30 +72,57 @@ export function Publicacion() {
       <section className="panel">
         <h2>Estado por canal</h2>
         <div className="cuerpo">
-          {cuentas.length === 0 && (
+          {!cargado && <div className="vacio">Cargando canales…</div>}
+          {cargado && cuentas.length === 0 && (
             <div className="vacio">
               No hay ninguna cuenta conectada. Ve a <strong>Canales</strong> para conectar la primera.
             </div>
           )}
           {cuentas.map((c) => {
             const r = filas.find((f) => f.cuenta_id === c.id)
+            const nombre = NOMBRES[c.canal] ?? c.canal
+            // Un contenedor de pastillas vacío deja un hueco de más en la fila.
+            const hayPastillas = c.probada_ok !== true ||
+              (r !== undefined && (r.con_error > 0 || r.pendientes_cola > 0))
             return (
-              <div key={c.id} className="fila-cuenta">
+              <div key={c.id} className="fila-cuenta fila-apilable">
                 <div className="crece">
-                  <div>{NOMBRES[c.canal] ?? c.canal}</div>
+                  <div className="recorta">
+                    {nombre}
+                    {c.nombre && <span className="tenue"> · {c.nombre}</span>}
+                  </div>
                   <div className="tenue mini-texto">
                     {r
-                      ? `${num(r.activas)} publicados · ${num(r.con_error)} con error · ${num(r.pendientes_cola)} en cola`
+                      ? `${num(r.activas)} publicados`
                       : 'sin publicaciones todavía'}
                     {r?.ultima_publicacion && ` · última: ${fecha(r.ultima_publicacion)}`}
                   </div>
+                  {/* El «title» de la pastilla no existe con el dedo: si la
+                      cuenta no está probada hay que decirlo en texto. */}
+                  {c.probada_ok === false && (
+                    <div className="tenue mini-texto">
+                      La prueba de conexión falló{c.probada_msg ? `: ${c.probada_msg}` : ''}. Arréglala en «Canales» antes de publicar.
+                    </div>
+                  )}
+                  {c.probada_ok === null && (
+                    <div className="tenue mini-texto">
+                      Esta conexión nunca se probó. Ve a «Canales» y pruébala antes de publicar.
+                    </div>
+                  )}
                 </div>
-                {c.probada_ok !== true && (
-                  <span className="pastilla aviso" title="Prueba la conexión en Canales antes de publicar">
-                    sin verificar
-                  </span>
-                )}
-                <button onClick={() => void planificar(c.id)} disabled={ocupado === c.id}>
+                {/* Lo que falló es lo primero que se busca desde el móvil, así
+                    que sale como pastilla y no enterrado en la línea de texto. */}
+                {hayPastillas && <div className="etiquetas">
+                  {r && r.con_error > 0 && (
+                    <span className="pastilla bloqueante">{num(r.con_error)} con error</span>
+                  )}
+                  {r && r.pendientes_cola > 0 && (
+                    <span className="pastilla aviso">{num(r.pendientes_cola)} en cola</span>
+                  )}
+                  {c.probada_ok === false && <span className="pastilla bloqueante">conexión falló</span>}
+                  {c.probada_ok === null && <span className="pastilla aviso">sin verificar</span>}
+                </div>}
+                <button onClick={() => void planificar(c)} disabled={ocupado === c.id}>
                   {ocupado === c.id ? 'Calculando…' : 'Planificar envíos'}
                 </button>
               </div>

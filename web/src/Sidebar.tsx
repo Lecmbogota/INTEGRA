@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import { Marca } from './Logo'
 
 // Las secciones siguen el ciclo real del negocio: primero el catálogo que se
@@ -10,7 +11,7 @@ export type Seccion =
 
 type Item = { id: Seccion; nombre: string; icono: JSX.Element; insignia?: number }
 
-export function Sidebar({ actual, onIr, avisos, pedidosPendientes, alertas, usuario, onSalir }: {
+export function Sidebar({ actual, onIr, avisos, pedidosPendientes, alertas, usuario, onSalir, abierto, onCerrar }: {
   actual: Seccion
   onIr: (s: Seccion) => void
   avisos: number
@@ -18,7 +19,81 @@ export function Sidebar({ actual, onIr, avisos, pedidosPendientes, alertas, usua
   alertas: number
   usuario: { name: string; email: string; role: string }
   onSalir: () => void
+  /* En escritorio el menú es fijo y estas dos no hacen nada; por debajo de
+     1024px es un cajón que tapa el contenido, y entonces sí. */
+  abierto: boolean
+  onCerrar: () => void
 }) {
+  const navRef = useRef<HTMLElement | null>(null)
+
+  // Abierto, el cajón tapa la pantalla: se comporta como un diálogo o el
+  // teclado se pierde detrás de él. Atrapa el foco, cierra con Escape y
+  // congela el fondo. Si la ventana se ensancha hasta escritorio el cajón
+  // deja de existir como tal, así que se cierra: si no, quedaría el velo
+  // encima de un menú que ya es fijo.
+  useEffect(() => {
+    const nodo = navRef.current
+    if (!abierto || !nodo) return
+
+    const activoAlAbrir = document.activeElement
+    const previo = activoAlAbrir instanceof HTMLElement && activoAlAbrir !== document.body
+      ? activoAlAbrir
+      : null
+    document.body.classList.add('menu-abierto')
+
+    // Se recalcula en cada pulsación porque la lista de secciones cambia
+    // según el rol y el pie de sesión puede aparecer o no.
+    const enfocables = () =>
+      Array.from(nodo.querySelectorAll<HTMLElement>('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'))
+        .filter((el) => !el.hasAttribute('disabled'))
+
+    enfocables()[0]?.focus()
+
+    function alPulsar(ev: KeyboardEvent) {
+      if (ev.key === 'Escape') {
+        ev.preventDefault()
+        onCerrar()
+        return
+      }
+      if (ev.key !== 'Tab') return
+      const lista = enfocables()
+      if (lista.length === 0) return
+      const primero = lista[0]
+      const ultimo = lista[lista.length - 1]
+      const activo = document.activeElement
+      if (!nodo || !nodo.contains(activo)) {
+        ev.preventDefault()
+        primero.focus()
+      } else if (ev.shiftKey && activo === primero) {
+        ev.preventDefault()
+        ultimo.focus()
+      } else if (!ev.shiftKey && activo === ultimo) {
+        ev.preventDefault()
+        primero.focus()
+      }
+    }
+    document.addEventListener('keydown', alPulsar)
+
+    // Misma consulta, literalmente, que la del CSS: con «min-width: 1024px»
+    // los dos coincidían en 1024 y el cajón se cerraba solo justo en el ancho
+    // en que aún es un cajón.
+    const estrecho = window.matchMedia('(max-width: 1024px)')
+    const alEnsanchar = () => { if (!estrecho.matches) onCerrar() }
+    estrecho.addEventListener('change', alEnsanchar)
+
+    return () => {
+      document.removeEventListener('keydown', alPulsar)
+      estrecho.removeEventListener('change', alEnsanchar)
+      document.body.classList.remove('menu-abierto')
+      // Devolver el foco a donde estaba: quien navega con teclado tiene que
+      // volver a su sitio, no al principio del documento. Si no había foco
+      // previo —el cajón se abrió con el dedo— se deja en el botón que lo
+      // abre, que es lo único visible de la navegación.
+      const destino = previo ?? document.querySelector<HTMLElement>('.boton-menu')
+      destino?.focus()
+    }
+  }, [abierto, onCerrar])
+
   const grupos: { titulo: string; items: Item[] }[] = [
     {
       titulo: 'Catálogo',
@@ -62,43 +137,55 @@ export function Sidebar({ actual, onIr, avisos, pedidosPendientes, alertas, usua
   ]
 
   return (
-    <nav className="sidebar">
-      <div className="sidebar-marca">
-        <Marca alto={30} />
-        <div>
-          <div className="sidebar-nombre">integra</div>
-          <div className="sidebar-sub">Logistics &amp; Solutions</div>
-        </div>
-      </div>
+    <>
+      {/* Pulsar fuera cierra. Es decorativo para el lector de pantalla: la
+          misma acción está en el botón de cerrar y en la tecla Escape. */}
+      <div className={`velo-menu ${abierto ? 'visible' : ''}`} onClick={onCerrar} aria-hidden="true" />
 
-      {grupos.map((g) => (
-        <div key={g.titulo} className="sidebar-grupo">
-          <div className="sidebar-titulo">{g.titulo}</div>
-          {g.items.map((it) => (
-            <button key={it.id}
-              className={`sidebar-item ${actual === it.id ? 'activo' : ''}`}
-              onClick={() => onIr(it.id)}>
-              <span className="sidebar-icono">{it.icono}</span>
-              <span className="crece">{it.nombre}</span>
-              {it.insignia !== undefined && it.insignia > 0 && (
-                <span className="sidebar-insignia">{it.insignia > 999 ? '999+' : it.insignia}</span>
-              )}
-            </button>
-          ))}
-        </div>
-      ))}
-
-      {/* La sesión va abajo del todo: se consulta poco y se cierra menos. */}
-      <div className="sidebar-sesion">
-        <div className="crece">
-          <div className="sidebar-usuario" title={usuario.email}>{usuario.name}</div>
-          <div className="sidebar-rol">{ROLES[usuario.role] ?? usuario.role}</div>
-        </div>
-        <button className="salir" onClick={onSalir} title="Cerrar sesión">
-          <svg {...props}><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><path d="m16 17 5-5-5-5" /><path d="M21 12H9" /></svg>
+      <nav id="menu-lateral" ref={navRef} aria-label="Secciones"
+        className={`sidebar ${abierto ? 'abierto' : ''}`}>
+        <button className="cerrar-menu" onClick={onCerrar} aria-label="Cerrar menú">
+          <svg {...props}><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
         </button>
-      </div>
-    </nav>
+
+        <div className="sidebar-marca">
+          <Marca alto={30} />
+          <div>
+            <div className="sidebar-nombre">integra</div>
+            <div className="sidebar-sub">Logistics &amp; Solutions</div>
+          </div>
+        </div>
+
+        {grupos.map((g) => (
+          <div key={g.titulo} className="sidebar-grupo">
+            <div className="sidebar-titulo">{g.titulo}</div>
+            {g.items.map((it) => (
+              <button key={it.id}
+                className={`sidebar-item ${actual === it.id ? 'activo' : ''}`}
+                aria-current={actual === it.id ? 'page' : undefined}
+                onClick={() => onIr(it.id)}>
+                <span className="sidebar-icono">{it.icono}</span>
+                <span className="crece">{it.nombre}</span>
+                {it.insignia !== undefined && it.insignia > 0 && (
+                  <span className="sidebar-insignia">{it.insignia > 999 ? '999+' : it.insignia}</span>
+                )}
+              </button>
+            ))}
+          </div>
+        ))}
+
+        {/* La sesión va abajo del todo: se consulta poco y se cierra menos. */}
+        <div className="sidebar-sesion">
+          <div className="crece">
+            <div className="sidebar-usuario" title={usuario.email}>{usuario.name}</div>
+            <div className="sidebar-rol">{ROLES[usuario.role] ?? usuario.role}</div>
+          </div>
+          <button className="salir" onClick={onSalir} title="Cerrar sesión" aria-label="Cerrar sesión">
+            <svg {...props}><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><path d="m16 17 5-5-5-5" /><path d="M21 12H9" /></svg>
+          </button>
+        </div>
+      </nav>
+    </>
   )
 }
 

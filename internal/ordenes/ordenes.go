@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"strings"
 	"time"
 
@@ -34,6 +35,13 @@ const (
 // contable es de una persona, así que lo único automático es enterarse.
 const AlertaPedidoCancelado = "pedido_cancelado"
 
+// AlertaDescuadrePedido avisa de que el sale.order recién creado no cuadra con
+// lo que cobró el canal: el total o la moneda que devuelve Odoo no son los que
+// Integra mandó. Integra no lo corrige —tocar importes o moneda de un
+// documento contable es decisión de una persona—, solo deja constancia antes
+// de que alguien confirme el borrador.
+const AlertaDescuadrePedido = "pedido_descuadrado"
+
 type payloadIngerir struct {
 	CuentaID int64 `json:"cuenta_id"`
 }
@@ -42,11 +50,38 @@ type payloadOdoo struct {
 	OrdenID int64 `json:"orden_id"`
 }
 
+// almacen es lo que este paquete necesita de la capa de persistencia.
+//
+// Se declara del lado que la consume —igual que en internal/sync— para poder
+// probar el montaje del pedido con un doble en memoria. Sin esto, comprobar
+// qué se escribe en Odoo exigiría un PostgreSQL con catálogo cargado, y por
+// eso los campos que se perdían por el camino no los vigilaba ninguna prueba.
+type almacen interface {
+	WatermarkOrdenes(ctx context.Context, cuentaID int64) (time.Time, error)
+	ActualizarWatermarkOrdenes(ctx context.Context, cuentaID int64, hasta time.Time, errMsg string) error
+	GuardarOrden(ctx context.Context, d store.DatosOrden) (int64, bool, error)
+	DescontarStockPublicado(ctx context.Context, ordenID int64) (float64, error)
+	DevolverStockReservado(ctx context.Context, ordenID int64, motivo string) (float64, error)
+	MarcarOrdenCancelada(ctx context.Context, ordenID int64, estadoCanal string) (store.Cancelacion, error)
+	CrearAlerta(ctx context.Context, tipo, severidad string, cuentaID *int64, mensaje string, detalle any) error
+	OrdenPendientePorID(ctx context.Context, id int64) (*store.Orden, error)
+	MarcarOrdenCreada(ctx context.Context, ordenID, odooPedidoID, odooPartnerID int64) error
+	MarcarOrdenFallida(ctx context.Context, ordenID int64, causa string) error
+	BodegaDeOrden(ctx context.Context, ordenID int64) (*store.BodegaCuenta, error)
+	OdooProductIDDeVariante(ctx context.Context, varianteID int64) (int64, error)
+	DatosCompradorDeOrden(ctx context.Context, ordenID int64) (*store.DatosComprador, error)
+	DireccionEnvioDeOrden(ctx context.Context, ordenID int64) (DireccionEnvio, error)
+}
+
 // Servicio ingiere pedidos y los monta en Odoo.
 type Servicio struct {
-	st  *store.Store
-	cif *crypto.Cifrador
-	log *slog.Logger
+	st almacen
+	// stConcreto es el mismo almacén sin la interfaz. Construir el adaptador
+	// de un canal exige el tipo concreto, así que la ingesta lo necesita;
+	// queda nulo en las pruebas del montaje, que no hablan con ningún canal.
+	stConcreto *store.Store
+	cif        *crypto.Cifrador
+	log        *slog.Logger
 	// abrirOdoo se inyecta para no duplicar aquí el descifrado de la conexión.
 	abrirOdoo func(context.Context) (*odoo.Client, error)
 	// cola encola el montaje en Odoo de cada pedido ingerido. La rellena
@@ -57,7 +92,17 @@ type Servicio struct {
 
 func NuevoServicio(st *store.Store, cif *crypto.Cifrador, log *slog.Logger,
 	abrirOdoo func(context.Context) (*odoo.Client, error)) *Servicio {
-	return &Servicio{st: st, cif: cif, log: log, abrirOdoo: abrirOdoo}
+	return &Servicio{st: tienda{st}, stConcreto: st, cif: cif, log: log, abrirOdoo: abrirOdoo}
+}
+
+// nuevoCon inyecta la persistencia. Lo usan las pruebas, que sustituyen la
+// base por un doble en memoria y Odoo por un servidor XML-RPC simulado.
+func nuevoCon(st almacen, log *slog.Logger,
+	abrirOdoo func(context.Context) (*odoo.Client, error)) *Servicio {
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
+	return &Servicio{st: st, log: log, abrirOdoo: abrirOdoo}
 }
 
 func (s *Servicio) Registrar(w *jobs.Worker) {
@@ -339,6 +384,23 @@ func (s *Servicio) CrearPedido(ctx context.Context, o store.Orden) error {
 		return err
 	}
 
+	// La moneda se fija antes de crear nada: si no hay tarifa en la moneda del
+	// canal, el pedido no se monta. Ver tarifaEnMoneda.
+	tarifaID, tarifaNombre, err := tarifaEnMoneda(cli, o.Moneda)
+	if err != nil {
+		_ = s.st.MarcarOrdenFallida(ctx, o.ID, err.Error())
+		return err
+	}
+	if tarifaID == 0 {
+		causa := fmt.Sprintf(
+			"no hay ninguna tarifa (product.pricelist) de Odoo en %s, que es la moneda del "+
+				"pedido %s: crea una tarifa en esa moneda antes de reintentar, o el pedido "+
+				"quedaría valorado en la moneda de la tarifa del cliente",
+			o.Moneda, o.Numero)
+		_ = s.st.MarcarOrdenFallida(ctx, o.ID, causa)
+		return fmt.Errorf("%s", causa)
+	}
+
 	// Las líneas van en el formato de comandos x2many de Odoo: (0, 0, valores)
 	// crea una línea nueva dentro del pedido.
 	var lineas []interface{}
@@ -353,6 +415,30 @@ func (s *Servicio) CrearPedido(ctx context.Context, o store.Orden) error {
 			"product_uom_qty": l.Cantidad,
 			"price_unit":      l.PrecioUnit,
 			"name":            l.Titulo,
+			// tax_id explícito y vacío, en el comando x2many (6, 0, []).
+			//
+			// price_unit es el precio final que pagó el comprador en el canal,
+			// con el impuesto ya dentro. Los impuestos de venta de esta base
+			// son «Tax Excluded» (account.tax.price_include_override = False),
+			// y la documentación de Odoo 18 dice que en ese modo «the tax
+			// amount is not included in the sales price. The tax computation
+			// will therefore compute a tax amount on top of the sales price»
+			// (https://www.odoo.com/documentation/18.0/applications/finance/accounting/taxes/tax_computation.html).
+			//
+			// Omitir la clave no significaba «sin impuestos»:
+			// sale.order.line.tax_id se declara compute='_compute_tax_id',
+			// store=True, readonly=False, precompute=True, y el ORM solo
+			// precalcula los campos que NO vienen en los valores de create
+			// (odoo/models.py, _add_precomputed_values: `if fname not in
+			// vals`). Así que Odoo lo rellenaba desde product.taxes_id y
+			// sumaba un 15 % encima de un precio que ya lo llevaba dentro.
+			//
+			// Mandándolo vacío el pedido refleja exactamente lo que cobró el
+			// canal, que es la decisión tomada: borrador, comprador real y sin
+			// tocar la configuración de impuestos de Odoo. El desglose fiscal
+			// de la venta lo decide quien revise el borrador antes de
+			// confirmarlo; ver AlertaDescuadrePedido.
+			"tax_id": []interface{}{[]interface{}{6, 0, []interface{}{}}},
 		}})
 	}
 
@@ -368,7 +454,7 @@ func (s *Servicio) CrearPedido(ctx context.Context, o store.Orden) error {
 		bodegaOdooID = bodega.OdooID
 	}
 
-	valores := valoresPedido(o, partnerID, ref, lineas, bodegaOdooID)
+	valores := valoresPedido(o, partnerID, ref, lineas, bodegaOdooID, tarifaID)
 
 	// Se crea en borrador a propósito: confirmar reserva stock y dispara
 	// contabilidad, y esa decisión es de quien lleva las cuentas de MDV.
@@ -383,7 +469,14 @@ func (s *Servicio) CrearPedido(ctx context.Context, o store.Orden) error {
 		nombreBodega = bodega.Codigo
 	}
 	s.log.Info("pedido creado en Odoo", "canal", o.Canal, "numero", o.Numero,
-		"odoo_id", pedidoID, "total", o.Total, "bodega", nombreBodega)
+		"odoo_id", pedidoID, "total", o.Total, "bodega", nombreBodega,
+		"tarifa", tarifaNombre)
+
+	// Lo que Odoo acabe calculando no depende solo de lo que se mandó: una
+	// posición fiscal, una tarifa o una conversión de moneda pueden alterarlo
+	// sin dar un solo error. Se relee y se contrasta antes de que nadie
+	// confirme el borrador.
+	s.verificarPedido(ctx, cli, o, pedidoID)
 	return s.st.MarcarOrdenCreada(ctx, o.ID, pedidoID, partnerID)
 }
 
@@ -396,9 +489,14 @@ func (s *Servicio) CrearPedido(ctx context.Context, o store.Orden) error {
 // Con bodegaOdooID en cero la clave no se manda: una cuenta sin bodegas
 // asignadas debe seguir dejando que Odoo decida, no fallar.
 //
-// Nada de impuestos aquí a propósito: los pone Odoo con su localización.
+// Los impuestos no se configuran aquí: cada línea viaja con tax_id vacío para
+// que Odoo no sume nada sobre el precio que ya cobró el canal. Ver CrearPedido.
+//
+// Con tarifaID en cero la clave no se manda. No debería ocurrir —CrearPedido
+// falla antes— pero valoresPedido no puede decidir por su cuenta la moneda de
+// un documento contable.
 func valoresPedido(o store.Orden, partnerID int64, ref string,
-	lineas []interface{}, bodegaOdooID int64) map[string]interface{} {
+	lineas []interface{}, bodegaOdooID, tarifaID int64) map[string]interface{} {
 
 	valores := map[string]interface{}{
 		"partner_id":       partnerID,
@@ -410,7 +508,124 @@ func valoresPedido(o store.Orden, partnerID int64, ref string,
 	if bodegaOdooID > 0 {
 		valores["warehouse_id"] = bodegaOdooID
 	}
+	if tarifaID > 0 {
+		valores["pricelist_id"] = tarifaID
+	}
 	return valores
+}
+
+// tarifaEnMoneda busca la tarifa de Odoo que factura en la moneda del canal.
+//
+// La moneda del pedido NO se puede mandar: sale.order.currency_id es
+// readonly=True (comprobado con fields_get contra la instancia real) y se
+// calcula desde la tarifa —_compute_currency_id hace
+// `order.currency_id = order.pricelist_id.currency_id or company_id.currency_id`
+// en sale/models/sale_order.py—. Y la tarifa, si no se manda, sale del
+// cliente: «When a customer is added to the database, the default pricelist is
+// automatically applied to them»
+// (https://www.odoo.com/documentation/18.0/applications/sales/sales/products_prices/prices/pricing.html).
+//
+// Es decir, sin pricelist_id la moneda del pedido la decidía el partner. En la
+// base de MDV conviven tres tarifas en COP y una en USD: bastaba con que
+// resolverCliente encontrara por correo un partner con la tarifa en USD para
+// que un pedido de 350.000 COP quedara valorado en 350.000 USD, sin un solo
+// error y sin arreglo posible después, porque currency_id no se puede escribir.
+//
+// Mandar la tarifa no reescribe los importes: price_unit también se declara
+// compute/store/readonly=False/precompute y el ORM no precalcula lo que ya
+// viene en los valores de create, igual que con tax_id. La tarifa aquí solo
+// fija la moneda.
+func tarifaEnMoneda(cli *odoo.Client, moneda string) (int64, string, error) {
+	m := strings.ToUpper(strings.TrimSpace(moneda))
+	if m == "" {
+		return 0, "", nil
+	}
+	// Ordenado por id para que la elección sea reproducible cuando hay varias
+	// tarifas en la misma moneda, que es el caso normal.
+	filas, err := cli.SearchRead("product.pricelist",
+		[]interface{}{[]interface{}{"currency_id.name", "=", m}},
+		[]string{"id", "name"},
+		map[string]interface{}{"limit": 1, "order": "id"})
+	if err != nil {
+		return 0, "", fmt.Errorf("buscando la tarifa de Odoo en %s: %w", m, err)
+	}
+	if len(filas) == 0 {
+		return 0, "", nil
+	}
+	return filas[0].ID(), filas[0].Str("name"), nil
+}
+
+// verificarPedido relee el pedido recién creado y comprueba que dice lo mismo
+// que el canal. No corrige nada: avisa.
+//
+// Es la contrapartida de crear el pedido en borrador. Odoo puede haber
+// aplicado una posición fiscal, un impuesto por defecto o una conversión de
+// moneda que Integra no mandó, y ninguna de esas cosas da error: el pedido se
+// crea igual, con otro total, y el descuadre aparece al facturar.
+//
+// Un fallo aquí no puede tumbar el montaje: el pedido ya existe en Odoo y
+// perder ese hecho sería mucho peor que quedarse sin la comprobación.
+func (s *Servicio) verificarPedido(ctx context.Context, cli *odoo.Client, o store.Orden, pedidoID int64) {
+	filas, err := cli.SearchRead("sale.order",
+		[]interface{}{[]interface{}{"id", "=", pedidoID}},
+		[]string{"amount_total", "currency_id"},
+		map[string]interface{}{"limit": 1})
+	if err != nil || len(filas) == 0 {
+		s.log.Warn("no se pudo releer el pedido para contrastarlo con el canal",
+			"odoo_id", pedidoID, "pedido", o.Numero, "error", err)
+		return
+	}
+	totalOdoo := filas[0].Float("amount_total")
+	monedaOdoo := filas[0].RefName("currency_id")
+
+	// Lo que Integra mandó es la suma de las líneas, no o.Total: el flete no
+	// viaja a Odoo (ver más abajo).
+	var esperado float64
+	for _, l := range o.Lineas {
+		esperado += l.Cantidad * l.PrecioUnit
+	}
+	// Odoo redondea cada línea a los decimales de la moneda —en pesos, cero—,
+	// así que se tolera medio peso por línea.
+	tolerancia := 0.01 + 0.5*float64(len(o.Lineas))
+
+	var problemas []string
+	if math.Abs(totalOdoo-esperado) > tolerancia {
+		problemas = append(problemas, fmt.Sprintf(
+			"Odoo dice %.2f y el canal cobró %.2f por las líneas", totalOdoo, esperado))
+	}
+	if monedaOdoo != "" && !strings.EqualFold(monedaOdoo, o.Moneda) {
+		problemas = append(problemas, fmt.Sprintf(
+			"Odoo lo valoró en %s y el canal cobró en %s", monedaOdoo, o.Moneda))
+	}
+
+	// El flete es harina de otro costal: llevarlo a Odoo exige un producto de
+	// servicio y una cuenta contable que nadie ha decidido todavía, así que
+	// hoy no viaja. No es un descuadre del pedido, pero sí la razón de que el
+	// total de Odoo no cuadre con el abono del marketplace, y conviene que
+	// quede dicho en el pedido donde ocurre.
+	if o.Envio > 0 {
+		s.log.Warn("el flete del pedido no se traslada a Odoo: falta decidir con qué producto de servicio se factura",
+			"pedido", o.Numero, "canal", o.Canal, "flete", o.Envio, "odoo_id", pedidoID)
+	}
+
+	if len(problemas) == 0 {
+		return
+	}
+	s.log.Warn("pedido descuadrado en Odoo", "pedido", o.Numero, "odoo_id", pedidoID,
+		"problemas", strings.Join(problemas, "; "))
+	mensaje := fmt.Sprintf(
+		"El pedido %s (%s) se creó en Odoo como sale.order %d pero no cuadra con el canal: %s",
+		o.Numero, o.Canal, pedidoID, strings.Join(problemas, "; "))
+	cuenta := o.CuentaID
+	if err := s.st.CrearAlerta(ctx, AlertaDescuadrePedido, "warning", &cuenta, mensaje,
+		map[string]any{
+			"orden_id": o.ID, "numero": o.Numero, "canal": o.Canal,
+			"odoo_sale_order_id": pedidoID, "total_odoo": totalOdoo,
+			"total_lineas_canal": esperado, "moneda_odoo": monedaOdoo,
+			"moneda_canal": o.Moneda, "envio_no_trasladado": o.Envio,
+		}); err != nil {
+		s.log.Error("no se pudo crear la alerta de descuadre", "orden_id", o.ID, "error", err)
+	}
 }
 
 // resolverCliente busca el comprador por correo y, si no está, lo crea.
@@ -419,6 +634,10 @@ func valoresPedido(o store.Orden, partnerID int64, ref string,
 // uso, así que se guarda lo mínimo para facturar y despachar.
 func (s *Servicio) resolverCliente(ctx context.Context, cli *odoo.Client, o store.Orden) (int64, error) {
 	datos, err := s.st.DatosCompradorDeOrden(ctx, o.ID)
+	if err != nil {
+		return 0, err
+	}
+	dir, err := s.st.DireccionEnvioDeOrden(ctx, o.ID)
 	if err != nil {
 		return 0, err
 	}
@@ -457,7 +676,106 @@ func (s *Servicio) resolverCliente(ctx context.Context, cli *odoo.Client, o stor
 	if datos.Direccion != "" {
 		valores["street"] = datos.Direccion
 	}
+
+	// El documento de identidad va a vat, que la ficha de contacto de Odoo 18
+	// documenta como «the identification number used for tax and accounting
+	// purposes»
+	// (https://www.odoo.com/documentation/18.0/applications/essentials/contacts.html).
+	// Se ingería desde el canal y se tiraba justo aquí: todos los compradores
+	// nacían sin identificación fiscal, y sin ella no se les puede emitir la
+	// factura electrónica, que en Colombia es obligatoria.
+	if datos.Documento != "" {
+		valores["vat"] = datos.Documento
+	} else {
+		// Queda dicho en vez de descartarse en silencio: alguien tendrá que
+		// completar el contacto a mano antes de facturar.
+		s.log.Warn("el canal no entregó el documento del comprador: el contacto de Odoo nace sin identificación fiscal",
+			"canal", o.Canal, "pedido", o.Numero)
+	}
+
+	// La otra mitad de la dirección. street y city ya viajaban; línea 2, código
+	// postal, departamento y país se ingerían (ver ingerir) y se perdían justo
+	// aquí, así que el albarán de despacho salía con la dirección incompleta.
+	// Comprobado con fields_get contra la instancia real: street2, zip,
+	// state_id y country_id existen en el res.partner de Odoo 18 y son
+	// readonly=False, es decir escribibles por RPC.
+	if dir.Linea2 != "" {
+		valores["street2"] = dir.Linea2
+	}
+	if dir.CodigoPostal != "" {
+		valores["zip"] = dir.CodigoPostal
+	}
+	paisID, err := buscarPais(cli, dir.Pais)
+	if err != nil {
+		return 0, err
+	}
+	switch {
+	case paisID != 0:
+		valores["country_id"] = paisID
+		depID, err := buscarDepartamento(cli, paisID, dir.Departamento)
+		if err != nil {
+			return 0, err
+		}
+		if depID != 0 {
+			valores["state_id"] = depID
+		} else if strings.TrimSpace(dir.Departamento) != "" {
+			s.log.Warn("el departamento del comprador no existe en Odoo: el contacto se crea sin él",
+				"departamento", dir.Departamento, "pedido", o.Numero)
+		}
+	case strings.TrimSpace(dir.Pais) != "":
+		s.log.Warn("el país del comprador no existe en Odoo: el contacto se crea sin país",
+			"pais", dir.Pais, "pedido", o.Numero)
+	}
+
 	return cli.Create("res.partner", valores)
+}
+
+// buscarPais traduce lo que manda el canal a un res.country.
+//
+// Unos canales entregan el código ISO de dos letras («CO») y otros el nombre
+// («Colombia»), así que se prueban los dos: primero el código, que es exacto, y
+// después el nombre sin distinguir mayúsculas. Devuelve 0 sin error cuando no
+// hay con qué buscar o no se encuentra: un país desconocido deja el contacto
+// sin país, no tumba el pedido.
+func buscarPais(cli *odoo.Client, pais string) (int64, error) {
+	p := strings.TrimSpace(pais)
+	if p == "" {
+		return 0, nil
+	}
+	if len(p) == 2 {
+		id, err := cli.BuscarUno("res.country",
+			[]interface{}{[]interface{}{"code", "=", strings.ToUpper(p)}})
+		if err != nil || id != 0 {
+			return id, err
+		}
+	}
+	return cli.BuscarUno("res.country",
+		[]interface{}{[]interface{}{"name", "=ilike", p}})
+}
+
+// buscarDepartamento resuelve el res.country.state DENTRO del país.
+//
+// Acotar por país no es un adorno: hay departamentos y estados homónimos entre
+// países, y un state_id del país equivocado sería peor que ninguno, porque el
+// albarán saldría con una dirección falsa en vez de incompleta. Se prueba el
+// código de Odoo («ANT») y después el nombre («Antioquia»), que es lo que
+// suelen mandar los canales.
+func buscarDepartamento(cli *odoo.Client, paisID int64, departamento string) (int64, error) {
+	d := strings.TrimSpace(departamento)
+	if paisID == 0 || d == "" {
+		return 0, nil
+	}
+	id, err := cli.BuscarUno("res.country.state", []interface{}{
+		[]interface{}{"country_id", "=", paisID},
+		[]interface{}{"code", "=", strings.ToUpper(d)},
+	})
+	if err != nil || id != 0 {
+		return id, err
+	}
+	return cli.BuscarUno("res.country.state", []interface{}{
+		[]interface{}{"country_id", "=", paisID},
+		[]interface{}{"name", "=ilike", d},
+	})
 }
 
 func (s *Servicio) productoOdoo(ctx context.Context, varianteID int64) (int64, error) {
@@ -472,7 +790,7 @@ func (s *Servicio) productoOdoo(ctx context.Context, varianteID int64) (int64, e
 }
 
 func (s *Servicio) adaptador(ctx context.Context, cuentaID int64) (channel.Adapter, error) {
-	return conectores.AdaptadorDeCuenta(ctx, s.st, s.cif, cuentaID)
+	return conectores.AdaptadorDeCuenta(ctx, s.stConcreto, s.cif, cuentaID)
 }
 
 // referencia es la clave que ata el pedido de Odoo con el del canal. Va en
@@ -483,6 +801,37 @@ func referencia(o store.Orden) string {
 		n = o.ExternalID
 	}
 	return strings.ToUpper(o.Canal) + "-" + n
+}
+
+// DireccionEnvio es la mitad de la dirección del comprador que la ingesta
+// guarda en shipping_address y que hasta ahora no leía nadie.
+type DireccionEnvio struct {
+	Linea2       string
+	Departamento string
+	CodigoPostal string
+	Pais         string
+}
+
+// tienda añade a *store.Store la única lectura que la capa de persistencia no
+// ofrecía. Vive aquí, y no junto a DatosCompradorDeOrden, por la misma razón
+// que AjustarActividad vive en internal/sync: la dirección completa solo hace
+// falta al escribir el contacto en Odoo, que es asunto exclusivo de este
+// paquete.
+type tienda struct{ *store.Store }
+
+func (t tienda) DireccionEnvioDeOrden(ctx context.Context, ordenID int64) (DireccionEnvio, error) {
+	var d DireccionEnvio
+	err := t.Pool().QueryRow(ctx, `
+		SELECT COALESCE(shipping_address->>'linea2',''),
+		       COALESCE(shipping_address->>'departamento',''),
+		       COALESCE(shipping_address->>'codigo_postal',''),
+		       COALESCE(shipping_address->>'pais','')
+		FROM channel_orders WHERE id = $1`, ordenID).
+		Scan(&d.Linea2, &d.Departamento, &d.CodigoPostal, &d.Pais)
+	if err != nil {
+		return d, fmt.Errorf("leyendo la dirección de envío del pedido %d: %w", ordenID, err)
+	}
+	return d, nil
 }
 
 func monedaDe(s string) string {

@@ -9,46 +9,74 @@ const NOMBRE_CORTO: Record<string, string> = {
 export function Imagenes({ varianteId, onCambio }: { varianteId: number; onCambio?: () => void }) {
   const [imgs, setImgs] = useState<ImagenProducto[]>([])
   const [error, setError] = useState<string | null>(null)
+  const [cargando, setCargando] = useState(true)
   const [subiendo, setSubiendo] = useState(false)
+  // Las subidas van en serie, así que se puede decir por cuál va: con diez
+  // fotos, un «Procesando…» quieto parece que se ha colgado.
+  const [progreso, setProgreso] = useState<{ hecho: number; total: number } | null>(null)
   const [buscando, setBuscando] = useState(false)
   const [resultado, setResultado] = useState<string | null>(null)
   const [arrastrando, setArrastrando] = useState(false)
+  // Id de la foto sobre la que hay una acción en marcha, para bloquear sus
+  // botones mientras el servidor responde.
+  const [ocupada, setOcupada] = useState<number | null>(null)
   const input = useRef<HTMLInputElement>(null)
 
   const cargar = useCallback(() => {
+    setCargando(true)
     api.imagenes(varianteId)
       .then(setImgs)
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setCargando(false))
   }, [varianteId])
 
   useEffect(() => { cargar() }, [cargar])
 
   async function subir(archivos: FileList | null) {
     if (!archivos || archivos.length === 0) return
+    const lista = Array.from(archivos)
     setSubiendo(true)
     setError(null)
+    setProgreso({ hecho: 0, total: lista.length })
     try {
       // Se suben en serie a propósito: el procesado genera tres derivadas por
       // fichero y lanzar veinte a la vez satura el servidor sin ganar nada.
-      for (const a of Array.from(archivos)) {
+      for (const [i, a] of lista.entries()) {
+        setProgreso({ hecho: i, total: lista.length })
         await api.subirImagen(varianteId, a)
       }
       cargar()
       onCambio?.()
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      // Se recarga igualmente: si falló la cuarta de seis, las tres primeras
+      // ya están subidas y hay que verlas.
+      cargar()
+      onCambio?.()
+      setError(`No se pudieron subir todas las fotos: ${e instanceof Error ? e.message : String(e)}`)
     } finally {
       setSubiendo(false)
+      setProgreso(null)
     }
   }
 
-  async function quitar(id: number) {
+  // Quitar una foto no se deshace y puede dejar el producto sin portada —o sin
+  // ninguna imagen, con lo que deja de ser publicable—, así que se avisa.
+  async function quitar(img: ImagenProducto) {
+    const aviso = img.principal
+      ? 'Esta es la foto de portada. Si la quitas, el producto se queda sin portada hasta que elijas otra. ¿Quitarla?'
+      : 'Se quita esta foto del banco de Integra. ¿Seguro?'
+    if (!window.confirm(aviso)) return
+
+    setOcupada(img.id)
+    setError(null)
     try {
-      await api.quitarImagen(varianteId, id)
+      await api.quitarImagen(varianteId, img.id)
       cargar()
       onCambio?.()
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(`No se pudo quitar la foto: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setOcupada(null)
     }
   }
 
@@ -64,35 +92,53 @@ export function Imagenes({ varianteId, onCambio }: { varianteId: number; onCambi
       cargar()
       onCambio?.()
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(`La búsqueda en internet falló: ${e instanceof Error ? e.message : String(e)}`)
     } finally {
       setBuscando(false)
     }
   }
 
   async function principal(id: number) {
+    setOcupada(id)
+    setError(null)
     try {
       await api.imagenPrincipal(varianteId, id)
       cargar()
       onCambio?.()
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(`No se pudo cambiar la portada: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setOcupada(null)
     }
+  }
+
+  function abrirSelector() {
+    // Mientras sube no se abre otra tanda: se mezclarían las dos series.
+    if (subiendo) return
+    input.current?.click()
   }
 
   return (
     <div className="imagenes-panel">
-      <div className="imagenes-cabecera">
+      <div className="imagenes-cabecera fila-apilable">
         <strong>Imágenes</strong>
         <span className="tenue crece">
-          {imgs.length === 0
-            ? 'ninguna — el producto no se puede publicar sin foto'
-            : `${imgs.length} en el banco de Integra`}
+          {cargando
+            ? 'cargando…'
+            : imgs.length === 0
+              ? 'ninguna — el producto no se puede publicar sin foto'
+              : `${imgs.length} en el banco de Integra`}
         </span>
-        <button onClick={() => void buscarEnInternet()} disabled={buscando}
-          title="Busca por SKU y marca; descarga varias opciones de al menos 500 px. Verifica que puedes usar las fotos antes de publicar.">
+        <button onClick={() => void buscarEnInternet()} disabled={buscando}>
           {buscando ? 'Buscando en internet…' : 'Buscar en internet'}
         </button>
+      </div>
+
+      {/* La explicación estaba solo en el title del botón, y en una tablet o un
+          móvil no hay puntero que lo saque: se pasa a texto visible. */}
+      <div className="nota-previa">
+        «Buscar en internet» busca por referencia y marca y descarga varias fotos de
+        al menos 500 px. <strong>Comprueba que puedes usarlas antes de publicar.</strong>
       </div>
 
       {error && <div className="aviso-caja">{error}</div>}
@@ -105,13 +151,21 @@ export function Imagenes({ varianteId, onCambio }: { varianteId: number; onCambi
         onDrop={(e) => {
           e.preventDefault()
           setArrastrando(false)
+          if (subiendo) return
           void subir(e.dataTransfer.files)
         }}
-        onClick={() => input.current?.click()}
+        onClick={abrirSelector}
+        // Es la única forma de añadir fotos: tiene que alcanzarse también con
+        // el teclado, no solo con el ratón o el dedo.
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); abrirSelector() }
+        }}
       >
         {subiendo
-          ? 'Procesando…'
-          : 'Arrastra las fotos aquí o haz clic para elegirlas · JPEG, PNG o WebP'}
+          ? `Procesando foto ${(progreso?.hecho ?? 0) + 1} de ${progreso?.total ?? 1}…`
+          : 'Toca aquí para elegir fotos, o arrástralas · JPEG, PNG o WebP'}
         <input ref={input} type="file" accept="image/*" multiple hidden
           onChange={(e) => { void subir(e.target.files); e.target.value = '' }} />
       </div>
@@ -143,8 +197,10 @@ export function Imagenes({ varianteId, onCambio }: { varianteId: number; onCambi
                 <div className="acciones">
                   {i.principal
                     ? <span className="pastilla ok">Portada</span>
-                    : <button onClick={() => principal(i.id)}>Hacer portada</button>}
-                  <button onClick={() => quitar(i.id)}>Quitar</button>
+                    : <button onClick={() => void principal(i.id)} disabled={ocupada === i.id}>
+                        {ocupada === i.id ? 'Guardando…' : 'Hacer portada'}
+                      </button>}
+                  <button onClick={() => void quitar(i)} disabled={ocupada === i.id}>Quitar</button>
                 </div>
               </figcaption>
             </figure>

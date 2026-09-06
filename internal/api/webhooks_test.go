@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -32,6 +33,21 @@ type espia struct {
 	errEncole error
 }
 
+// fallar y errorDeCuenta permiten simular que la base se cae y se recupera a
+// mitad de prueba sin carrera: el manejador lee desde la goroutine del
+// servidor HTTP y la prueba escribe desde la suya.
+func (e *espia) fallar(err error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.errCta = err
+}
+
+func (e *espia) errorDeCuenta() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.errCta
+}
+
 func (e *espia) anotar(id int64) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -53,8 +69,8 @@ func manejadorDePrueba(e *espia, registro *bytes.Buffer) http.Handler {
 	m := &manejadorWebhooks{
 		log: salida,
 		cuenta: func(context.Context, string) (int64, map[string]string, error) {
-			if e.errCta != nil {
-				return 0, nil, e.errCta
+			if err := e.errorDeCuenta(); err != nil {
+				return 0, nil, err
 			}
 			return e.cuentaID, e.cred, nil
 		},
@@ -76,6 +92,38 @@ func llamar(t *testing.T, h http.Handler, ruta string, cuerpo []byte, cabeceras 
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
 	return w.Code
+}
+
+// servidorDeWebhooks levanta el endpoint en un servidor HTTP de verdad. Las
+// pruebas del cupo de fallos necesitan dos cosas que httptest.NewRequest no da:
+// varias peticiones seguidas contra el MISMO manejador —lo que se comprueba es
+// lo que recuerda entre una y otra— y el código de estado tal y como sale por
+// el cable, que es lo único que el canal mira para decidir si desactiva la
+// suscripción.
+func servidorDeWebhooks(t *testing.T, e *espia) *httptest.Server {
+	t.Helper()
+	s := httptest.NewServer(manejadorDePrueba(e, &bytes.Buffer{}))
+	t.Cleanup(s.Close)
+	return s
+}
+
+// postear imita la entrega de un canal contra ese servidor.
+func postear(t *testing.T, s *httptest.Server, ruta string, cuerpo []byte, cab map[string]string) int {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, s.URL+ruta, bytes.NewReader(cuerpo))
+	if err != nil {
+		t.Fatalf("no se pudo armar la peticion: %v", err)
+	}
+	for k, v := range cab {
+		req.Header.Set(k, v)
+	}
+	resp, err := s.Client().Do(req)
+	if err != nil {
+		t.Fatalf("el canal no pudo entregar el webhook: %v", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode
 }
 
 // firmar reproduce lo que hacen Shopify y WooCommerce: HMAC-SHA256 del cuerpo
@@ -137,22 +185,26 @@ func TestShopifyConFirmaInvalidaNoEncolaNada(t *testing.T) {
 	}
 }
 
-// Sin el secreto en la cuenta no hay nada con que comprobar la firma: se
-// rechaza en vez de dejar pasar. Un endpoint público que falle abierto es un
-// botón de "encólame trabajo" para cualquiera.
-func TestShopifySinSecretoConfiguradoRechaza(t *testing.T) {
+// Sin el secreto en la cuenta no hay nada con que comprobar la firma, así que
+// no se encola nada; pero tampoco se rechaza. Es el estado por defecto de una
+// cuenta de Shopify recién conectada (solo se guarda el token de
+// administración, el secreto de la app hay que pegarlo aparte) y un 401
+// sostenido ahí borra la suscripción a las 8 entregas fallidas, así que para
+// cuando alguien pegue el secreto ya no habría webhook al que llegar.
+func TestShopifySinSecretoConfiguradoAcusaReciboSinEncolar(t *testing.T) {
 	e := &espia{cuentaID: 7, cred: map[string]string{"token": "shpat_loquesea"}}
 	h := manejadorDePrueba(e, &bytes.Buffer{})
 	cuerpo := []byte(`{"id":1}`)
 
 	code := llamar(t, h, "/api/webhooks/shopify", cuerpo, map[string]string{
+		"X-Shopify-Topic":       "orders/create",
 		"X-Shopify-Hmac-Sha256": firmar("shpat_loquesea", cuerpo),
 	})
-	if code != http.StatusUnauthorized {
-		t.Fatalf("sin webhook_secret debía dar 401, dio %d", code)
+	if code != http.StatusOK {
+		t.Fatalf("sin webhook_secret debía acusar recibo con 200, dio %d", code)
 	}
 	if got := e.vistos(); len(got) != 0 {
-		t.Errorf("no debía encolarse nada, se encoló %v", got)
+		t.Errorf("acusar recibo no es disparar trabajo sin verificar, se encoló %v", got)
 	}
 }
 
@@ -254,9 +306,12 @@ func TestMercadoLibreValidaApplicationIDyUserID(t *testing.T) {
 		{"de otro vendedor",
 			map[string]string{"app_id": app, "user_id": vendedor},
 			cuerpoML("orders_v2", app, "111111111"), http.StatusUnauthorized, false},
+		// Sin app_id no hay nada que comprobar: no se encola, pero se acusa
+		// recibo. Un error distinto de 200 desactiva el tópico "por fall
+		// back" y obliga a volver a suscribirse.
 		{"sin app_id en la cuenta no hay nada que comprobar",
 			map[string]string{"access_token": "APP_USR-x"},
-			cuerpoML("orders_v2", app, vendedor), http.StatusUnauthorized, false},
+			cuerpoML("orders_v2", app, vendedor), http.StatusOK, false},
 		{"cuenta sin user_id: basta con la aplicación",
 			map[string]string{"app_id": app},
 			cuerpoML("orders_v2", app, vendedor), http.StatusOK, true},
@@ -326,8 +381,12 @@ func TestFalabellaExigeElTokenDeLaCuenta(t *testing.T) {
 			"/api/webhooks/falabella?token=otro", nil, http.StatusUnauthorized, false},
 		{"sin token en la petición", map[string]string{"webhook_secret": "tok-integra"},
 			"/api/webhooks/falabella", nil, http.StatusUnauthorized, false},
+		// La cuenta sin token es configuración que nos falta a nosotros: no se
+		// dispara nada, pero se acusa recibo. Falabella no publica qué hace
+		// con las respuestas de error y no se apuesta contra un umbral que no
+		// se conoce.
 		{"la cuenta no tiene token: nada que comprobar", map[string]string{"api_key": "k"},
-			"/api/webhooks/falabella?token=loquesea", nil, http.StatusUnauthorized, false},
+			"/api/webhooks/falabella?token=loquesea", nil, http.StatusOK, false},
 	}
 	for _, c := range casos {
 		t.Run(c.nombre, func(t *testing.T) {
@@ -369,18 +428,23 @@ func TestUnCanalDesconocidoNoLlegaAVerificarse(t *testing.T) {
 	}
 }
 
-// Sin cuenta conectada no hay secreto contra el que verificar: 401, no 500 ni
-// un 200 mentiroso.
-func TestSinCuentaConectadaSeRechaza(t *testing.T) {
+// Sin cuenta conectada no hay secreto contra el que verificar ni cuenta a la
+// que encolar, y reintentar no lo arregla: sería un 401 permanente, que es
+// justo lo que borra la suscripción. Se acusa y no se hace nada.
+func TestSinCuentaConectadaSeAcusaReciboSinEncolar(t *testing.T) {
 	e := &espia{errCta: errSinCuenta}
 	h := manejadorDePrueba(e, &bytes.Buffer{})
-	if code := llamar(t, h, "/api/webhooks/shopify", []byte(`{}`), nil); code != http.StatusUnauthorized {
-		t.Fatalf("esperaba 401, dio %d", code)
+	if code := llamar(t, h, "/api/webhooks/shopify", []byte(`{}`), nil); code != http.StatusOK {
+		t.Fatalf("esperaba 200, dio %d", code)
+	}
+	if got := e.vistos(); len(got) != 0 {
+		t.Errorf("no debía encolarse nada, se encoló %v", got)
 	}
 }
 
-// Una base caída no es una firma inválida: se pide reintento (503) en vez de
-// contestar 200 y perder el aviso para siempre.
+// Una base caída no es una firma inválida: el primer aviso se contesta con 503
+// para que el canal lo reintente cuando la base vuelva, en vez de darlo por
+// procesado.
 func TestSiLaBaseNoContestaSePideReintento(t *testing.T) {
 	e := &espia{errCta: errors.New("connection refused")}
 	h := manejadorDePrueba(e, &bytes.Buffer{})
@@ -495,5 +559,176 @@ func TestLasRutasDeWebhookEstanExentasDeSesion(t *testing.T) {
 	// Y solo ese prefijo: el resto de la API sigue exigiendo sesión.
 	if esPublica("/api/ordenes") {
 		t.Error("/api/ordenes no debe ser pública")
+	}
+}
+
+// -------------------------------------------- el cupo de fallos de cada canal
+
+// WooCommerce: "After 5 consecutive failed deliveries (as defined by a non HTTP
+// 2xx response code), the webhook is disabled and must be edited via the REST
+// API to re-enable"
+// (https://developer.woocommerce.com/docs/apis/rest-api/v3/webhooks/).
+//
+// Una caída de base de pocos minutos entrega muchas más de 5 notificaciones, así
+// que si el 503 fuera la respuesta de todas ellas el webhook quedaría
+// deshabilitado hasta que alguien lo reactive a mano. Se piden los primeros
+// reintentos y el resto se acusa: el pedido llega igual por el sondeo, la
+// suscripción no se puede reponer sola.
+func TestUnaCaidaDeBaseNoGastaElCupoDeWooCommerce(t *testing.T) {
+	e := &espia{errCta: errors.New("connection refused")}
+	s := servidorDeWebhooks(t, e)
+	cuerpo := []byte(`{"id":727,"status":"processing"}`)
+	cab := map[string]string{
+		"X-WC-Webhook-Topic":     "order.created",
+		"X-WC-Webhook-Signature": firmar("woo-secreto", cuerpo),
+	}
+
+	var seguidos, peorRacha int
+	for i := 0; i < 12; i++ {
+		if code := postear(t, s, "/api/webhooks/woocommerce", cuerpo, cab); code/100 == 2 {
+			seguidos = 0
+			continue
+		}
+		seguidos++
+		if seguidos > peorRacha {
+			peorRacha = seguidos
+		}
+	}
+	if peorRacha >= 5 {
+		t.Errorf("%d respuestas no 2xx seguidas: a las 5 WooCommerce deshabilita el webhook",
+			peorRacha)
+	}
+	if peorRacha == 0 {
+		t.Error("ni un 503: un bache de segundos merece que el canal reintente")
+	}
+	if got := e.vistos(); len(got) != 0 {
+		t.Errorf("con la base caída no se puede encolar nada, se encoló %v", got)
+	}
+}
+
+// MercadoLibre no publica ningún umbral de fallos: solo que una respuesta
+// distinta de 200 desactiva el tópico "por fall back", que las notificaciones
+// de ese período no quedan ni en "my feeds" y que hay que volver a suscribirse
+// (MERCADOLIBRE.md §5). Con el precio conocido y el umbral no, no se gasta ni
+// un fallo: se acusa desde el primero.
+func TestMercadoLibreNoRecibeNingunErrorPorUnaCaidaDeBase(t *testing.T) {
+	e := &espia{errCta: errors.New("connection refused")}
+	s := servidorDeWebhooks(t, e)
+	cuerpo := cuerpoML("orders_v2", "5503910054141466", "468424240")
+
+	for i := 1; i <= 3; i++ {
+		if code := postear(t, s, "/api/webhooks/mercadolibre", cuerpo, nil); code != http.StatusOK {
+			t.Fatalf("notificación %d: esperaba 200, dio %d", i, code)
+		}
+	}
+	if got := e.vistos(); len(got) != 0 {
+		t.Errorf("con la base caída no se puede encolar nada, se encoló %v", got)
+	}
+}
+
+// Los canales cuentan fallos SEGUIDOS, así que un tramo sano les borra la
+// cuenta. El cupo tiene que recuperarse igual: si no, el primer incidente
+// dejaría el endpoint contestando 200 a los fallos de infraestructura para
+// siempre y el canal nunca volvería a reintentar nada.
+func TestElCupoVuelveAEstarEnteroCuandoLaBaseSeRecupera(t *testing.T) {
+	e := &espia{cuentaID: 7, cred: map[string]string{"webhook_secret": "s3cr3t0"},
+		errCta: errors.New("connection refused")}
+	s := servidorDeWebhooks(t, e)
+	cuerpo := []byte(`{"id":450789469}`)
+	cab := map[string]string{
+		"X-Shopify-Topic":       "orders/create",
+		"X-Shopify-Hmac-Sha256": firmar("s3cr3t0", cuerpo),
+	}
+	postear2 := func() int { return postear(t, s, "/api/webhooks/shopify", cuerpo, cab) }
+
+	// Se gasta el cupo del canal y se deja de gastar.
+	if code := postear2(); code != http.StatusServiceUnavailable {
+		t.Fatalf("el primer fallo debía pedir reintento, dio %d", code)
+	}
+	agotado := false
+	for i := 0; i < 6 && !agotado; i++ {
+		agotado = postear2() == http.StatusOK
+	}
+	if !agotado {
+		t.Fatal("el 503 nunca cesó: Shopify borra la suscripción a los 8 seguidos")
+	}
+
+	// La base vuelve: se verifica y se encola con normalidad.
+	e.fallar(nil)
+	if code := postear2(); code != http.StatusOK {
+		t.Fatalf("con la base en pie esperaba 200, dio %d", code)
+	}
+	if got := e.vistos(); len(got) != 1 {
+		t.Fatalf("debía encolarse una ingesta, se encoló %v", got)
+	}
+
+	// Y si vuelve a caerse, el cupo está entero otra vez.
+	e.fallar(errors.New("connection refused"))
+	if code := postear2(); code != http.StatusServiceUnavailable {
+		t.Errorf("tras recuperarse, un fallo nuevo debía volver a pedir reintento, dio %d", code)
+	}
+}
+
+// El caso común de una cuenta recién conectada en los cuatro canales: falta el
+// secreto con el que comprobar la firma. Es una pieza que ponemos nosotros y no
+// aparece por reintentar, así que el rechazo sería permanente: Shopify borra la
+// suscripción a los 8 fallos seguidos, WooCommerce deshabilita el webhook a los
+// 5, MercadoLibre desactiva el tópico. Se acusa recibo y no se encola nada.
+func TestSinSecretoConfiguradoNingunCanalRecibeUnError(t *testing.T) {
+	casos := []struct {
+		canal  string
+		ruta   string
+		cred   map[string]string
+		cuerpo []byte
+		cab    map[string]string
+	}{
+		{"shopify", "/api/webhooks/shopify",
+			map[string]string{"token": "shpat_loquesea"},
+			[]byte(`{"id":1}`),
+			map[string]string{"X-Shopify-Topic": "orders/create",
+				"X-Shopify-Hmac-Sha256": firmar("otro", []byte(`{"id":1}`))}},
+		{"woocommerce", "/api/webhooks/woocommerce",
+			map[string]string{"consumer_key": "ck_x"},
+			[]byte(`{"id":2}`),
+			map[string]string{"X-WC-Webhook-Topic": "order.created",
+				"X-WC-Webhook-Signature": firmar("otro", []byte(`{"id":2}`))}},
+		{"mercadolibre", "/api/webhooks/mercadolibre",
+			map[string]string{"access_token": "APP_USR-x"},
+			cuerpoML("orders_v2", "5503910054141466", "468424240"), nil},
+		{"falabella", "/api/webhooks/falabella?token=loquesea",
+			map[string]string{"api_key": "k"},
+			[]byte(`{"event":"onOrderCreated","payload":{"OrderId":190}}`), nil},
+	}
+	for _, c := range casos {
+		t.Run(c.canal, func(t *testing.T) {
+			e := &espia{cuentaID: 9, cred: c.cred}
+			s := servidorDeWebhooks(t, e)
+			if code := postear(t, s, c.ruta, c.cuerpo, c.cab); code != http.StatusOK {
+				t.Fatalf("esperaba 200, dio %d", code)
+			}
+			if got := e.vistos(); len(got) != 0 {
+				t.Errorf("sin verificar no se dispara trabajo, se encoló %v", got)
+			}
+		})
+	}
+}
+
+// Y lo que no cambia: una firma que no cuadra sigue siendo 401. Ese cupo lo
+// gasta quien llama, no nosotros, y un canal legítimo con el secreto correcto
+// no cae nunca en esa rama.
+func TestUnaFirmaQueNoCuadraSigueSiendo401(t *testing.T) {
+	e := &espia{cuentaID: 7, cred: map[string]string{"webhook_secret": "s3cr3t0"}}
+	s := servidorDeWebhooks(t, e)
+	cuerpo := []byte(`{"id":1}`)
+
+	code := postear(t, s, "/api/webhooks/shopify", cuerpo, map[string]string{
+		"X-Shopify-Topic":       "orders/create",
+		"X-Shopify-Hmac-Sha256": firmar("el-secreto-del-atacante", cuerpo),
+	})
+	if code != http.StatusUnauthorized {
+		t.Fatalf("esperaba 401, dio %d", code)
+	}
+	if got := e.vistos(); len(got) != 0 {
+		t.Errorf("no debía encolarse nada, se encoló %v", got)
 	}
 }

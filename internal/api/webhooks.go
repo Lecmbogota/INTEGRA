@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mdv/integra/internal/channel"
@@ -36,6 +37,49 @@ import (
 // habría que mantener sincronizada con la del sondeo; el webhook solo adelanta
 // la llegada de minutos a segundos.
 
+// Códigos de respuesta: el cupo de fallos del canal es un recurso, y no se
+// gasta en errores nuestros.
+//
+// Los cuatro canales miran nuestra respuesta para decidir si la suscripción
+// sigue viva, y el umbral es bajo:
+//
+//   - Shopify: «Any response outside the 200 range, including 3XX codes, is
+//     treated as an error», «If Shopify receives no response or an error, it
+//     retries 8 times over the next 4 hours» y, sin matices, «After 8
+//     consecutive failures, the subscription is automatically deleted if it
+//     was configured using the Admin API»
+//     (https://shopify.dev/docs/apps/build/webhooks/subscribe/https).
+//   - WooCommerce: «After 5 consecutive failed deliveries (as defined by a non
+//     HTTP 2xx response code), the webhook is disabled and must be edited via
+//     the REST API to re-enable»
+//     (https://developer.woocommerce.com/docs/apis/rest-api/v3/webhooks/).
+//   - MercadoLibre: reintenta durante 1 hora y luego descarta el mensaje, y
+//     las respuestas distintas de 200 desactivan el tópico «por fall back»;
+//     tras la desactivación hay que volver a suscribirse y las notificaciones
+//     de ese período no quedan ni en «my feeds»
+//     (https://developers.mercadolibre.com.co/es_ar/productos-recibe-notificaciones,
+//     resumido en MERCADOLIBRE.md §5).
+//   - Falabella: su documentación pública de webhooks no publica ningún umbral
+//     de desactivación ni describe el trato que da a las respuestas de error
+//     (https://developers.falabella.com/v500.0.0/reference/intro-webhook). No
+//     saberlo no es saber que sea gratis, así que se trata como los demás.
+//
+// De ahí la regla de este manejador: un error NUESTRO no se paga con el cupo
+// del canal. Perder un aviso cuesta segundos —el sondeo periódico e idempotente
+// trae el pedido igual, que es lo único que el webhook adelanta—; perder la
+// suscripción cuesta una intervención manual y todo lo que llegue mientras
+// tanto. Así que:
+//
+//   - Falta de configuración nuestra (sin cuenta conectada, sin secreto con el
+//     que comprobar la firma): 200 sin encolar. No se arregla reintentando, o
+//     sea que el 401 sería sostenido y mataría la suscripción justo antes de
+//     que alguien pegue el secreto.
+//   - Fallo de infraestructura nuestro (base caída, credencial ilegible):
+//     pasajero, o sea que reintentar sí ayuda; se piden los primeros reintentos
+//     y no más (ver cupoDe503) y el resto se acusa con 200.
+//   - Llamada que no acredita venir del canal (firma o token presentes que no
+//     cuadran): 401. Ese cupo es de quien llama, no nuestro.
+
 // maxCuerpoWebhook acota lo que se lee de un endpoint público.
 //
 // El cuerpo solo se usa para calcular el HMAC y para leer el tópico, así que
@@ -51,8 +95,9 @@ const maxCuerpoWebhook = 512 << 10
 const plazoEncolado = 30 * time.Second
 
 // errSinCuenta distingue "ese canal no tiene cuenta conectada" de un fallo de
-// la base. Lo primero es 401 (no hay contra qué verificar la firma, y
-// reintentar no lo va a arreglar); lo segundo es 503.
+// la base. Lo primero no se arregla reintentando; lo segundo sí. Ninguno de
+// los dos es culpa de quien llama, así que ninguno se cobra del cupo de fallos
+// del canal (ver "Códigos de respuesta" arriba).
 var errSinCuenta = errors.New("el canal no tiene ninguna cuenta conectada")
 
 // manejadorWebhooks es el endpoint público, con sus dependencias inyectadas.
@@ -71,6 +116,59 @@ type manejadorWebhooks struct {
 	// las pruebas lo sustituyen por una ejecución en el acto para no depender
 	// de tiempos.
 	fondo func(func())
+
+	// mu protege fallosSeguidos, que se toca desde varias peticiones a la vez.
+	mu sync.Mutex
+	// fallosSeguidos cuenta los 503 que llevamos dados seguidos por canal, para
+	// no pasarnos del umbral con el que el canal desactiva la suscripción.
+	fallosSeguidos map[string]int
+}
+
+// cupoDe503 es cuántas respuestas 503 seguidas se permite gastar en un canal
+// antes de pasar a acusar recibo con 200.
+//
+// El umbral que hay que no tocar es el de cada canal: 5 entregas fallidas
+// seguidas en WooCommerce, 8 en Shopify. Un cupo de 2 deja margen de sobra
+// —incluso con varias réplicas del proceso, cada una con su propio contador—
+// y sigue cubriendo el caso que motiva el 503: el bache de segundos, que el
+// primer reintento del canal ya salva.
+//
+// MercadoLibre va a cero: no publica ningún umbral de fallos, solo que una
+// respuesta distinta de 200 desactiva el tópico "por fall back" y que hay que
+// volver a suscribirse. Con el precio conocido y el umbral no, no se apuesta:
+// además ML tiene missed_feeds y el sondeo para recuperar lo de ese rato.
+func cupoDe503(canal string) int {
+	switch channel.Kind(canal) {
+	case channel.Shopify, channel.WooCommerce, channel.Falabella:
+		return 2
+	case channel.MercadoLibre:
+		return 0
+	}
+	return 0
+}
+
+// pedirReintento dice si este fallo de infraestructura todavía puede
+// contestarse con 503, y lo apunta.
+func (m *manejadorWebhooks) pedirReintento(canal string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.fallosSeguidos == nil {
+		m.fallosSeguidos = make(map[string]int)
+	}
+	if m.fallosSeguidos[canal] >= cupoDe503(canal) {
+		return false
+	}
+	m.fallosSeguidos[canal]++
+	return true
+}
+
+// olvidarFallos devuelve el cupo entero al canal. Se llama en cuanto la
+// infraestructura vuelve a responder: los canales cuentan fallos SEGUIDOS, así
+// que un tramo sano borra lo anterior también de su lado.
+func (m *manejadorWebhooks) olvidarFallos(canal string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.fallosSeguidos, canal)
 }
 
 func (s *Server) registrarWebhooks(mux *http.ServeMux) {
@@ -121,9 +219,13 @@ func (s *Server) cuentaDeCanal(ctx context.Context, canal string) (int64, map[st
 
 // veredicto es lo que decide la verificación de un canal.
 type veredicto struct {
-	// autentico dice si la llamada viene de verdad del canal. Si es falso se
-	// responde 401 y no se encola nada.
+	// autentico dice si la llamada viene de verdad del canal. Si es falso no
+	// se encola nada; el código de respuesta depende de sinSecreto.
 	autentico bool
+	// sinSecreto separa "no acreditas ser el canal" de "no tenemos con qué
+	// comprobarlo". Lo primero es 401; lo segundo es una configuración que nos
+	// falta a nosotros y se acusa con 200 (ver "Códigos de respuesta").
+	sinSecreto bool
 	// dispara distingue "es del canal y habla de un pedido" de "es del canal
 	// pero habla de otra cosa". Un cambio de precio de un ítem de
 	// MercadoLibre es auténtico y no tiene por qué provocar una ingesta.
@@ -155,20 +257,54 @@ func (m *manejadorWebhooks) recibir(w http.ResponseWriter, r *http.Request) {
 	cuentaID, cred, err := m.cuenta(r.Context(), canal)
 	switch {
 	case errors.Is(err, errSinCuenta):
-		m.log.Warn("webhook rechazado", "canal", canal, "resultado", "sin cuenta conectada")
-		escribir(w, http.StatusUnauthorized, map[string]string{"error": "no verificable"})
+		// No hay cuenta contra la que verificar ni a la que encolar. Es una
+		// pieza que falta de nuestro lado y que no aparece por reintentar, o
+		// sea que el 401 sería permanente: en Shopify borra la suscripción en
+		// cuatro horas (8 fallos seguidos) y en WooCommerce deshabilita el
+		// webhook a los 5. Se acusa recibo y no se hace nada.
+		m.log.Warn("webhook sin cuenta conectada", "canal", canal,
+			"resultado", "acusado sin ingesta")
+		escribir(w, http.StatusOK, map[string]string{"estado": "sin cuenta conectada"})
 		return
 	case err != nil:
-		// La base no contesta o la credencial no se puede descifrar. No es
-		// culpa de quien llama y reintentar sí ayuda, así que se pide
-		// reintento en vez de mentir con un 200 que perdería el aviso.
+		// La base no contesta o la credencial no se puede descifrar: es
+		// nuestro y es pasajero, así que aquí el reintento del canal sí sirve
+		// de algo. Pero se cobra de su cupo de fallos seguidos, y una caída de
+		// pocos minutos basta para agotarlo: se piden los primeros y el resto
+		// se acusa con 200. Lo que se pierde entonces es la inmediatez, no el
+		// pedido; lo que se salva es el canal de aviso.
 		m.log.Error("webhook: no se pudo resolver la cuenta", "canal", canal, "error", err)
-		escribir(w, http.StatusServiceUnavailable, map[string]string{"error": "no se pudo verificar"})
+		if m.pedirReintento(canal) {
+			escribir(w, http.StatusServiceUnavailable, map[string]string{"error": "no se pudo verificar"})
+			return
+		}
+		m.log.Warn("webhook: cupo de reintentos agotado", "canal", canal,
+			"resultado", "acusado sin verificar")
+		escribir(w, http.StatusOK, map[string]string{"estado": "acusado sin verificar"})
 		return
 	}
+	// La infraestructura responde: el bache terminó y el cupo vuelve a estar
+	// entero para la próxima.
+	m.olvidarFallos(canal)
 
 	v := verificar(canal, cred, cuerpo, r)
-	if !v.autentico {
+	switch {
+	case v.sinSecreto:
+		// No es que la firma no cuadre: es que la cuenta no tiene con qué
+		// comprobarla. Otro agujero nuestro, y de los que no se tapan solos
+		// —hay que pegar el secreto a mano—, así que el 401 sería sostenido y
+		// para cuando alguien lo pegue ya no habrá suscripción a la que llegar.
+		// Se acusa recibo y no se encola: fallar abierto sería disparar trabajo
+		// sin verificar, y eso no pasa aquí.
+		m.log.Warn("webhook no verificable", "canal", canal, "cuenta", cuentaID,
+			"resultado", "acusado sin ingesta", "motivo", v.motivo, "bytes", len(cuerpo))
+		escribir(w, http.StatusOK, map[string]string{"estado": "no verificable"})
+		return
+	case !v.autentico:
+		// Aquí sí venían firma o token y no cuadran: la llamada no acredita
+		// ser del canal. Este 401 lo paga quien llama, no nosotros; un canal
+		// legítimo con el secreto correcto no cae nunca en esta rama, y si cae
+		// —porque el secreto rotó— es justo lo que hace visible el problema.
 		m.log.Warn("webhook rechazado", "canal", canal, "cuenta", cuentaID,
 			"resultado", "no autentico", "motivo", v.motivo, "bytes", len(cuerpo))
 		escribir(w, http.StatusUnauthorized, map[string]string{"error": "firma inválida"})
@@ -213,8 +349,9 @@ func canalConWebhook(canal string) bool {
 // verificar comprueba la autenticidad con el mecanismo de cada canal.
 //
 // Ninguno cae en "si no hay secreto, pasa": sin secreto configurado no hay
-// nada que comprobar, así que se rechaza. Un endpoint público que falle
-// abierto es un botón de "encólame trabajo" para cualquiera.
+// nada que comprobar, así que se marca sinSecreto y no se encola nada. Un
+// endpoint público que falle abierto es un botón de "encólame trabajo" para
+// cualquiera; acusar recibo sin disparar trabajo no lo es.
 func verificar(canal string, cred map[string]string, cuerpo []byte, r *http.Request) veredicto {
 	switch channel.Kind(canal) {
 	case channel.Shopify:
@@ -235,13 +372,18 @@ func verificar(canal string, cred map[string]string, cuerpo []byte, r *http.Requ
 // app y manda el digest en base64 en X-Shopify-Hmac-Sha256.
 //
 // La clave NO es el token de administración (`token`, shpat_…) que Integra ya
-// guarda: es el secreto de la app, que hay que copiar aparte. Mientras no esté
-// en las credenciales de la cuenta, este endpoint responde 401 y el pedido
-// sigue llegando por sondeo.
+// guarda: es el secreto de la app, que hay que copiar aparte. Y ese es el
+// estado por defecto de una cuenta recién conectada, así que NO se puede
+// responder 401 mientras falte: «After 8 consecutive failures, the subscription
+// is automatically deleted if it was configured using the Admin API»
+// (https://shopify.dev/docs/apps/build/webhooks/subscribe/https), o sea que en
+// cuatro horas nos quedamos sin suscripción y añadir el secreto después ya no
+// arregla nada: hay que volver a crearla a mano. Mientras falte se acusa recibo
+// sin encolar y el pedido sigue llegando por sondeo.
 func verificarShopify(cred map[string]string, cuerpo []byte, r *http.Request) veredicto {
 	secreto := primerNoVacio(cred, "webhook_secret", "api_secret", "client_secret")
 	if secreto == "" {
-		return veredicto{motivo: "la cuenta no tiene webhook_secret"}
+		return veredicto{sinSecreto: true, motivo: "la cuenta no tiene webhook_secret"}
 	}
 	topico := r.Header.Get("X-Shopify-Topic")
 	if !firmaBase64Valida(secreto, cuerpo, r.Header.Get("X-Shopify-Hmac-Sha256")) {
@@ -263,7 +405,8 @@ func verificarShopify(cred map[string]string, cuerpo []byte, r *http.Request) ve
 func verificarWooCommerce(cred map[string]string, cuerpo []byte, r *http.Request) veredicto {
 	secreto := primerNoVacio(cred, "webhook_secret", "consumer_secret")
 	if secreto == "" {
-		return veredicto{motivo: "la cuenta no tiene webhook_secret ni consumer_secret"}
+		return veredicto{sinSecreto: true,
+			motivo: "la cuenta no tiene webhook_secret ni consumer_secret"}
 	}
 	topico := r.Header.Get("X-WC-Webhook-Topic")
 	firma := r.Header.Get("X-WC-Webhook-Signature")
@@ -330,7 +473,7 @@ func (n *numeroML) UnmarshalJSON(b []byte) error {
 func verificarMercadoLibre(cred map[string]string, cuerpo []byte) veredicto {
 	appEsperada := strings.TrimSpace(cred["app_id"])
 	if appEsperada == "" {
-		return veredicto{motivo: "la cuenta no tiene app_id"}
+		return veredicto{sinSecreto: true, motivo: "la cuenta no tiene app_id"}
 	}
 	var n notificacionML
 	if err := json.Unmarshal(cuerpo, &n); err != nil {
@@ -375,13 +518,14 @@ func esTopicoDePedidoML(topico string) bool {
 // Como la URL de callback la elegimos nosotros, lo que se comprueba es un
 // token propio de Integra que viaja en esa URL (o en una cabecera, si algún
 // día la admiten). No es el mecanismo del canal y no se presenta como tal:
-// es lo único verificable que hay. Sin token configurado se responde 401,
-// porque un endpoint que dispare trabajo sin comprobar nada es peor que no
-// tener webhook.
+// es lo único verificable que hay. Sin token configurado no se dispara nada
+// —un endpoint que encole trabajo sin comprobar nada es peor que no tener
+// webhook—, pero se acusa recibo igual: su documentación no publica qué hace
+// con las respuestas de error, y con umbral desconocido no se apuesta.
 func verificarFalabella(cred map[string]string, cuerpo []byte, r *http.Request) veredicto {
 	secreto := primerNoVacio(cred, "webhook_secret")
 	if secreto == "" {
-		return veredicto{motivo: "la cuenta no tiene webhook_secret"}
+		return veredicto{sinSecreto: true, motivo: "la cuenta no tiene webhook_secret"}
 	}
 	recibido := r.Header.Get("X-Integra-Webhook-Token")
 	if recibido == "" {

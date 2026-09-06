@@ -32,6 +32,16 @@ type servidorFalso struct {
 	cabeceraEnvio string
 	queryOrdenes  string
 
+	// Inventario del vendedor para /users/{id}/items/search. topeOffset imita
+	// el corte que ML aplica a la paginación por offset (1000 en producción;
+	// aquí un número chico para no tener que sembrar mil ítems) y scrollPos
+	// guarda por dónde va el scan, porque el scroll_id de ML es opaco y el
+	// mismo en todas las llamadas.
+	inventario     []string
+	topeOffset     int
+	scrollPos      int
+	busquedasItems []string
+
 	// Despacho: envíos por pedido, detalle por envío y lo que se escribió.
 	envios         map[string][]map[string]any
 	detalleEnvio   map[string]map[string]any
@@ -79,7 +89,50 @@ func nuevoServidor(t *testing.T) *servidorFalso {
 		responder(w, map[string]any{"id": 123, "nickname": "TEST0548", "tags": tags})
 	})
 	mux.HandleFunc("GET /users/123/items/search", func(w http.ResponseWriter, r *http.Request) {
-		responder(w, map[string]any{"results": []string{}, "paging": map[string]int{"total": 0}})
+		q := r.URL.Query()
+		s.mu.Lock()
+		s.busquedasItems = append(s.busquedasItems, r.URL.RawQuery)
+		inv, tope := s.inventario, s.topeOffset
+		s.mu.Unlock()
+
+		// Búsqueda por SKU (adopción): no pagina, devuelve lo que haya.
+		if q.Get("seller_sku") != "" {
+			responder(w, map[string]any{"results": []string{}, "paging": map[string]int{"total": 0}})
+			return
+		}
+
+		if q.Get("search_type") == "scan" {
+			s.mu.Lock()
+			if q.Get("scroll_id") == "" {
+				s.scrollPos = 0 // primera llamada del scan
+			}
+			desde := s.scrollPos
+			hasta := min(desde+50, len(inv))
+			s.scrollPos = hasta
+			s.mu.Unlock()
+			responder(w, map[string]any{
+				"results": inv[desde:hasta],
+				// ML devuelve el mismo scroll_id en todas las respuestas.
+				"scroll_id": "SCROLL-1",
+				"paging":    map[string]int{"total": len(inv)},
+			})
+			return
+		}
+
+		off, _ := strconv.Atoi(q.Get("offset"))
+		if tope > 0 && off >= tope {
+			// Así se comporta ML pasado el tope de la paginación por offset.
+			w.WriteHeader(400)
+			_, _ = io.WriteString(w, `{"message":"offset is too large","error":"invalid_offset","status":400}`)
+			return
+		}
+		hasta := min(off+50, len(inv))
+		if off > len(inv) {
+			off, hasta = len(inv), len(inv)
+		}
+		responder(w, map[string]any{
+			"results": inv[off:hasta], "paging": map[string]int{"total": len(inv)},
+		})
 	})
 	mux.HandleFunc("POST /items", func(w http.ResponseWriter, r *http.Request) {
 		var cuerpo map[string]any
@@ -151,20 +204,36 @@ func nuevoServidor(t *testing.T) *servidorFalso {
 			"paging": map[string]int{"total": 1, "offset": 0, "limit": 50},
 		})
 	})
+	// GET /shipments/{id} solo sirve el JSON con destination cuando llega la
+	// cabecera x-format-new: true, obligatoria desde el 12/10/2025. Sin ella
+	// ML contesta el formato viejo, que para este recurso no lleva dirección
+	// ninguna (receiver_address solo existe en /orders/{id}/shipments).
 	mux.HandleFunc("GET /shipments/555", func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
-		s.cabeceraEnvio = r.Header.Get("X-Api-Version")
+		s.cabeceraEnvio = r.Header.Get("x-format-new")
 		s.mu.Unlock()
+		if r.Header.Get("x-format-new") != "true" {
+			responder(w, map[string]any{
+				"id": 555, "status": "ready_to_ship", "mode": "me2",
+				"lead_time": map[string]any{"cost": 8900.0},
+			})
+			return
+		}
 		responder(w, map[string]any{
-			"status": "ready_to_ship",
-			"receiver_address": map[string]any{
-				"receiver_name": "Ana Pérez", "receiver_phone": "3001234567",
-				"address_line": "Calle 10 # 5-20", "comment": "Apto 301", "zip_code": "110111",
-				"city": map[string]string{"name": "Bogotá"}, "state": map[string]string{"name": "Bogotá D.C."},
-				"country": map[string]string{"id": "CO", "name": "Colombia"},
+			"id": 555, "status": "ready_to_ship", "substatus": "ready_to_print",
+			"destination": map[string]any{
+				"receiver_id": 89660613, "receiver_name": "Ana Pérez",
+				"receiver_phone": "3001234567",
+				"shipping_address": map[string]any{
+					"address_line": "Calle 10 # 5-20", "street_name": "Calle 10",
+					"street_number": "5-20", "comment": "Apto 301", "zip_code": "110111",
+					"city": map[string]string{"name": "Bogotá"}, "state": map[string]string{"name": "Bogotá D.C."},
+					"country": map[string]string{"id": "CO", "name": "Colombia"},
+				},
 			},
-			"shipping_option": map[string]any{"cost": 8900.0, "list_cost": 12000.0},
-			"lead_time":       map[string]any{"cost": 8900.0},
+			"logistic":  map[string]any{"mode": "me2", "type": "drop_off", "direction": "forward"},
+			"source":    map[string]any{"site_id": "MCO"},
+			"lead_time": map[string]any{"cost": 8900.0},
 		})
 	})
 	mux.HandleFunc("GET /orders/{id}/shipments", func(w http.ResponseWriter, r *http.Request) {
@@ -411,8 +480,11 @@ func TestFetchOrdersTraeDireccionDelEnvioYFiltraPorModificacion(t *testing.T) {
 	if o.UpdatedAt.IsZero() || !o.UpdatedAt.After(o.OrderedAt) {
 		t.Errorf("UpdatedAt=%v OrderedAt=%v", o.UpdatedAt, o.OrderedAt)
 	}
-	if s.cabeceraEnvio != "2" {
-		t.Error("el envío se pide con X-Api-Version: 2 para recibir nombre y teléfono")
+	// ML: «el envío del header x-format-new: true pasará a ser obligatorio en
+	// todas las solicitudes» a partir del 12/10/2025, y es ese formato el que
+	// trae la dirección en destination.
+	if s.cabeceraEnvio != "true" {
+		t.Errorf("x-format-new = %q; ML la exige en todo GET de shipments", s.cabeceraEnvio)
 	}
 	if o.Buyer.Address.City != "Bogotá" || o.Buyer.Address.Line1 != "Calle 10 # 5-20" ||
 		o.Buyer.Address.Line2 != "Apto 301" || o.Buyer.Address.Country != "CO" {
@@ -646,5 +718,103 @@ func TestAckOrderSinPedidoNoLlamaANadie(t *testing.T) {
 	ad := adaptadorDe(t, s, map[string]string{"access_token": "APP_USR-fijo"}, nil)
 	if err := ad.AckOrder(context.Background(), channel.ExternalRef{}, guia()); err == nil {
 		t.Fatal("sin id de pedido no hay envío que buscar")
+	}
+}
+
+// TestEnvioLeeLaDireccionDeLosDosFormatos comprueba la fusión campo a campo.
+//
+// El mismo struct decodifica GET /shipments/{id} (formato nuevo, dirección en
+// destination.shipping_address) y GET /orders/{id}/shipments (vista actual,
+// dirección en receiver_address). Leer solo uno de los dos deja los pedidos
+// sin dirección, y encima en silencio.
+func TestEnvioLeeLaDireccionDeLosDosFormatos(t *testing.T) {
+	casos := []struct{ nombre, crudo string }{
+		{"formato nuevo de /shipments/{id}", `{
+			"destination": {
+				"receiver_name": "Ana Pérez", "receiver_phone": "3001234567",
+				"shipping_address": {
+					"address_line": "Calle 10 # 5-20", "comment": "Apto 301",
+					"zip_code": "110111", "city": {"name": "Bogotá"},
+					"state": {"name": "Bogotá D.C."}, "country": {"id": "CO"}
+				}
+			}}`},
+		{"receiver_address de /orders/{id}/shipments", `{
+			"receiver_address": {
+				"receiver_name": "Ana Pérez", "receiver_phone": "3001234567",
+				"address_line": "Calle 10 # 5-20", "comment": "Apto 301",
+				"zip_code": "110111", "city": {"name": "Bogotá"},
+				"state": {"name": "Bogotá D.C."}, "country": {"id": "CO"}
+			}}`},
+	}
+	for _, c := range casos {
+		t.Run(c.nombre, func(t *testing.T) {
+			var env envioML
+			if err := json.Unmarshal([]byte(c.crudo), &env); err != nil {
+				t.Fatal(err)
+			}
+			d := env.entrega()
+			if d.ReceiverName != "Ana Pérez" || d.ReceiverPhone != "3001234567" {
+				t.Errorf("receptor = %q / %q", d.ReceiverName, d.ReceiverPhone)
+			}
+			if d.AddressLine != "Calle 10 # 5-20" || d.Comment != "Apto 301" ||
+				d.ZipCode != "110111" || d.City.Name != "Bogotá" ||
+				d.State.Name != "Bogotá D.C." || d.Country.ID != "CO" {
+				t.Errorf("dirección = %+v", d)
+			}
+		})
+	}
+}
+
+// TestListRemotePasaDelTopeDeOffsetConSearchTypeScan comprueba que el
+// inventario remoto se recorre entero.
+//
+// ML corta la paginación por offset en los 1000 primeros ítems y obliga a
+// usar search_type=scan sin offset para pasar de ahí. El servidor falso imita
+// ese corte con un tope más bajo para no tener que sembrar mil publicaciones.
+func TestListRemotePasaDelTopeDeOffsetConSearchTypeScan(t *testing.T) {
+	s := nuevoServidor(t)
+	s.topeOffset = 100
+	for i := 0; i < 130; i++ {
+		s.inventario = append(s.inventario, "MCO"+itoa(i))
+	}
+	ad := adaptadorDe(t, s, map[string]string{"access_token": "APP_USR-fijo"}, nil)
+
+	var vistos []string
+	cur := channel.Cursor{}
+	for i := 0; ; i++ {
+		if i > 10 {
+			t.Fatal("el recorrido no termina")
+		}
+		pag, err := ad.ListRemote(context.Background(), cur)
+		if err != nil {
+			t.Fatalf("página %d: %v", i, err)
+		}
+		for _, it := range pag.Items {
+			vistos = append(vistos, it.Ref.ListingID)
+		}
+		if pag.Done {
+			break
+		}
+		cur = pag.Next
+	}
+	if len(vistos) != 130 {
+		t.Errorf("se vieron %d publicaciones de 130: el inventario queda truncado", len(vistos))
+	}
+	if len(vistos) > 0 && vistos[len(vistos)-1] != "MCO129" {
+		t.Errorf("la última vista fue %q, quería MCO129", vistos[len(vistos)-1])
+	}
+	for _, q := range s.busquedasItems {
+		if !strings.Contains(q, "search_type=scan") {
+			t.Errorf("la búsqueda %q debe ir con search_type=scan", q)
+		}
+		// ML: «Enviar el parámetro search_type=scan a la consulta y quitar el
+		// offset». Mezclar scroll con offset no está soportado.
+		if strings.Contains(q, "offset=") {
+			t.Errorf("la búsqueda %q no debe llevar offset con scan", q)
+		}
+	}
+	// El scroll_id se reenvía tal cual desde la segunda llamada.
+	if len(s.busquedasItems) < 2 || !strings.Contains(s.busquedasItems[1], "scroll_id=SCROLL-1") {
+		t.Errorf("la segunda llamada debía arrastrar el scroll_id: %v", s.busquedasItems)
 	}
 }

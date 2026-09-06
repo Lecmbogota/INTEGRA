@@ -217,18 +217,6 @@ button.dia.activo { background: var(--acento); border-color: transparent; color:
 .tabla-lineas td, .tabla-lineas th { padding: 6px 8px; }
 .tabla-lineas .pastilla { margin-left: 6px; }
 
-@media (max-width: 860px) {
-  .app { flex-direction: column; }
-  .sidebar {
-    flex: none; width: 100%; height: auto; position: static;
-    border-right: none; border-bottom: 1px solid var(--borde);
-    flex-direction: row; flex-wrap: wrap; align-items: center;
-  }
-  .sidebar-grupo { display: flex; gap: 4px; margin-bottom: 0; }
-  .sidebar-titulo { display: none; }
-  .contenido { padding: 16px; }
-}
-
 header.principal {
   display: flex; align-items: center; justify-content: space-between;
   gap: 16px; flex-wrap: wrap; margin-bottom: 24px;
@@ -363,7 +351,6 @@ input[type="checkbox"] { accent-color: var(--acento); width: 16px; height: 16px;
 .tarjeta .valor.error { color: var(--error); }
 
 .rejilla { display: grid; gap: 16px; grid-template-columns: 1fr 1fr; margin-bottom: 24px; }
-@media (max-width: 900px) { .rejilla { grid-template-columns: 1fr; } }
 
 .panel {
   background: var(--surface-2); border: 1px solid var(--borde);
@@ -667,4 +654,279 @@ button.enlace:hover:not(:disabled) { background: none; color: var(--acento-hover
 .json-panel pre {
   margin: 0; padding: 14px; overflow-x: auto; font-size: 13px; line-height: 1.5;
   font-family: var(--fuente-mono);
+}
+
+/* ==========================================================================
+   ADAPTACIÓN A PANTALLAS
+   ==========================================================================
+   Integra se usa horas seguidas desde un escritorio, pero también se consulta
+   de pie: desde el móvil para ver si entró un pedido o si falló una
+   publicación, y desde una tablet en la bodega. Por eso en pantalla estrecha
+   la prioridad es LEER y hacer acciones puntuales, no editar en masa.
+
+   Dos puntos de corte, y solo dos, para que nadie tenga que recordar cinco:
+
+     hasta 1024px  «tablet» — el menú lateral deja de ser fijo y pasa a ser un
+                     cajón; las rejillas de dos columnas se apilan; todo lo que
+                     se toca crece a 44px. Se elige 1024 y no 900 porque una
+                     tablet en vertical mide 768-834 y en horizontal 1024: por
+                     debajo de 1024 manda el dedo, no el ratón.
+     hasta 640px   «móvil» — las tablas se convierten en tarjetas, los
+                     formularios bajan a una columna y los modales pasan a
+                     ocupar la pantalla entera.
+
+   Por encima de 1024px no se aplica NADA de lo de aquí abajo: a 1440px la
+   aplicación se ve exactamente igual que antes de este trabajo. */
+
+/* ------------------------------------------------------------ utilidades
+   Se definen sin media query porque sirven igual en escritorio; las que
+   cambian de forma según el ancho lo hacen más abajo. */
+
+/* .crece existe desde antes, pero solo acoplada a seis contenedores
+   concretos, y hay marcado que ya la lleva donde no aplica: convertirla en
+   global cambiaría esas pantallas. Estas son las versiones libres, para
+   filas nuevas. */
+.expande { flex: 1; }
+/* Igual, pero permitiendo encoger por debajo del contenido: es lo que hace
+   falta para que un texto largo se recorte en vez de empujar la fila. */
+.expande-recorta { flex: 1; min-width: 0; }
+.recorta { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+
+.pila { display: flex; flex-direction: column; gap: 12px; }
+.pila.apretada { gap: 8px; }
+.pila.holgada { gap: 20px; }
+
+.fila { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+/* No se llama .acciones porque esa ya la usa la galería de imágenes con
+   otro espaciado. */
+.grupo-acciones { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+.rejilla-auto {
+  display: grid; gap: 16px; margin-bottom: 24px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+/* Contenedor de último recurso para lo que no se puede reflujar (un bloque
+   de código, un diagrama): se desplaza solo él, nunca la página. */
+.desplazable { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.tabla-envoltorio { -webkit-overflow-scrolling: touch; }
+
+/* Visibilidad por ancho. Por defecto estamos en escritorio. */
+.solo-movil { display: none; }
+
+/* Piezas del cajón de navegación: no existen en escritorio. */
+.barra-movil { display: none; }
+.velo-menu { display: none; }
+.cerrar-menu { display: none; }
+
+/* =========================================================== hasta 1024px */
+@media (max-width: 1024px) {
+
+  /* ------------------------------------------- estructura y cajón de menú */
+
+  /* El menú sale del flujo, así que el layout deja de ser de dos columnas. */
+  .app { display: block; }
+  .contenido { padding: 16px 16px 32px; max-width: none; }
+
+  /* Barra superior fija: con el menú escondido es el único punto de entrada
+     a la navegación, y tiene que seguir ahí al desplazar la página. */
+  .barra-movil {
+    display: flex; align-items: center; gap: 10px;
+    position: sticky; top: 0; z-index: 40;
+    padding: 8px 12px; background: var(--surface-1);
+    border-bottom: 1px solid var(--borde);
+  }
+  .barra-movil-nombre {
+    font-family: var(--fuente-titular); font-size: 17px; font-weight: 700;
+    line-height: 1; color: #24476E;
+  }
+  button.boton-menu {
+    display: flex; align-items: center; justify-content: center;
+    width: 44px; min-width: 44px; height: 44px; padding: 0;
+    background: none; border-color: transparent; color: var(--texto-tenue);
+  }
+
+  .sidebar {
+    position: fixed; top: 0; left: 0; bottom: 0;
+    width: min(288px, 86vw); height: 100dvh; flex: none;
+    z-index: 60; overflow-y: auto;
+    border-right: 1px solid var(--borde-fuerte);
+    transform: translateX(-100%);
+    /* Cerrado se oculta de verdad para que el tabulador no se meta en un menú
+       que no se ve. La visibilidad tiene que volver en el instante en que se
+       abre —si no, el primer foco cae en un elemento aún oculto y se pierde—
+       y esperar a que termine la salida al cerrar, para que se deslice. */
+    visibility: hidden;
+    transition: transform .22s ease, visibility 0s linear .22s;
+  }
+  .sidebar.abierto {
+    transform: none; visibility: visible;
+    transition: transform .22s ease, visibility 0s linear 0s;
+  }
+
+  .velo-menu {
+    display: block; position: fixed; inset: 0; z-index: 55;
+    background: rgba(24, 24, 27, .4);
+    opacity: 0; pointer-events: none; transition: opacity .22s ease;
+  }
+  .velo-menu.visible { opacity: 1; pointer-events: auto; }
+
+  button.cerrar-menu {
+    display: flex; align-items: center; justify-content: center;
+    position: absolute; top: 12px; right: 12px;
+    width: 44px; height: 44px; padding: 0;
+    background: none; border-color: transparent; color: var(--texto-tenue);
+  }
+  /* Con el cajón abierto el fondo no debe desplazarse bajo el dedo. */
+  body.menu-abierto { overflow: hidden; }
+
+  /* Nadie mira dos columnas de gráficas en una tablet en vertical. */
+  .rejilla { grid-template-columns: 1fr; }
+
+  /* --------------------------------------------------- objetivos táctiles
+     A partir de aquí se toca con el dedo, no con el ratón: 44px de alto
+     mínimo en todo lo pulsable. Los que llevan min-height:0 en su regla
+     original se repiten uno a uno porque si no ganan por especificidad. */
+  button, input, select, textarea { min-height: 44px; }
+  button { padding-inline: 16px; }
+  button.salir, button.pestana, button.item-attr, button.dia,
+  .pestanas-mini button.pestana, .galeria .acciones button,
+  .sidebar-item, .caja-login button.primario { min-height: 44px; }
+  button.salir { width: 44px; padding: 0; align-items: center; justify-content: center; }
+  button.dia { width: 44px; }
+  .dias { flex-wrap: wrap; }
+  button.item-attr { padding: 8px 14px; }
+  .galeria .acciones button { padding: 6px 12px; font-size: 12px; }
+
+  input[type="checkbox"] { width: 20px; height: 20px; min-height: 0; }
+  label.casilla { min-height: 44px; }
+
+  /* El enlace-botón va dentro de un párrafo: crecerlo rompería la línea, así
+     que se agranda solo su zona sensible, sin ocupar más sitio. */
+  button.enlace { position: relative; min-height: 0; padding-inline: 0; }
+  button.enlace::after {
+    content: ''; position: absolute; left: 0; right: 0;
+    top: 50%; height: 44px; transform: translateY(-50%);
+  }
+
+  /* Las pestañas se desplazan de lado en vez de partirse en dos filas. */
+  .pestanas { overflow-x: auto; flex-wrap: nowrap; }
+  button.pestana { white-space: nowrap; }
+}
+
+/* ============================================================ hasta 640px */
+@media (max-width: 640px) {
+
+  .solo-movil { display: revert; }
+  .oculto-movil { display: none !important; }
+
+  .contenido { padding: 12px 12px 32px; }
+  .contenedor { padding: 16px; }
+
+  /* --------------------------------------------------------- encabezados */
+  header.principal { flex-direction: column; align-items: stretch; gap: 12px; margin-bottom: 16px; }
+  header.principal h1 { font-size: 22px; }
+  .titulo-seccion { font-size: 20px; }
+  .acciones-cabecera { width: 100%; }
+  .acciones-cabecera > button { flex: 1 1 160px; }
+
+  /* -------------------------------------------------------------- tablas
+     El patrón central de la aplicación. Una tabla ancha en 375px obliga a
+     desplazar en horizontal y se vuelve ilegible; con .tabla-tarjetas cada
+     fila se convierte en una tarjeta apilada y cada celda muestra el nombre
+     de su columna a la izquierda, tomado del atributo data-etiqueta. */
+  .tabla-tarjetas thead { display: none; }
+  .tabla-tarjetas, .tabla-tarjetas tbody,
+  .tabla-tarjetas tr, .tabla-tarjetas td { display: block; width: 100%; }
+  .tabla-tarjetas tr {
+    background: var(--surface-2); border: 1px solid var(--borde);
+    border-radius: var(--radio); padding: 10px 12px; margin-bottom: 10px;
+  }
+  .tabla-tarjetas tbody tr:hover { background: var(--surface-2); }
+  .tabla-tarjetas td {
+    display: flex; align-items: baseline; gap: 12px;
+    padding: 4px 0; border-bottom: none; text-align: left;
+  }
+  .tabla-tarjetas td::before {
+    content: attr(data-etiqueta);
+    /* Ancho fijo y no porcentual: un 38 % dejaba el valor en una columna de
+       200px donde el nombre de un producto se partía en cinco líneas. */
+    flex: 0 0 92px; min-width: 0;
+    color: var(--texto-tenue); font-size: 11px; font-weight: 500;
+    text-transform: uppercase; letter-spacing: .05em; line-height: 1.5;
+  }
+  /* Para celdas de texto largo —una descripción, un motivo de error— que a
+     dos columnas quedan en un canal estrechísimo. */
+  .tabla-tarjetas td.apilada { display: block; }
+  .tabla-tarjetas td.apilada::before { display: block; margin-bottom: 2px; }
+  /* Una celda sin etiqueta —o marcada como ancha— usa todo el ancho: sirve
+     para el nombre del producto, para una fila de botones o para el detalle
+     desplegado, que no tienen columna que nombrar. */
+  .tabla-tarjetas td:not([data-etiqueta])::before,
+  .tabla-tarjetas td.ancha::before,
+  .tabla-tarjetas td[colspan]::before { content: none; }
+  .tabla-tarjetas td.ancha, .tabla-tarjetas td[colspan] { display: block; }
+  /* Las celdas que solo existen para cuadrar la rejilla estorban apiladas. */
+  .tabla-tarjetas td:empty { display: none; }
+  /* El nombre de la fila hace de título de la tarjeta. */
+  .tabla-tarjetas td.titulo-tarjeta {
+    display: block; font-size: 15px; font-weight: 600; line-height: 1.35;
+    padding-bottom: 6px; margin-bottom: 4px; border-bottom: 1px solid var(--borde);
+  }
+  .tabla-tarjetas td.titulo-tarjeta::before { content: none; }
+  /* Alinear a la derecha solo tiene sentido en columna; aquí no hay columna. */
+  .tabla-tarjetas td.num { text-align: left; }
+  .tabla-tarjetas td.col-check { width: 100%; padding-right: 0; }
+  .tabla-tarjetas tr.marcada { border-color: var(--acento); }
+  .tabla-tarjetas td.acciones-fila { display: flex; gap: 8px; flex-wrap: wrap; padding-top: 10px; }
+  .tabla-tarjetas td.acciones-fila > button { flex: 1 1 auto; }
+  /* Ya no hay nada que desplazar de lado: el envoltorio deja de recortar. */
+  .tabla-envoltorio:has(.tabla-tarjetas) { overflow-x: visible; }
+  .tabla-envoltorio.corta:has(.tabla-tarjetas) { max-height: none; }
+
+  /* -------------------------------------------------------- formularios */
+  .form-edicion { grid-template-columns: 1fr; }
+  .filtros { flex-direction: column; align-items: stretch; }
+  .filtros > * { width: 100%; }
+  .filtros .crece { min-width: 0; }
+  .filtros label.casilla { width: auto; }
+
+  /* Fila que en escritorio es horizontal y en el móvil se apila. */
+  .fila-apilable { flex-direction: column; align-items: stretch; gap: 8px; }
+  .fila.apila-movil { flex-direction: column; align-items: stretch; }
+
+  /* Un grupo de botones que en el móvil ocupa el ancho entero. */
+  .grupo-acciones.a-lo-ancho { flex-direction: column; align-items: stretch; }
+  .grupo-acciones.a-lo-ancho > button { width: 100%; }
+
+  /* ------------------------------------------------------------ modales
+     A pantalla completa: una hoja centrada con márgenes desperdicia el
+     espacio que justamente falta. */
+  .capa { padding: 0; align-items: stretch; }
+  .hoja {
+    max-width: none; min-height: 100%; border-radius: 0;
+    border: none; padding: 16px 14px 24px;
+  }
+  .hoja-cabecera { flex-direction: column; gap: 10px; }
+  .hoja-cabecera h2 { font-size: 18px; }
+  /* Los botones de cerrar y guardar se apilan; el primario queda abajo, que
+     es donde llega el pulgar. */
+  .hoja-pie { flex-direction: column; align-items: stretch; }
+  .hoja-pie > button { width: 100%; }
+
+  /* ------------------------------------------------------ piezas sueltas */
+  .barra-masiva { flex-wrap: wrap; padding: 10px 12px; }
+  .paginacion { flex-wrap: wrap; padding: 12px 4px; }
+  .barra-fila { flex-wrap: wrap; }
+  .barra-fila .nombre { flex: 1 1 100%; }
+  .barra-fila .cifra { flex: 0 0 auto; }
+  .previa-rejilla { grid-template-columns: 1fr; }
+  /* Dos miniaturas por fila se revisan mucho más rápido que una. */
+  .galeria { grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 10px; }
+  .tarjetas { gap: 10px; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+  .tarjeta { padding: 12px; }
+  .tarjeta .valor { font-size: 20px; }
+  .vacio { padding: 28px 16px; }
+  .json-panel pre, .bloque-cmd { font-size: 11px; }
 }

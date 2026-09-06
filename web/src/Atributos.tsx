@@ -5,17 +5,32 @@ import { api, num, type AtributoProducto, type ResumenAtributos } from './api'
 // categoría y sin lo cual rechazan la publicación.
 export function Atributos() {
   const [resumenes, setResumenes] = useState<Record<string, ResumenAtributos>>({})
-  const [error, setError] = useState<string | null>(null)
+  // Antes un canal que respondía con error se tragaba la excepción y quedaba
+  // igual que un canal sin categorías mapeadas: se leía «ve a Categorías» y
+  // allí no había nada que arreglar.
+  const [fallos, setFallos] = useState<Record<string, string>>({})
+  const [cargando, setCargando] = useState(true)
 
   useEffect(() => {
     Promise.all(CANALES_CON_ATRIBUTOS.map((c) =>
-      api.resumenAtributos(c.codigo).then((r) => [c.codigo, r] as const).catch(() => null)))
+      api.resumenAtributos(c.codigo)
+        .then((r) => ({ codigo: c.codigo, resumen: r, error: null as string | null }))
+        .catch((e) => ({
+          codigo: c.codigo,
+          resumen: null,
+          error: e instanceof Error ? e.message : String(e),
+        }))))
       .then((rs) => {
         const m: Record<string, ResumenAtributos> = {}
-        for (const r of rs) if (r) m[r[0]] = r[1]
+        const f: Record<string, string> = {}
+        for (const r of rs) {
+          if (r.resumen) m[r.codigo] = r.resumen
+          if (r.error) f[r.codigo] = r.error
+        }
         setResumenes(m)
+        setFallos(f)
       })
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setCargando(false))
   }, [])
 
   return (
@@ -29,8 +44,6 @@ export function Atributos() {
         </div>
       </header>
 
-      {error && <div className="aviso-caja">Error: {error}</div>}
-
       {CANALES_CON_ATRIBUTOS.map((c) => {
         const r = resumenes[c.codigo]
         const pct = r && r.con_categoria > 0
@@ -39,7 +52,13 @@ export function Atributos() {
           <section key={c.codigo} className="panel">
             <h2>{c.nombre}</h2>
             <div className="cuerpo">
-              {!r || r.con_categoria === 0 ? (
+              {cargando ? (
+                <div className="vacio">Cargando…</div>
+              ) : fallos[c.codigo] ? (
+                <div className="aviso-caja">
+                  No se pudo leer el resumen de {c.nombre}: {fallos[c.codigo]}
+                </div>
+              ) : !r || r.con_categoria === 0 ? (
                 <div className="vacio">
                   Sin categorías mapeadas a {c.nombre}. Ve a <strong>Categorías</strong> para
                   confirmarlas y luego ejecuta <code>integra atributos</code>.
@@ -106,9 +125,13 @@ export function PanelAtributos({ varianteId }: { varianteId: number }) {
   const [buscando, setBuscando] = useState(false)
   const [filtro, setFiltro] = useState('')
   const [errorGuardado, setErrorGuardado] = useState<string | null>(null)
+  // Un fallo al leer se veía como «sin atributos para este producto», que manda
+  // a mapear una categoría que a lo mejor ya estaba bien.
+  const [errorCarga, setErrorCarga] = useState<string | null>(null)
 
   const cargar = () => {
     setCargado(false)
+    setErrorCarga(null)
     api.atributosDe(varianteId, canal)
       .then((r) => {
         setAttrs(r.atributos)
@@ -117,7 +140,11 @@ export function PanelAtributos({ varianteId }: { varianteId: number }) {
         setBorrador(b)
         setCargado(true)
       })
-      .catch(() => { setAttrs([]); setCargado(true) })
+      .catch((e) => {
+        setAttrs([])
+        setErrorCarga(e instanceof Error ? e.message : String(e))
+        setCargado(true)
+      })
   }
   useEffect(cargar, [varianteId, canal])
 
@@ -149,9 +176,11 @@ export function PanelAtributos({ varianteId }: { varianteId: number }) {
 
   return (
     <div className="competencia">
-      <div className="competencia-cabecera">
+      {/* En el móvil las tres piezas de la cabecera no caben en una línea; con
+          apila-movil se ponen una debajo de otra en vez de estrujarse. */}
+      <div className="competencia-cabecera fila apila-movil">
         <strong>Atributos del canal</strong>
-        <div className="pestanas pestanas-mini crece">
+        <div className="pestanas pestanas-mini expande">
           {CANALES_CON_ATRIBUTOS.map((c) => (
             <button key={c.codigo}
               className={`pestana ${canal === c.codigo ? 'activa' : ''}`}
@@ -166,10 +195,13 @@ export function PanelAtributos({ varianteId }: { varianteId: number }) {
       </div>
 
       {errorGuardado && <div className="aviso-caja">{errorGuardado}</div>}
+      {errorCarga && (
+        <div className="aviso-caja">No se pudieron leer los atributos: {errorCarga}</div>
+      )}
 
       {!cargado && <div className="vacio">Cargando…</div>}
 
-      {cargado && attrs.length === 0 && (
+      {cargado && !errorCarga && attrs.length === 0 && (
         <div className="vacio">
           Sin atributos para este producto en {CANALES_CON_ATRIBUTOS.find((c) => c.codigo === canal)?.nombre}.
           {' '}Falta mapear su categoría, o aún no se han traído los requisitos del canal
@@ -179,7 +211,7 @@ export function PanelAtributos({ varianteId }: { varianteId: number }) {
 
       {cargado && attrs.length > 0 && (
         <>
-          <table>
+          <table className="tabla-tarjetas">
             <thead>
               <tr><th>Atributo</th><th>Valor</th><th>Origen</th><th></th></tr>
             </thead>
@@ -188,20 +220,24 @@ export function PanelAtributos({ varianteId }: { varianteId: number }) {
                 const cambiado = (borrador[a.attribute_id] ?? '') !== a.value_name
                 return (
                   <tr key={a.attribute_id}>
-                    <td>
+                    <td className="titulo-tarjeta">
                       {a.nombre}
                       {a.obligatorio && <span className="obligatorio" title="Obligatorio">*</span>}
                     </td>
-                    <td>
-                      <input className="crece" value={borrador[a.attribute_id] ?? ''}
+                    {/* En la tarjeta del móvil la celda es una caja flexible, así
+                        que el campo crece hasta el borde en vez de quedarse en
+                        su ancho por defecto junto a la etiqueta. */}
+                    <td data-etiqueta="Valor">
+                      <input className="expande" value={borrador[a.attribute_id] ?? ''}
+                        aria-label={`Valor de ${a.nombre}`}
                         placeholder={a.obligatorio ? 'obligatorio' : 'opcional'}
                         onChange={(e) => setBorrador({ ...borrador, [a.attribute_id]: e.target.value })} />
                     </td>
-                    <td className="tenue mini-texto">{ETIQUETA[a.origen] ?? '—'}</td>
-                    <td>
+                    <td className="tenue mini-texto" data-etiqueta="Origen">{ETIQUETA[a.origen] ?? '—'}</td>
+                    <td className={cambiado ? 'acciones-fila' : ''}>
                       {cambiado && (
                         <button onClick={() => void guardar(a)} disabled={guardando === a.attribute_id}>
-                          {guardando === a.attribute_id ? '…' : 'Guardar'}
+                          {guardando === a.attribute_id ? 'Guardando…' : 'Guardar'}
                         </button>
                       )}
                     </td>

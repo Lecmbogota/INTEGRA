@@ -21,6 +21,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
@@ -113,7 +114,13 @@ type productoXML struct {
 	ProductId       string       `xml:"ProductId,omitempty"` // el EAN
 	Unidades        *unidadesXML `xml:"BusinessUnits,omitempty"`
 	Datos           *datosXML    `xml:"ProductData,omitempty"`
-	Images          *imgs        `xml:"Images,omitempty"`
+	// NO hay campo Images: el esquema y el ejemplo de ProductCreate no
+	// declaran ningún <Images> dentro de <Product> —sus hijos son SellerSku,
+	// ParentSku, Name, PrimaryCategory, Description, Brand, ProductId, los
+	// atributos de variación, BusinessUnits y ProductData—, así que un bloque
+	// colgado ahí se acepta y se ignora y la publicación queda sin fotos para
+	// siempre. Las imágenes tienen endpoint propio (Action=Image), ver
+	// enviarImagenes. https://developers.falabella.com/v600.0.0/reference/productcreate
 }
 
 // unidadXML es la unidad de negocio: el sitio donde Falabella guarda de verdad
@@ -135,8 +142,20 @@ type unidadXML struct {
 // datosXML es <ProductData>: la condición, las medidas del paquete y los
 // atributos obligatorios de la categoría, cada uno como elemento propio con su
 // nombre. Falabella identifica los atributos por NOMBRE, no por un id opaco.
+//
+// Los cinco primeros campos son OBLIGATORIOS: la tabla de parámetros de
+// ProductCreate marca con "Sí" ConditionType, PackageHeight (entero, cm),
+// PackageWidth (entero, cm), PackageLength (entero, cm) y PackageWeight
+// (decimal, kg), y el ejemplo oficial los muestra los cinco juntos. Faltando
+// cualquiera de las tres aristas, el feed termina con FailedRecords>0 y
+// "atributo obligatorio ausente" por cada SKU, así que ninguna alta pasa. El
+// orden de los campos es el del ejemplo oficial.
+// https://developers.falabella.com/v600.0.0/reference/productcreate
 type datosXML struct {
 	ConditionType string        `xml:"ConditionType,omitempty"`
+	PackageHeight string        `xml:"PackageHeight,omitempty"`
+	PackageWidth  string        `xml:"PackageWidth,omitempty"`
+	PackageLength string        `xml:"PackageLength,omitempty"`
 	PackageWeight string        `xml:"PackageWeight,omitempty"`
 	Atributos     []atributoXML `xml:",omitempty"`
 }
@@ -146,6 +165,19 @@ type datosXML struct {
 type atributoXML struct {
 	XMLName xml.Name
 	Valor   string `xml:",chardata"`
+}
+
+// sobreImagenes es el cuerpo de Action=Image, que es donde de verdad se cargan
+// las fotos: <Request><ProductImage><SellerSku/><Images><Image/></Images>.
+// https://developers.falabella.com/v500/reference/image
+type sobreImagenes struct {
+	XMLName xml.Name         `xml:"Request"`
+	Imagen  []imagenProducto `xml:"ProductImage"`
+}
+
+type imagenProducto struct {
+	SellerSku string `xml:"SellerSku"`
+	Images    imgs   `xml:"Images"`
 }
 
 type imgs struct {
@@ -169,6 +201,17 @@ func (a *Adaptador) Publish(ctx context.Context, req channel.PublishRequest) (ch
 	}
 	if p.CategoryID == "" {
 		return channel.PublishResult{}, fmt.Errorf("Falabella exige categoría y %s no la tiene mapeada", v.SKU)
+	}
+	// PackageHeight, PackageWidth y PackageLength son obligatorios dentro de
+	// <ProductData>, así que sin las tres medidas el feed se rechaza entero.
+	// Se comprueba aquí, junto al EAN y al peso, para no gastar una escritura
+	// asíncrona que se sabe que va a fallar y que además solo se descubriría
+	// al consultar FeedStatus.
+	// https://developers.falabella.com/v600.0.0/reference/productcreate
+	if p.LengthCm <= 0 || p.WidthCm <= 0 || p.HeightCm <= 0 {
+		return channel.PublishResult{}, fmt.Errorf(
+			"Falabella exige las medidas del paquete (largo, ancho y alto en cm) y %s tiene %gx%gx%g",
+			v.SKU, p.LengthCm, p.WidthCm, p.HeightCm)
 	}
 
 	existe, err := a.existeSKU(ctx, v.SKU)
@@ -224,10 +267,20 @@ func (a *Adaptador) Publish(ctx context.Context, req channel.PublishRequest) (ch
 			Kind: channel.Falabella, Code: "feed", Message: motivo,
 		}
 	}
+	avisos = append(avisos, feed.Aviso())
+
+	// Segunda escritura: las fotos no viajan en el feed de producto.
+	avisoImgs, err := a.imagenesDe(ctx, v.SKU, p.Images)
+	if err != nil {
+		return channel.PublishResult{}, err
+	}
+	if avisoImgs != "" {
+		avisos = append(avisos, avisoImgs)
+	}
 	return channel.PublishResult{
 		Ref: ref, Adopted: existe,
 		VariantRefs: map[string]channel.ExternalRef{v.SKU: ref},
-		Warnings:    append(avisos, feed.Aviso()),
+		Warnings:    avisos,
 	}, nil
 }
 
@@ -253,7 +306,17 @@ func (a *Adaptador) Update(ctx context.Context, req channel.UpdateRequest) (chan
 			Kind: channel.Falabella, Code: "feed", Message: motivo,
 		}
 	}
-	return channel.UpdateResult{Ref: req.Ref, Warnings: []string{feed.Aviso()}}, nil
+	avisos := []string{feed.Aviso()}
+
+	// Las imágenes van en su propia escritura, igual que en Publish.
+	avisoImgs, err := a.imagenesDe(ctx, req.Ref.SKU, req.Product.Images)
+	if err != nil {
+		return channel.UpdateResult{}, err
+	}
+	if avisoImgs != "" {
+		avisos = append(avisos, avisoImgs)
+	}
+	return channel.UpdateResult{Ref: req.Ref, Warnings: avisos}, nil
 }
 
 // UpdatePrice aprovecha el lote: Falabella acepta hasta 50 por feed, así que
@@ -676,7 +739,9 @@ func normalizarEstado(s string) string {
 // ------------------------------------------------------------- auxiliares
 
 // ficha arma la parte de contenido del producto: lo que no depende de la
-// unidad de negocio. Precio, stock y estado los añade quien llama.
+// unidad de negocio. Precio, stock y estado los añade quien llama. Las
+// imágenes tampoco van aquí: viajan aparte con Action=Image (ver
+// enviarImagenes).
 func (a *Adaptador) ficha(p channel.Product, v channel.Variant) productoXML {
 	prod := productoXML{
 		SellerSku:       v.SKU,
@@ -693,14 +758,25 @@ func (a *Adaptador) ficha(p channel.Product, v channel.Variant) productoXML {
 	if p.Weight > 0 {
 		prod.Datos.PackageWeight = strconv.FormatFloat(p.Weight, 'f', 3, 64)
 	}
-	if len(p.Images) > 0 {
-		var urls []string
-		for _, i := range p.Images {
-			urls = append(urls, i.URL)
-		}
-		prod.Images = &imgs{Image: urls}
-	}
+	// Las tres aristas del paquete, en enteros de centímetros, como pide la
+	// tabla de ProductData. Se redondea HACIA ARRIBA: Integra las guarda con
+	// dos decimales y declarar 12 cm donde hay 12,4 es declarar un paquete más
+	// pequeño que el real, lo que el canal cobra o rechaza en la bodega.
+	prod.Datos.PackageHeight = centimetros(p.HeightCm)
+	prod.Datos.PackageWidth = centimetros(p.WidthCm)
+	prod.Datos.PackageLength = centimetros(p.LengthCm)
 	return prod
+}
+
+// centimetros pasa una medida a la cadena entera de centímetros que espera
+// Seller Center. Cero devuelve vacío para que omitempty no mande un elemento
+// en blanco, que Falabella cuenta como atributo obligatorio ausente igual que
+// si faltara.
+func centimetros(cm float64) string {
+	if cm <= 0 {
+		return ""
+	}
+	return strconv.FormatFloat(math.Ceil(cm), 'f', 0, 64)
 }
 
 // atributosXML convierte los atributos obligatorios de la categoría en
@@ -823,7 +899,75 @@ func (a *Adaptador) enviarProductos(ctx context.Context, accion string, prods []
 	if err != nil {
 		return Feed{}, err
 	}
+	return a.enviarFeed(ctx, accion, cuerpo)
+}
 
+// maxImagenes es el tope que admite Action=Image por producto. Recortar aquí
+// es mejor que mandar nueve: el endpoint rechazaría la llamada entera y el
+// producto se quedaría sin ninguna foto.
+// https://developers.falabella.com/v500/reference/image
+const maxImagenes = 8
+
+// enviarImagenes carga las fotos con su endpoint propio, Action=Image, que es
+// el único sitio donde Falabella las lee. Colgarlas como <Images> dentro de
+// <Product> en ProductCreate/ProductUpdate no da error —el bloque no está en
+// el esquema y se ignora— pero la publicación se queda sin fotos, no pasa el
+// control de calidad del Seller Center y nunca se hace visible; y como el
+// motor de diff guarda el hash en cuanto Publish responde, el producto no se
+// vuelve a encolar.
+//
+// Ojo con dos comportamientos documentados del endpoint: la PRIMERA URL queda
+// como imagen principal (por eso se respeta el orden que trae el producto) y
+// cada llamada DESASOCIA las imágenes anteriores, así que hay que mandar
+// siempre la lista completa y no solo las nuevas.
+// https://developers.falabella.com/v500/reference/image
+func (a *Adaptador) enviarImagenes(ctx context.Context, sku string, imagenes []channel.Image) (Feed, error) {
+	urls := make([]string, 0, len(imagenes))
+	for _, i := range imagenes {
+		if u := strings.TrimSpace(i.URL); u != "" {
+			urls = append(urls, u)
+		}
+	}
+	if len(urls) == 0 {
+		return Feed{}, nil
+	}
+	if len(urls) > maxImagenes {
+		urls = urls[:maxImagenes]
+	}
+	cuerpo, err := xml.Marshal(sobreImagenes{Imagen: []imagenProducto{{
+		SellerSku: sku, Images: imgs{Image: urls},
+	}}})
+	if err != nil {
+		return Feed{}, err
+	}
+	return a.enviarFeed(ctx, "Image", cuerpo)
+}
+
+// imagenesDe manda las fotos y traduce el resultado a un aviso, o a un error si
+// el feed las rechazó. Se devuelve error a propósito: dar la publicación por
+// buena guardaría el hash y la dejaría sin fotos para siempre, mientras que
+// reintentar es inocuo porque Action=Image reemplaza la lista entera.
+func (a *Adaptador) imagenesDe(ctx context.Context, sku string, imagenes []channel.Image) (string, error) {
+	feed, err := a.enviarImagenes(ctx, sku, imagenes)
+	if err != nil {
+		return "", err
+	}
+	if feed.ID == "" {
+		return "", nil
+	}
+	if motivo := feed.Rechazo(sku); motivo != "" {
+		return "", &channel.Error{
+			Kind: channel.Falabella, Code: "feed_imagenes",
+			Message: "las imágenes de " + sku + " fueron rechazadas: " + motivo,
+		}
+	}
+	return "imágenes: " + feed.Aviso(), nil
+}
+
+// enviarFeed manda un cuerpo XML a una acción de escritura y espera a saber
+// cómo terminó. Lo comparten los productos y las imágenes porque las dos
+// escrituras son asíncronas y devuelven el feed en el mismo sitio.
+func (a *Adaptador) enviarFeed(ctx context.Context, accion string, cuerpo []byte) (Feed, error) {
 	var resp struct {
 		SuccessResponse struct {
 			Head struct {

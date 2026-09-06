@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -40,6 +41,12 @@ type tienda struct {
 	estadoProducto func(id string) (int, map[string]any)
 	// ordenesDespacho son los fulfillment orders por pedido.
 	ordenesDespacho map[string][]map[string]any
+	// stock es el disponible por ubicación y por inventory_item_id, que es
+	// como lo guarda Shopify de verdad: inventory_quantity de la variante es
+	// solo la suma de todas las ubicaciones.
+	stock map[int64]map[int64]int
+	// alcances son los permisos del token que devuelve access_scopes.json.
+	alcances []string
 }
 
 type llamada struct {
@@ -57,6 +64,8 @@ func nuevaTienda(t *testing.T) *tienda {
 		ubicaciones:        []map[string]any{{"id": 111, "active": true}},
 		inventarioVariante: 888,
 		ordenesDespacho:    map[string][]map[string]any{},
+		stock:              map[int64]map[int64]int{},
+		alcances:           []string{"read_products", "write_products", "read_orders", "write_orders"},
 	}
 	s.Server = httptest.NewServer(http.HandlerFunc(s.manejar))
 	t.Cleanup(s.Close)
@@ -81,6 +90,16 @@ func (s *tienda) manejar(w http.ResponseWriter, r *http.Request) {
 	})
 	s.mu.Unlock()
 
+	// access_scopes.json no cuelga de /admin/api/{version}: va antes de la
+	// comprobación del prefijo, igual que en la tienda real.
+	if r.URL.Path == "/admin/oauth/access_scopes.json" {
+		alcances := make([]map[string]any, 0, len(s.alcances))
+		for _, a := range s.alcances {
+			alcances = append(alcances, map[string]any{"handle": a})
+		}
+		responder(w, map[string]any{"access_scopes": alcances})
+		return
+	}
 	if !strings.HasPrefix(r.URL.Path, s.prefijo()+"/") {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = io.WriteString(w, `{"errors":"esta prueba solo sirve la version `+VersionAPI+`"}`)
@@ -120,6 +139,38 @@ func (s *tienda) manejar(w http.ResponseWriter, r *http.Request) {
 		responder(w, map[string]any{"fulfillment": map[string]any{"id": 5001, "status": "success"}})
 	case r.Method == http.MethodGet && ruta == "/locations.json":
 		responder(w, map[string]any{"locations": s.ubicaciones})
+	case r.Method == http.MethodGet && ruta == "/inventory_levels.json":
+		q := r.URL.Query()
+		var locs []int64
+		for _, t := range strings.Split(q.Get("location_ids"), ",") {
+			if n, err := strconv.ParseInt(strings.TrimSpace(t), 10, 64); err == nil {
+				locs = append(locs, n)
+			}
+		}
+		if len(locs) == 0 {
+			// El endpoint exige al menos inventory_item_ids o location_ids.
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = io.WriteString(w, `{"errors":"either inventory_item_ids or location_ids is required"}`)
+			return
+		}
+		pedidos := map[int64]bool{}
+		for _, t := range strings.Split(q.Get("inventory_item_ids"), ",") {
+			if n, err := strconv.ParseInt(strings.TrimSpace(t), 10, 64); err == nil {
+				pedidos[n] = true
+			}
+		}
+		niveles := []map[string]any{}
+		for _, loc := range locs {
+			for item, disp := range s.stock[loc] {
+				if len(pedidos) > 0 && !pedidos[item] {
+					continue
+				}
+				niveles = append(niveles, map[string]any{
+					"inventory_item_id": item, "location_id": loc, "available": disp,
+				})
+			}
+		}
+		responder(w, map[string]any{"inventory_levels": niveles})
 	case r.Method == http.MethodPost && ruta == "/inventory_levels/set.json":
 		responder(w, map[string]any{"inventory_level": map[string]any{
 			"inventory_item_id": cuerpo["inventory_item_id"],
@@ -959,5 +1010,166 @@ func TestAckOrderSinPedidoNoLlamaANadie(t *testing.T) {
 	}
 	if len(s.llamadas) != 0 {
 		t.Errorf("se llamó a la tienda igual: %+v", s.llamadas)
+	}
+}
+
+// ------------------------------------------------------ stock por ubicación
+
+// FetchStatus y ListRemote leían variants[].inventory_quantity, que la
+// documentación define como el agregado de TODAS las ubicaciones, mientras
+// fijarInventario escribe en una sola: en una tienda con bodega y punto de
+// venta el informe nunca coincidía con lo que Integra empujó.
+func TestElStockLeidoEsElDeLaUbicacionEnLaQueSeEscribe(t *testing.T) {
+	s := nuevaTienda(t)
+	s.ubicaciones = []map[string]any{
+		{"id": 111, "active": true}, // la principal: la de id más bajo
+		{"id": 222, "active": true}, // punto de venta
+	}
+	// 4 unidades en la bodega y 8 en el punto de venta: el agregado es 12.
+	s.stock = map[int64]map[int64]int{
+		111: {99: 4},
+		222: {99: 8},
+	}
+	variante := map[string]any{
+		"id": 66, "sku": "SKU-300", "price": "150000.00",
+		"inventory_item_id": 99, "inventory_quantity": 12,
+	}
+	s.estadoProducto = func(id string) (int, map[string]any) {
+		return http.StatusOK, map[string]any{"product": map[string]any{
+			"status": "active", "handle": "impresora",
+			"variants": []map[string]any{variante},
+		}}
+	}
+	s.paginasProductos = [][]map[string]any{{{
+		"id": 55, "title": "Impresora", "status": "active",
+		"variants": []map[string]any{variante},
+	}}}
+
+	ad := s.adaptador(t, nil)
+
+	est, err := ad.FetchStatus(context.Background(), []channel.ExternalRef{{ListingID: "55"}})
+	if err != nil {
+		t.Fatalf("FetchStatus: %v", err)
+	}
+	if len(est) != 1 || est[0].Quantity != 4 {
+		t.Fatalf("Quantity = %+v, quería 4 (lo de la ubicación 111): se publicó el agregado de todas", est)
+	}
+
+	l := s.buscarLlamada(http.MethodGet, "/inventory_levels.json")
+	if l == nil {
+		t.Fatal("no se consultó inventory_levels: el stock salió del agregado de la variante")
+	}
+	if l.Query.Get("location_ids") != "111" {
+		t.Errorf("location_ids = %q: hay que leer la misma ubicación en la que escribe fijarInventario",
+			l.Query.Get("location_ids"))
+	}
+	if l.Query.Get("inventory_item_ids") != "99" {
+		t.Errorf("inventory_item_ids = %q", l.Query.Get("inventory_item_ids"))
+	}
+
+	pag, err := ad.ListRemote(context.Background(), channel.Cursor{})
+	if err != nil {
+		t.Fatalf("ListRemote: %v", err)
+	}
+	if len(pag.Items) != 1 || len(pag.Items[0].Variants) != 1 {
+		t.Fatalf("el listado remoto trajo %+v", pag.Items)
+	}
+	if q := pag.Items[0].Variants[0].Quantity; q != 4 {
+		t.Errorf("Quantity = %d, quería 4: el listado remoto sigue publicando el agregado", q)
+	}
+}
+
+// Con una sola ubicación el número coincide con el agregado, pero la lectura
+// tiene que seguir siendo la de la ubicación: si la variante no está
+// abastecida ahí, el disponible es cero aunque otra ubicación tenga
+// existencias.
+func TestSinExistenciasEnLaUbicacionElEstadoNoHeredaLasDeOtra(t *testing.T) {
+	s := nuevaTienda(t)
+	s.ubicaciones = []map[string]any{{"id": 111, "active": true}, {"id": 222, "active": true}}
+	s.stock = map[int64]map[int64]int{222: {99: 30}} // todo en la otra ubicación
+	s.estadoProducto = func(id string) (int, map[string]any) {
+		return http.StatusOK, map[string]any{"product": map[string]any{
+			"status": "active", "handle": "impresora",
+			"variants": []map[string]any{{
+				"id": 66, "price": "150000.00",
+				"inventory_item_id": 99, "inventory_quantity": 30,
+			}},
+		}}
+	}
+
+	est, err := s.adaptador(t, nil).FetchStatus(context.Background(),
+		[]channel.ExternalRef{{ListingID: "55"}})
+	if err != nil {
+		t.Fatalf("FetchStatus: %v", err)
+	}
+	if est[0].Quantity != 0 {
+		t.Errorf("Quantity = %d, quería 0: el informe esconde que la ubicación publicada está vacía",
+			est[0].Quantity)
+	}
+}
+
+// ------------------------------------------------------ ventana de 60 días
+
+// Sin read_all_orders, Shopify entrega solo los últimos 60 días y no avisa.
+// Como el núcleo avanza la marca de agua con lo que sí llegó, los pedidos del
+// hueco no se vuelven a pedir nunca: la ingesta informa «al día».
+func TestLaIngestaSeDetieneSiLaMarcaSalioDeLaVentanaDe60Dias(t *testing.T) {
+	s := nuevaTienda(t)
+	s.paginasPedidos = [][]map[string]any{{{
+		"id": 5001, "name": "#1001", "financial_status": "paid",
+		"created_at": "2026-01-01T10:00:00-05:00", "updated_at": "2026-01-01T10:00:00-05:00",
+		"currency": "COP", "total_price": "1000.00",
+	}}}
+	ad := s.adaptador(t, nil)
+	desde := time.Now().AddDate(0, 0, -90)
+
+	_, err := ad.FetchOrders(context.Background(), desde, channel.Cursor{})
+	if err == nil {
+		t.Fatal("una marca de 90 días con un token sin read_all_orders tiene que parar la ingesta: " +
+			"si no, el hueco se cierra solo y esos pedidos no llegan nunca a Odoo")
+	}
+	if !strings.Contains(err.Error(), "read_all_orders") {
+		t.Errorf("el error no dice qué falta: %v", err)
+	}
+	if channel.EsReintentable(err) {
+		t.Error("reintentar no lo arregla: falta un permiso en la app, no es un fallo pasajero")
+	}
+	if s.contar(http.MethodGet, "/orders.json") != 0 {
+		t.Error("se llegó a pedir la página: con la respuesta recortada la marca avanzaría igual")
+	}
+}
+
+// Con read_all_orders el token sí lee más atrás de 60 días: la ingesta sigue.
+func TestConReadAllOrdersLaIngestaAntiguaSigueAdelante(t *testing.T) {
+	s := nuevaTienda(t)
+	s.alcances = append(s.alcances, "read_all_orders")
+	s.paginasPedidos = [][]map[string]any{{{
+		"id": 5001, "name": "#1001", "financial_status": "paid",
+		"created_at": "2026-01-01T10:00:00-05:00", "updated_at": "2026-01-01T10:00:00-05:00",
+		"currency": "COP", "total_price": "1000.00",
+	}}}
+
+	pag, err := s.adaptador(t, nil).FetchOrders(context.Background(),
+		time.Now().AddDate(0, 0, -90), channel.Cursor{})
+	if err != nil {
+		t.Fatalf("FetchOrders: %v", err)
+	}
+	if len(pag.Orders) != 1 {
+		t.Fatalf("con read_all_orders el pedido antiguo tiene que llegar: %+v", pag.Orders)
+	}
+}
+
+// La comprobación no puede costar una llamada de permisos en cada ronda
+// normal: la marca de agua está casi siempre dentro de la ventana.
+func TestLaMarcaRecienteNoConsultaLosPermisos(t *testing.T) {
+	s := nuevaTienda(t)
+	s.paginasPedidos = [][]map[string]any{{}}
+
+	if _, err := s.adaptador(t, nil).FetchOrders(context.Background(),
+		time.Now().AddDate(0, 0, -7), channel.Cursor{}); err != nil {
+		t.Fatalf("FetchOrders: %v", err)
+	}
+	if n := s.contar(http.MethodGet, "/admin/oauth/access_scopes.json"); n != 0 {
+		t.Errorf("se consultaron los permisos %d veces con la marca dentro de la ventana", n)
 	}
 }

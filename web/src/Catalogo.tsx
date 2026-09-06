@@ -25,6 +25,7 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio }: {
   const [editando, setEditando] = useState<Producto | null>(null)
   const [version, setVersion] = useState(0)
   const [error, setError] = useState<string | null>(null)
+  const [cargando, setCargando] = useState(true)
   const [marcados, setMarcados] = useState<Set<number>>(new Set())
   const [masiva, setMasiva] = useState(false)
   const [plantilla, setPlantilla] = useState(false)
@@ -33,25 +34,49 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio }: {
     q: busqueda, marca, categoria, problemas: soloProblemas,
     excluidos: verExcluidos, sin_precio: sinPrecio,
   }
+  const hayFiltro = !!(busqueda || marca || categoria || soloProblemas || verExcluidos || sinPrecio)
   const alternar = (id: number) => {
     const s = new Set(marcados)
     s.has(id) ? s.delete(id) : s.add(id)
     setMarcados(s)
   }
-  const todosEnPagina = (pagina?.items ?? []).every((p) => marcados.has(p.id))
+  const items = pagina?.items ?? []
+  // `every` sobre una lista vacía da true, y eso dejaría la casilla de
+  // «seleccionar todo» marcada en una página sin productos.
+  const paginaEntera = items.length > 0 && items.every((p) => marcados.has(p.id))
+  const alternarPagina = () => {
+    const s = new Set(marcados)
+    for (const p of items) paginaEntera ? s.delete(p.id) : s.add(p.id)
+    setMarcados(s)
+  }
 
   // La búsqueda se retrasa 300 ms para no lanzar una consulta por tecla.
+  // `vigente` descarta la respuesta de una consulta que ya quedó atrás: al
+  // teclear rápido hay varias en vuelo y no siempre vuelven en orden, así que
+  // sin esto la lista puede quedarse mostrando el resultado de un texto viejo.
   useEffect(() => {
+    let vigente = true
+    setCargando(true)
     const t = setTimeout(() => {
       api.productos({
         q: busqueda, marca, categoria, problemas: soloProblemas,
         excluidos: verExcluidos, sin_precio: sinPrecio,
         limite: POR_PAGINA, offset,
       })
-        .then(setPagina)
-        .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+        .then((p) => {
+          if (!vigente) return
+          setPagina(p)
+          // Un error de hace dos búsquedas no debe seguir en pantalla cuando
+          // la siguiente ya trajo datos buenos.
+          setError(null)
+        })
+        .catch((e) => {
+          if (!vigente) return
+          setError(e instanceof Error ? e.message : String(e))
+        })
+        .finally(() => { if (vigente) setCargando(false) })
     }, 300)
-    return () => clearTimeout(t)
+    return () => { vigente = false; clearTimeout(t) }
   }, [busqueda, marca, categoria, soloProblemas, verExcluidos, sinPrecio, offset, version])
 
   // Al cambiar un filtro se vuelve a la primera página: quedarse en la página 7
@@ -74,7 +99,14 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio }: {
         </div>
       </header>
 
-      {error && <div className="aviso-caja">Error: {error}</div>}
+      {error && (
+        <div className="aviso-caja">
+          <div className="fila">
+            <span className="expande-recorta">No se pudo cargar la lista: {error}</span>
+            <button onClick={() => setVersion((v) => v + 1)}>Reintentar</button>
+          </div>
+        </div>
+      )}
 
       <section className="panel">
         <div className="cuerpo">
@@ -115,9 +147,18 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio }: {
           <div className="barra-masiva">
             <span className="crece">
               {marcados.size > 0
-                ? `${marcados.size} seleccionados`
-                : `${pagina?.total ?? 0} productos en el filtro actual`}
+                ? `${num(marcados.size)} seleccionados`
+                : cargando
+                  ? 'Buscando…'
+                  : `${num(pagina?.total ?? 0)} productos en el filtro actual`}
             </span>
+            {/* En el móvil no hay cabecera de tabla, así que la casilla de
+                «seleccionar toda la página» desaparece; este botón la sustituye. */}
+            {items.length > 0 && (
+              <button className="solo-movil" onClick={alternarPagina}>
+                {paginaEntera ? 'Quitar esta página' : 'Marcar esta página'}
+              </button>
+            )}
             {marcados.size > 0 && (
               <button onClick={() => setMarcados(new Set())}>Limpiar selección</button>
             )}
@@ -132,21 +173,16 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio }: {
         )}
 
         <div className="tabla-envoltorio">
-          <table>
+          <table className="tabla-tarjetas">
             <thead>
               <tr>
                 <th className="col-check">
-                  <input type="checkbox" checked={todosEnPagina && (pagina?.items.length ?? 0) > 0}
+                  <input type="checkbox" checked={paginaEntera}
                     title="Seleccionar los de esta página"
-                    onChange={() => {
-                      const s = new Set(marcados)
-                      for (const p of pagina?.items ?? []) {
-                        todosEnPagina ? s.delete(p.id) : s.add(p.id)
-                      }
-                      setMarcados(s)
-                    }} />
+                    onChange={alternarPagina} />
                 </th>
-                <th>Referencia</th><th>Producto</th><th>Marca</th>
+                <th className="oculto-movil">Referencia</th><th>Producto</th>
+                <th className="oculto-movil">Marca</th>
                 <th className="num">Precio</th><th className="num">Stock</th>
                 <th>Estado</th><th></th>
               </tr>
@@ -157,26 +193,36 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio }: {
                   onClick={() => onVer(p.id)}
                   title="Ver cómo quedaría en cada canal">
                   <td className="col-check" onClick={(e) => e.stopPropagation()}>
-                    <input type="checkbox" checked={marcados.has(p.id)}
-                      onChange={() => alternar(p.id)} />
+                    <label className="casilla">
+                      <input type="checkbox" checked={marcados.has(p.id)}
+                        onChange={() => alternar(p.id)} />
+                      {/* En tarjeta la casilla queda suelta sin nada que la
+                          nombre; en la tabla el encabezado ya lo dice. */}
+                      <span className="solo-movil mini-texto tenue">Seleccionar</span>
+                    </label>
                   </td>
-                  <td className="sku">{p.sku || <span className="tenue">—</span>}</td>
-                  <td>
+                  <td className="sku oculto-movil">{p.sku || <span className="tenue">—</span>}</td>
+                  <td className="titulo-tarjeta">
                     <div>{p.nombre}</div>
                     {p.categoria && <div className="categoria">{p.categoria}</div>}
+                    {/* La columna Referencia se esconde en el móvil, pero saber
+                        qué SKU es sigue siendo lo primero que se busca. */}
+                    <div className="solo-movil mini-texto tenue">
+                      Ref. {p.sku || '—'}{p.marca ? ` · ${p.marca}` : ''}
+                    </div>
                   </td>
-                  <td>{p.marca || <span className="tenue">—</span>}</td>
-                  <td className="num">
+                  <td className="oculto-movil">{p.marca || <span className="tenue">—</span>}</td>
+                  <td className="num" data-etiqueta="Precio">
                     {p.precio !== null
                       ? <strong>{money(p.precio)}</strong>
                       : p.precio_sugerido !== null
                         ? <span className="tenue" title="Sugerencia según tarifas de Odoo; asígnalo al editar">
-                            ({money(p.precio_sugerido)})
+                            ({money(p.precio_sugerido)}) sugerido
                           </span>
-                        : <span className="tenue">—</span>}
+                        : <span className="tenue">Sin precio</span>}
                   </td>
-                  <td className="num">{num(p.stock)}</td>
-                  <td>
+                  <td className="num" data-etiqueta="Stock">{num(p.stock)}</td>
+                  <td className="apilada" data-etiqueta="Estado">
                     <div className="etiquetas">
                       {p.problemas.length === 0
                         ? <span className="pastilla ok">Listo</span>
@@ -187,7 +233,13 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio }: {
                         ))}
                     </div>
                   </td>
-                  <td>
+                  <td className="acciones-fila">
+                    {/* Tocar la tarjeta abre la vista previa, pero eso no se ve;
+                        en el móvil el botón lo hace explícito. */}
+                    <button className="solo-movil"
+                      onClick={(e) => { e.stopPropagation(); onVer(p.id) }}>
+                      Ver en canales
+                    </button>
                     <button onClick={(e) => { e.stopPropagation(); setEditando(p) }}
                       title="Editar precio, marca y descripción">
                       Editar
@@ -197,20 +249,28 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio }: {
               ))}
             </tbody>
           </table>
-          {pagina && pagina.items.length === 0 && (
-            <div className="vacio">Ningún producto coincide con el filtro.</div>
+          {pagina === null && cargando && !error && (
+            <div className="vacio">Cargando productos…</div>
+          )}
+          {pagina && pagina.items.length === 0 && !cargando && (
+            <div className="vacio">
+              {hayFiltro
+                ? 'Ningún producto coincide con el filtro. Prueba a quitar alguna condición.'
+                : 'Todavía no hay productos. Sincroniza con Odoo para traer el catálogo.'}
+            </div>
           )}
         </div>
 
-        {pagina && (
+        {pagina && pagina.total > 0 && (
           <div className="paginacion">
-            <button disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - POR_PAGINA))}>
+            <button disabled={offset === 0 || cargando}
+              onClick={() => setOffset(Math.max(0, offset - POR_PAGINA))}>
               ← Anterior
             </button>
             <span className="tenue">
               {pagina.total === 0 ? 0 : offset + 1}–{Math.min(offset + POR_PAGINA, pagina.total)} de {num(pagina.total)}
             </span>
-            <button disabled={offset + POR_PAGINA >= pagina.total}
+            <button disabled={offset + POR_PAGINA >= pagina.total || cargando}
               onClick={() => setOffset(offset + POR_PAGINA)}>
               Siguiente →
             </button>

@@ -139,6 +139,18 @@ type Product struct {
 	Variants    []Variant
 	Weight      float64
 	Volume      float64
+
+	// Medidas del paquete en centímetros, tal como las guarda Integra por
+	// variante (product_variants.largo_cm / ancho_cm / alto_cm, migración
+	// 017). Weight y Volume no bastan para los canales que piden las tres
+	// aristas por separado: Falabella marca PackageHeight, PackageWidth y
+	// PackageLength como obligatorios dentro de <ProductData> de ProductCreate
+	// y ProductUpdate, en enteros de centímetros
+	// (https://developers.falabella.com/v600.0.0/reference/productcreate), y
+	// sin ellas rechaza el alta entera.
+	LengthCm float64
+	WidthCm  float64
+	HeightCm float64
 }
 
 // Variant es una variante concreta con su precio y su stock.
@@ -255,11 +267,11 @@ type Order struct {
 	// OrderedAt para la marca de agua.
 	UpdatedAt time.Time
 	Currency  string
-	Total      float64
-	Shipping   float64
-	Tax        float64
-	Buyer      Buyer
-	Lines      []OrderLine
+	Total     float64
+	Shipping  float64
+	Tax       float64
+	Buyer     Buyer
+	Lines     []OrderLine
 	// Raw conserva la carga original para poder reprocesar sin volver a pedirla.
 	Raw []byte
 }

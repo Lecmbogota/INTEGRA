@@ -54,6 +54,13 @@ export default function App() {
 
 function Aplicacion({ sesion, onSalir }: { sesion: Sesion; onSalir: () => void }) {
   const [seccion, setSeccion] = useState<Seccion>('panel')
+  const [menuAbierto, setMenuAbierto] = useState(false)
+  // Estables porque el cajón las usa como dependencia de su efecto de foco:
+  // recrearlas en cada render lo montaría y desmontaría sin parar.
+  const cerrarMenu = useCallback(() => setMenuAbierto(false), [])
+  // Elegir sección cierra el cajón: en el móvil tapa justo lo que se acaba
+  // de pedir ver.
+  const irA = useCallback((s: Seccion) => { setSeccion(s); setMenuAbierto(false) }, [])
   const [resumen, setResumen] = useState<Resumen | null>(null)
   const [marcas, setMarcas] = useState<Marca[]>([])
   const [categorias, setCategorias] = useState<Categoria[]>([])
@@ -132,7 +139,21 @@ function Aplicacion({ sesion, onSalir }: { sesion: Sesion; onSalir: () => void }
 
   return (
     <div className="app">
-      <Sidebar actual={seccion} onIr={setSeccion}
+      {/* Solo visible por debajo de 1024px, donde el menú está escondido:
+          sin esta barra no habría forma de llegar a las secciones. */}
+      <header className="barra-movil">
+        <button className="boton-menu" onClick={() => setMenuAbierto(true)}
+          aria-label="Abrir menú" aria-expanded={menuAbierto} aria-controls="menu-lateral">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            strokeWidth="1.8" strokeLinecap="round">
+            <path d="M4 7h16" /><path d="M4 12h16" /><path d="M4 17h16" />
+          </svg>
+        </button>
+        <span className="barra-movil-nombre">integra</span>
+      </header>
+
+      <Sidebar actual={seccion} onIr={irA}
+        abierto={menuAbierto} onCerrar={cerrarMenu}
         avisos={resumen?.en_atencion ?? 0}
         pedidosPendientes={pedidos ? pedidos.recibidos + pedidos.fallidos : 0}
         alertas={alertas}

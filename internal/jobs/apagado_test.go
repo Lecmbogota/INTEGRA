@@ -35,7 +35,7 @@ func TestElTrabajoEnVueloTerminaAunqueSeApagueElWorker(t *testing.T) {
 	})
 
 	ctx, apagar := context.WithCancel(context.Background())
-	id, err := cola.Encolar(ctx, "test_apagado", map[string]any{}, Opciones{})
+	id, err := cola.Encolar(ctx, "test_apagado", map[string]any{}, Opciones{Priority: prioridadDePrueba})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestElMargenDeApagadoNoEsInfinito(t *testing.T) {
 	})
 
 	ctx, apagar := context.WithCancel(context.Background())
-	if _, err := cola.Encolar(ctx, "test_apagado_colgado", map[string]any{}, Opciones{}); err != nil {
+	if _, err := cola.Encolar(ctx, "test_apagado_colgado", map[string]any{}, Opciones{Priority: prioridadDePrueba}); err != nil {
 		t.Fatal(err)
 	}
 

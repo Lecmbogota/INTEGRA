@@ -435,22 +435,42 @@ func estadoCon(it itemML) string {
 	return it.Status + "/" + strings.Join(it.SubStatus, ",")
 }
 
+// ListRemote recorre el inventario publicado del vendedor.
+//
+// Se recorre con search_type=scan y no con offset porque la paginación por
+// offset se corta en los 1000 primeros ítems: «Para realizar búsquedas de más
+// de 1000 registros de Items […] de la forma users/$USER_ID/items/search […]
+// debes: Enviar el parámetro search_type=scan a la consulta y quitar el
+// offset» («Ítems y Búsquedas» → «Buscar más de 1000 registros»,
+// https://developers.mercadolibre.com.co/es_ar/items-y-busquedas). Con offset,
+// una cuenta con más de 1000 publicaciones dejaba fuera de la conciliación
+// todo lo que hubiera a partir de la 1001, que se trataba como inexistente y
+// se podía llegar a duplicar al publicar.
+//
+// El scan devuelve un scroll_id que hay que reenviar en cada llamada y que
+// caduca a los 5 minutos: viaja en channel.Cursor.Token, así que la
+// conciliación tiene que consumir las páginas seguidas. La única señal de
+// final es una página vacía (ya no hay offset que comparar contra
+// paging.total), de ahí la llamada de más al terminar.
 func (a *Adaptador) ListRemote(ctx context.Context, cur channel.Cursor) (channel.RemotePage, error) {
 	if err := a.perfil(ctx); err != nil {
 		return channel.RemotePage{}, err
 	}
-	offset := cur.Page * tamPagina
-	q := url.Values{"limit": {strconv.Itoa(tamPagina)}, "offset": {strconv.Itoa(offset)}}
+	q := url.Values{"limit": {strconv.Itoa(tamPagina)}, "search_type": {"scan"}}
+	if cur.Token != "" {
+		q.Set("scroll_id", cur.Token)
+	}
 
 	var resp struct {
-		Results []string `json:"results"`
-		Paging  struct {
-			Total int `json:"total"`
-		} `json:"paging"`
+		Results  []string `json:"results"`
+		ScrollID string   `json:"scroll_id"`
 	}
 	if err := a.llamar(ctx, http.MethodGet,
 		"/users/"+strconv.FormatInt(a.userID, 10)+"/items/search", q, nil, &resp); err != nil {
 		return channel.RemotePage{}, err
+	}
+	if len(resp.Results) == 0 {
+		return channel.RemotePage{Done: true}, nil
 	}
 
 	detalle, err := a.multiget(ctx, resp.Results, "id,title,status,sub_status,price,available_quantity,attributes")
@@ -472,8 +492,10 @@ func (a *Adaptador) ListRemote(ctx context.Context, cur channel.Cursor) (channel
 		})
 	}
 	return channel.RemotePage{
-		Items: items, Next: channel.Cursor{Page: cur.Page + 1},
-		Done: len(resp.Results) < tamPagina || offset+len(resp.Results) >= resp.Paging.Total,
+		Items: items,
+		// El scroll_id se arrastra tal cual entre llamadas: ML documenta
+		// «Utiliza el mismo scroll_id para todas las llamadas».
+		Next: channel.Cursor{Page: cur.Page + 1, Token: primeroNoVacio(resp.ScrollID, cur.Token)},
 	}, nil
 }
 
@@ -522,15 +544,54 @@ type ordenML struct {
 	} `json:"order_items"`
 }
 
+// direccionML es la dirección de entrega. Los dos recursos de envíos que
+// consulta el conector la sirven con la misma forma pero colgando de sitios
+// distintos, y por eso se declara aparte: en GET /shipments/{id} con
+// x-format-new está en destination.shipping_address, y en
+// GET /orders/{id}/shipments (vista actual, con ?views=destination) en
+// receiver_address.
+//
+// receiver_name y receiver_phone solo viven aquí en el segundo: en el formato
+// nuevo suben un nivel, a destination.
+type direccionML struct {
+	ReceiverName  string `json:"receiver_name"`
+	ReceiverPhone string `json:"receiver_phone"`
+	AddressLine   string `json:"address_line"`
+	StreetName    string `json:"street_name"`
+	StreetNumber  string `json:"street_number"`
+	Comment       string `json:"comment"`
+	ZipCode       string `json:"zip_code"`
+	City          struct {
+		Name string `json:"name"`
+	} `json:"city"`
+	State struct {
+		Name string `json:"name"`
+	} `json:"state"`
+	Country struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	} `json:"country"`
+}
+
 // envioML es lo que interesa de GET /shipments/{id}: la dirección de
 // entrega, que no viaja en la orden, el costo del envío y la unidad de
 // negocio, que es lo que decide qué se puede informar al despachar.
 //
-// Conviven dos vistas del mismo recurso y ML sirve una u otra según la
-// cabecera: la clásica (X-Api-Version: 2) trae mode, logistic_type y
-// receiver_id en la raíz, y la nueva (X-New-Domain: true) los mete en
-// logistic{} y destination{}. Se declaran las dos formas y se lee la que
-// venga rellena, para no depender de cuál conteste el endpoint.
+// Este mismo struct decodifica dos recursos con contratos distintos, y por eso
+// declara los campos por duplicado y lee el que venga relleno:
+//
+//   - GET /shipments/{id} con la cabecera obligatoria x-format-new: true, que
+//     agrupa todo en logistic{}, destination{} y source{}, y NO devuelve
+//     receiver_address. Fuente: «Gestionar envíos»,
+//     https://developers.mercadolibre.com.co/es_ar/envios
+//   - GET /orders/{id}/shipments, la vista que usa envioDeOrden para resolver
+//     qué envío despachar, que sí sirve mode, logistic_type, receiver_id y
+//     receiver_address en la raíz. Fuente: «Gestiona ventas»,
+//     https://developers.mercadolibre.com.co/es_ar/gestiona-ventas
+//
+// Confundir los dos contratos es justo lo que tenía roto el conector: se
+// le pedía a /shipments/{id} el receiver_address que solo documenta el
+// recurso de la orden.
 type envioML struct {
 	ID           int64  `json:"id"`
 	Status       string `json:"status"`
@@ -551,28 +612,15 @@ type envioML struct {
 	} `json:"source"`
 	ReceiverID  int64 `json:"receiver_id"`
 	Destination struct {
-		ReceiverID int64 `json:"receiver_id"`
+		ReceiverID      int64       `json:"receiver_id"`
+		ReceiverName    string      `json:"receiver_name"`
+		ReceiverPhone   string      `json:"receiver_phone"`
+		ShippingAddress direccionML `json:"shipping_address"`
 	} `json:"destination"`
-	ReceiverAddress struct {
-		ReceiverName  string `json:"receiver_name"`
-		ReceiverPhone string `json:"receiver_phone"`
-		AddressLine   string `json:"address_line"`
-		StreetName    string `json:"street_name"`
-		StreetNumber  string `json:"street_number"`
-		Comment       string `json:"comment"`
-		ZipCode       string `json:"zip_code"`
-		City          struct {
-			Name string `json:"name"`
-		} `json:"city"`
-		State struct {
-			Name string `json:"name"`
-		} `json:"state"`
-		Country struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
-		} `json:"country"`
-	} `json:"receiver_address"`
-	ShippingOption struct {
+	// ReceiverAddress solo llega por GET /orders/{id}/shipments y con
+	// ?views=destination; el formato nuevo de /shipments/{id} ya no lo trae.
+	ReceiverAddress direccionML `json:"receiver_address"`
+	ShippingOption  struct {
 		Cost float64 `json:"cost"`
 	} `json:"shipping_option"`
 	LeadTime struct {
@@ -594,6 +642,34 @@ func (e *envioML) tipoLogistico() string {
 // direccion distingue el envío de ida ("forward") de las devoluciones.
 func (e *envioML) direccion() string {
 	return strings.ToLower(strings.TrimSpace(primeroNoVacio(e.Type, e.Logistic.Direction)))
+}
+
+// entrega devuelve la dirección de entrega venga en el formato que venga.
+//
+// Se prefiere el formato nuevo (destination) porque es el que sirve
+// /shipments/{id} desde que x-format-new es obligatorio, y se cae al viejo
+// (receiver_address) campo por campo, que es lo que devuelve el listado de
+// envíos de la orden. Fusionar por campo y no por bloque evita quedarse sin
+// dirección cuando ML rellena solo una parte: el domicilio del comprador se
+// oculta hasta que se confirma el pago del pedido, y receiver_phone solo
+// está disponible en Mercado Envíos 1 («Gestionar envíos»,
+// https://developers.mercadolibre.com.co/es_ar/envios).
+func (e *envioML) entrega() direccionML {
+	n, v := e.Destination.ShippingAddress, e.ReceiverAddress
+	d := direccionML{
+		ReceiverName:  primeroNoVacio(e.Destination.ReceiverName, n.ReceiverName, v.ReceiverName),
+		ReceiverPhone: primeroNoVacio(e.Destination.ReceiverPhone, n.ReceiverPhone, v.ReceiverPhone),
+		AddressLine:   primeroNoVacio(n.AddressLine, v.AddressLine),
+		StreetName:    primeroNoVacio(n.StreetName, v.StreetName),
+		StreetNumber:  primeroNoVacio(n.StreetNumber, v.StreetNumber),
+		Comment:       primeroNoVacio(n.Comment, v.Comment),
+		ZipCode:       primeroNoVacio(n.ZipCode, v.ZipCode),
+	}
+	d.City.Name = primeroNoVacio(n.City.Name, v.City.Name)
+	d.State.Name = primeroNoVacio(n.State.Name, v.State.Name)
+	d.Country.ID = primeroNoVacio(n.Country.ID, v.Country.ID)
+	d.Country.Name = primeroNoVacio(n.Country.Name, v.Country.Name)
+	return d
 }
 
 // receptor es el id del comprador, que el PUT de envíos personalizados exige.
@@ -702,10 +778,19 @@ func (a *Adaptador) FetchOrders(ctx context.Context, desde time.Time, cur channe
 
 func (a *Adaptador) envio(ctx context.Context, id int64) (*envioML, error) {
 	var env envioML
-	// X-Api-Version: 2 es lo que hace que vengan nombre y teléfono del
-	// receptor; sin él ML los omite por ser datos personales.
+	// x-format-new: true es obligatorio. «Gestionar envíos» lo dice dos veces:
+	// «para trabajar con el Json de shipments, al hacer un GET, debes utilizar
+	// el header "x-format-new: true"» y «A partir del 12 de octubre de 2025 …
+	// el envío del header x-format-new: true pasará a ser obligatorio en todas
+	// las solicitudes»
+	// (https://developers.mercadolibre.com.co/es_ar/envios).
+	//
+	// Antes se mandaba X-Api-Version: 2, que esa página no menciona: es la
+	// cabecera de /orders/{id}/shipments, el otro recurso. Con ella el JSON
+	// llegaba sin destination y la dirección se perdía en silencio, porque
+	// FetchOrders ignora el error del envío.
 	err := a.llamarCon(ctx, http.MethodGet, "/shipments/"+strconv.FormatInt(id, 10), nil,
-		map[string]string{"X-Api-Version": "2"}, nil, &env)
+		map[string]string{"x-format-new": "true"}, nil, &env)
 	if err != nil {
 		return nil, err
 	}
@@ -713,7 +798,7 @@ func (a *Adaptador) envio(ctx context.Context, id int64) (*envioML, error) {
 }
 
 func (a *Adaptador) volcarEnvio(ord *channel.Order, env *envioML) {
-	r := env.ReceiverAddress
+	r := env.entrega()
 	linea1 := strings.TrimSpace(r.AddressLine)
 	if linea1 == "" {
 		linea1 = strings.TrimSpace(r.StreetName + " " + r.StreetNumber)

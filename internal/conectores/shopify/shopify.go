@@ -46,6 +46,17 @@ var esquemaAPI = "https"
 // que una tienda que nunca deje de paginar no cuelgue un trabajo.
 const maxPaginasCatalogo = 200
 
+// maxItemsInventario es el máximo de inventory_item_ids que admite
+// GET /inventory_levels.json en una llamada (también son 50 los location_ids).
+// https://shopify.dev/docs/api/admin-rest/latest/resources/inventorylevel
+const maxItemsInventario = 50
+
+// ventanaPedidos es lo que el recurso Order deja leer hacia atrás sin el
+// permiso read_all_orders: «only the last 60 days' worth of orders from a
+// store are accessible from the Order resource by default».
+// https://shopify.dev/docs/api/admin-rest/latest/resources/order
+const ventanaPedidos = 60 * 24 * time.Hour
+
 func init() {
 	channel.Register(channel.Shopify, func(cfg channel.Config) (channel.Adapter, error) {
 		tienda := strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(
@@ -82,6 +93,9 @@ type Adaptador struct {
 	// así que la caché no sobrevive a un cambio de configuración, pero evita
 	// repetir GET /locations.json por cada variante del mismo lote.
 	ubicacion int64
+	// todosLosPedidos cachea si el token lleva read_all_orders: 0 sin
+	// consultar, 1 sí, -1 no. Se consulta como mucho una vez por trabajo.
+	todosLosPedidos int8
 }
 
 func (a *Adaptador) Kind() channel.Kind { return channel.Shopify }
@@ -279,14 +293,18 @@ func (a *Adaptador) Resume(ctx context.Context, ref channel.ExternalRef) error {
 func (a *Adaptador) FetchStatus(ctx context.Context, refs []channel.ExternalRef) ([]channel.ListingStatus, error) {
 	out := make([]channel.ListingStatus, 0, len(refs))
 	var fallo error
+	// El stock NO sale del producto: se apunta el inventory_item_id de cada
+	// publicación y se resuelve todo de un tirón contra inventory_levels, que
+	// es la única lectura comparable con lo que escribe fijarInventario.
+	pendientes := map[int]int64{}
 	for _, ref := range refs {
 		var resp struct {
 			Product struct {
 				Status   string `json:"status"`
 				Handle   string `json:"handle"`
 				Variants []struct {
-					Price             string `json:"price"`
-					InventoryQuantity int    `json:"inventory_quantity"`
+					Price           string `json:"price"`
+					InventoryItemID int64  `json:"inventory_item_id"`
 				} `json:"variants"`
 			} `json:"product"`
 		}
@@ -309,9 +327,29 @@ func (a *Adaptador) FetchStatus(ctx context.Context, refs []channel.ExternalRef)
 		}
 		if len(resp.Product.Variants) > 0 {
 			st.Price, _ = strconv.ParseFloat(resp.Product.Variants[0].Price, 64)
-			st.Quantity = resp.Product.Variants[0].InventoryQuantity
+			if inv := resp.Product.Variants[0].InventoryItemID; inv != 0 {
+				pendientes[len(out)] = inv
+			}
 		}
 		out = append(out, st)
+	}
+	if len(pendientes) > 0 {
+		ids := make([]int64, 0, len(pendientes))
+		for _, inv := range pendientes {
+			ids = append(ids, inv)
+		}
+		niveles, err := a.nivelesDeInventario(ctx, ids)
+		if err != nil {
+			// No se cae al agregado: publicar una cantidad que no es la de la
+			// ubicación en la que se escribe es justo lo que se quiere evitar.
+			if fallo == nil {
+				fallo = err
+			}
+		} else {
+			for i, inv := range pendientes {
+				out[i].Quantity = niveles[inv]
+			}
+		}
 	}
 	return out, fallo
 }
@@ -331,10 +369,10 @@ func (a *Adaptador) ListRemote(ctx context.Context, cur channel.Cursor) (channel
 			Title    string `json:"title"`
 			Status   string `json:"status"`
 			Variants []struct {
-				ID                int64  `json:"id"`
-				SKU               string `json:"sku"`
-				Price             string `json:"price"`
-				InventoryQuantity int    `json:"inventory_quantity"`
+				ID              int64  `json:"id"`
+				SKU             string `json:"sku"`
+				Price           string `json:"price"`
+				InventoryItemID int64  `json:"inventory_item_id"`
 			} `json:"variants"`
 		} `json:"products"`
 	}
@@ -346,6 +384,11 @@ func (a *Adaptador) ListRemote(ctx context.Context, cur channel.Cursor) (channel
 		return channel.RemotePage{}, fmt.Errorf("catálogo ilegible: %w", err)
 	}
 	var items []channel.RemoteListing
+	// posicion apunta a la variante que espera su stock: igual que en
+	// FetchStatus, las cantidades se resuelven al final contra
+	// inventory_levels, no con el agregado que trae el producto.
+	type posicion struct{ producto, variante int }
+	pendientes := map[posicion]int64{}
 	for _, p := range resp.Products {
 		l := channel.RemoteListing{
 			Ref:    channel.ExternalRef{ListingID: fmt.Sprint(p.ID)},
@@ -354,13 +397,28 @@ func (a *Adaptador) ListRemote(ctx context.Context, cur channel.Cursor) (channel
 		}
 		for _, v := range p.Variants {
 			precio, _ := strconv.ParseFloat(v.Price, 64)
+			if v.InventoryItemID != 0 {
+				pendientes[posicion{len(items), len(l.Variants)}] = v.InventoryItemID
+			}
 			l.Variants = append(l.Variants, channel.RemoteListing{
-				Ref:      channel.ExternalRef{ListingID: fmt.Sprint(p.ID), VariantID: fmt.Sprint(v.ID), SKU: v.SKU},
-				Price:    precio,
-				Quantity: v.InventoryQuantity,
+				Ref:   channel.ExternalRef{ListingID: fmt.Sprint(p.ID), VariantID: fmt.Sprint(v.ID), SKU: v.SKU},
+				Price: precio,
 			})
 		}
 		items = append(items, l)
+	}
+	if len(pendientes) > 0 {
+		ids := make([]int64, 0, len(pendientes))
+		for _, inv := range pendientes {
+			ids = append(ids, inv)
+		}
+		niveles, err := a.nivelesDeInventario(ctx, ids)
+		if err != nil {
+			return channel.RemotePage{}, err
+		}
+		for pos, inv := range pendientes {
+			items[pos.producto].Variants[pos.variante].Quantity = niveles[inv]
+		}
 	}
 	// Quien dice si hay más páginas es el Link header, no el número de
 	// elementos: una página llena puede ser la última.
@@ -384,6 +442,11 @@ func (a *Adaptador) FetchOrders(ctx context.Context, desde time.Time, cur channe
 	} else {
 		ruta += "&status=any"
 		if !desde.IsZero() {
+			// Antes de pedir nada: si la marca de agua se salió de la ventana
+			// de 60 días, Shopify recortaría la respuesta en silencio.
+			if err := a.comprobarVentanaDePedidos(ctx, desde); err != nil {
+				return channel.OrderPage{}, err
+			}
 			// Se filtra por updated_at y no por created_at porque la marca de
 			// agua del núcleo avanza con UpdatedAt (ordenes.go): con
 			// created_at_min, un pedido viejo que cambia de estado empujaría
@@ -426,6 +489,86 @@ func (a *Adaptador) FetchOrders(ctx context.Context, desde time.Time, cur channe
 		Next:   channel.Cursor{Token: sig},
 		Done:   sig == "",
 	}, nil
+}
+
+// comprobarVentanaDePedidos frena la ingesta cuando la marca de agua se ha
+// quedado fuera de lo que el token puede leer.
+//
+// El recurso Order advierte que «only the last 60 days' worth of orders from a
+// store are accessible from the Order resource by default» y que para leer más
+// atrás hace falta el permiso read_all_orders además de read_orders o
+// write_orders (https://shopify.dev/docs/api/admin-rest/latest/resources/order).
+// Shopify no devuelve error cuando falta: entrega la respuesta recortada.
+//
+// Eso es lo que convierte una parada larga (cuenta pausada, token caducado,
+// cola atascada) en pérdida definitiva: al reanudar solo llegan los últimos 60
+// días, el núcleo avanza la marca con lo recibido (ordenes.go) y los pedidos
+// del hueco no se vuelven a pedir jamás, sin traza. Devolver error deja la
+// marca donde estaba —ordenes.go solo la mueve si FetchOrders responde bien— y
+// escribe el motivo en el trabajo. Va con 403 a propósito: channel.EsReintentable
+// no reintenta los 4xx, y este no se arregla repitiendo la llamada.
+func (a *Adaptador) comprobarVentanaDePedidos(ctx context.Context, desde time.Time) error {
+	if time.Since(desde) <= ventanaPedidos {
+		return nil
+	}
+	todos, err := a.leeTodosLosPedidos(ctx)
+	if err != nil {
+		return err
+	}
+	if todos {
+		return nil
+	}
+	return &channel.Error{
+		Kind: channel.Shopify, StatusCode: http.StatusForbidden, Code: "ventana_60_dias",
+		Message: "la ingesta pide los pedidos modificados desde " + desde.UTC().Format(time.RFC3339) +
+			", hace más de 60 días, y el token no tiene el permiso read_all_orders: Shopify " +
+			"devolvería solo los últimos 60 días sin avisar y los anteriores no se volverían a " +
+			"pedir nunca. Hay que añadir read_all_orders a la app personalizada, o adelantar a " +
+			"mano la marca de agua asumiendo el hueco",
+	}
+}
+
+// leeTodosLosPedidos dice si el token lleva read_all_orders.
+//
+// La lista de permisos del token se pide a GET /admin/oauth/access_scopes.json,
+// que NO va bajo /admin/api/{version}
+// (https://shopify.dev/docs/api/admin-rest/latest/resources/accessscope).
+func (a *Adaptador) leeTodosLosPedidos(ctx context.Context) (bool, error) {
+	a.mu.Lock()
+	cache := a.todosLosPedidos
+	a.mu.Unlock()
+	if cache != 0 {
+		return cache > 0, nil
+	}
+
+	var resp struct {
+		AccessScopes []struct {
+			Handle string `json:"handle"`
+		} `json:"access_scopes"`
+	}
+	datos, _, err := a.llamarRuta(ctx, http.MethodGet, "/admin/oauth/access_scopes.json", nil)
+	if err != nil {
+		return false, err
+	}
+	if err := json.Unmarshal(datos, &resp); err != nil {
+		return false, fmt.Errorf("lista de permisos ilegible: %w", err)
+	}
+	todos := false
+	for _, s := range resp.AccessScopes {
+		if strings.EqualFold(strings.TrimSpace(s.Handle), "read_all_orders") {
+			todos = true
+			break
+		}
+	}
+
+	a.mu.Lock()
+	if todos {
+		a.todosLosPedidos = 1
+	} else {
+		a.todosLosPedidos = -1
+	}
+	a.mu.Unlock()
+	return todos, nil
 }
 
 // AckOrder crea el fulfillment del pedido con la guía y la transportadora.
@@ -879,6 +1022,76 @@ func (a *Adaptador) fijarInventario(ctx context.Context, inventarioID int64, can
 	}, nil)
 }
 
+// nivelesDeInventario lee el stock disponible de la MISMA ubicación en la que
+// escribe fijarInventario, indexado por inventory_item_id.
+//
+// No se usa variants[].inventory_quantity: la documentación del recurso
+// Product Variant lo marca de solo lectura y lo define como «an aggregate of
+// inventory across all locations», y remite al recurso InventoryLevel para
+// consultar o ajustar el inventario de una ubicación concreta
+// (https://shopify.dev/docs/api/admin-rest/latest/resources/product-variant).
+// Leer el agregado mientras se escribe en una sola ubicación hace que, en
+// cuanto la tienda tenga bodega y punto de venta, el informe de estado y el
+// listado remoto devuelvan un número que nunca coincide con lo que Integra
+// empujó: desajuste permanente en todos los SKU, o un cero real escondido
+// detrás de las existencias de otra ubicación.
+//
+// Se pide en tandas porque el endpoint admite como mucho 50
+// inventory_item_ids por llamada.
+func (a *Adaptador) nivelesDeInventario(ctx context.Context, ids []int64) (map[int64]int, error) {
+	loc, err := a.ubicacionPrincipal(ctx)
+	if err != nil {
+		return nil, err
+	}
+	unicos := make([]int64, 0, len(ids))
+	visto := make(map[int64]bool, len(ids))
+	for _, id := range ids {
+		if id == 0 || visto[id] {
+			continue
+		}
+		visto[id] = true
+		unicos = append(unicos, id)
+	}
+
+	out := make(map[int64]int, len(unicos))
+	for i := 0; i < len(unicos); i += maxItemsInventario {
+		fin := i + maxItemsInventario
+		if fin > len(unicos) {
+			fin = len(unicos)
+		}
+		partes := make([]string, 0, fin-i)
+		for _, id := range unicos[i:fin] {
+			partes = append(partes, strconv.FormatInt(id, 10))
+		}
+		q := url.Values{
+			"inventory_item_ids": {strings.Join(partes, ",")},
+			"location_ids":       {strconv.FormatInt(loc, 10)},
+			// El límite por defecto son 50 registros: con la tanda llena se
+			// perdería la mitad de las respuestas si el tope se dejara puesto.
+			"limit": {"250"},
+		}
+		var resp struct {
+			InventoryLevels []struct {
+				InventoryItemID int64 `json:"inventory_item_id"`
+				LocationID      int64 `json:"location_id"`
+				Available       int   `json:"available"`
+			} `json:"inventory_levels"`
+		}
+		if err := a.llamar(ctx, http.MethodGet, "/inventory_levels.json?"+q.Encode(), nil, &resp); err != nil {
+			return nil, err
+		}
+		for _, n := range resp.InventoryLevels {
+			// Un nivel de otra ubicación no cuenta: se compara contra el
+			// stock que Integra escribe en la suya.
+			if n.LocationID != loc {
+				continue
+			}
+			out[n.InventoryItemID] = n.Available
+		}
+	}
+	return out, nil
+}
+
 // cuerpoContenido arma la ficha del producto. Lleva las imágenes porque el
 // hash de contenido del motor las incluye: si no viajaran, cambiar una foto
 // quedaría marcado como sincronizado sin haber llegado a la tienda.
@@ -941,6 +1154,13 @@ func (a *Adaptador) llamar(ctx context.Context, metodo, ruta string, cuerpo any,
 // llamarCrudo devuelve también las cabeceras porque la paginación de Shopify
 // viaja en el Link header, no en el cuerpo de la respuesta.
 func (a *Adaptador) llamarCrudo(ctx context.Context, metodo, ruta string, cuerpo any) ([]byte, http.Header, error) {
+	return a.llamarRuta(ctx, metodo, "/admin/api/"+VersionAPI+ruta, cuerpo)
+}
+
+// llamarRuta habla con una ruta absoluta de la tienda. Existe porque no todo
+// cuelga de /admin/api/{version}: la lista de permisos del token está en
+// /admin/oauth/access_scopes.json, sin versión.
+func (a *Adaptador) llamarRuta(ctx context.Context, metodo, ruta string, cuerpo any) ([]byte, http.Header, error) {
 	var body io.Reader
 	if cuerpo != nil {
 		j, err := json.Marshal(cuerpo)
@@ -949,7 +1169,7 @@ func (a *Adaptador) llamarCrudo(ctx context.Context, metodo, ruta string, cuerpo
 		}
 		body = bytes.NewReader(j)
 	}
-	destino := esquemaAPI + "://" + a.tienda + "/admin/api/" + VersionAPI + ruta
+	destino := esquemaAPI + "://" + a.tienda + ruta
 	req, err := http.NewRequestWithContext(ctx, metodo, destino, body)
 	if err != nil {
 		return nil, nil, err

@@ -38,18 +38,25 @@ export function Preview({ varianteId, onCerrar }: { varianteId: number; onCerrar
   }, [varianteId, recargar])
 
   // Escape cierra el panel: es lo que espera cualquiera al ver una capa encima.
+  // Aquí no se pregunta nada porque esta pantalla no edita: solo enseña.
   useEffect(() => {
     const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onCerrar() }
     window.addEventListener('keydown', h)
     return () => window.removeEventListener('keydown', h)
   }, [onCerrar])
 
+  // Cuántos canales están bloqueados. En escritorio se ve de un vistazo con
+  // las cuatro tarjetas en fila; en el móvil van apiladas y hay que
+  // desplazarse hasta la cuarta, así que el recuento se adelanta arriba.
+  const bloqueados = (datos?.proyecciones ?? []).filter(
+    (p) => (p.faltantes ?? []).some((f) => f.severidad === 'bloquea'))
+
   return (
     <div className="capa" onClick={onCerrar}>
       <div className="hoja" onClick={(e) => e.stopPropagation()}>
         <header className="hoja-cabecera">
           <div>
-            <h2>Vista previa de publicación</h2>
+            <h2>Qué se enviará a cada canal</h2>
             {datos && (
               <div className="sub">
                 {datos.producto.sku || '(sin referencia)'} · {datos.producto.nombre_odoo}
@@ -59,14 +66,28 @@ export function Preview({ varianteId, onCerrar }: { varianteId: number; onCerrar
           <button onClick={onCerrar}>Cerrar ✕</button>
         </header>
 
-        {error && <div className="aviso-caja">Error: {error}</div>}
+        {error && <div className="aviso-caja">No se pudo proyectar el producto: {error}</div>}
         {!datos && !error && <div className="vacio">Proyectando…</div>}
 
         {datos && (
           <>
+            {/* Se dice explícitamente qué NO es esto: las maquetas se parecen
+                tanto a las tiendas reales que se leían como «así va a quedar
+                la publicación», y no lo son. */}
             <div className="nota-previa">
-              Lo que ves se genera <strong>desde el payload real</strong> que se enviaría.
-              Nada se publica: la proyección no abre conexión con ninguna tienda.
+              Esto es una <strong>comprobación del contenido</strong> que se va a enviar:
+              título, precio, foto de portada y stock, sacados del payload real.
+              <strong> No es una simulación de cómo se verá la publicación</strong>: cada
+              canal la monta a su manera y añade datos suyos (cuotas, costes de envío,
+              impuestos, promociones de la plataforma) que Integra no conoce.
+              Nada se publica desde aquí; no se abre conexión con ninguna tienda.
+            </div>
+
+            <div className="nota-previa solo-movil">
+              {bloqueados.length === 0
+                ? `Los ${datos.proyecciones.length} canales pueden publicarse.`
+                : `${bloqueados.length} de ${datos.proyecciones.length} canales están bloqueados: ` +
+                  bloqueados.map((p) => NOMBRES[p.canal] ?? p.canal).join(', ') + '.'}
             </div>
 
             <Imagenes varianteId={varianteId} onCambio={recargar} />
@@ -81,45 +102,53 @@ export function Preview({ varianteId, onCerrar }: { varianteId: number; onCerrar
             <PanelAtributos varianteId={varianteId} />
 
             <div className="competencia">
-              <div className="competencia-cabecera">
+              <div className="competencia-cabecera fila-apilable">
                 <strong>Competencia en MercadoLibre</strong>
                 <button onClick={verCompetencia} disabled={compEstado === 'cargando'}>
                   {compEstado === 'cargando' ? 'Buscando…' : competencia ? 'Actualizar' : 'Comparar precios'}
                 </button>
               </div>
-              {compEstado === 'error' && <div className="aviso-caja">{compError}</div>}
+              {compEstado === 'error' && (
+                <div className="aviso-caja">No se pudo consultar MercadoLibre: {compError}</div>
+              )}
+              {compEstado === 'cargando' && <div className="vacio">Buscando publicaciones parecidas…</div>}
               {competencia && competencia.items.length === 0 && (
                 <div className="vacio">Nadie publica «{competencia.consulta}» en MercadoLibre Colombia.</div>
               )}
               {competencia && competencia.items.length > 0 && (
-                <table>
-                  <thead>
-                    <tr><th>Publicación</th><th>Vendedor</th><th className="num">Precio</th><th className="num">vs. propio</th></tr>
-                  </thead>
-                  <tbody>
-                    {competencia.items.map((it, i) => {
-                      const diff = competencia.precio_propio > 0 && it.precio > 0
-                        ? ((competencia.precio_propio - it.precio) / it.precio) * 100
-                        : null
-                      return (
-                        <tr key={i}>
-                          <td><a href={it.permalink} target="_blank" rel="noreferrer">{it.titulo}</a></td>
-                          <td className="tenue">{it.vendedor}</td>
-                          <td className="num">{money(it.precio)}</td>
-                          <td className={`num ${diff !== null && diff > 5 ? 'caro' : diff !== null && diff < -5 ? 'barato' : 'tenue'}`}>
-                            {diff === null ? '—' : `${diff > 0 ? '+' : ''}${diff.toFixed(1)} %`}
-                          </td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
+                <div className="tabla-envoltorio">
+                  <table className="tabla-tarjetas">
+                    <thead>
+                      <tr><th>Publicación</th><th>Vendedor</th><th className="num">Precio</th><th className="num">vs. propio</th></tr>
+                    </thead>
+                    <tbody>
+                      {competencia.items.map((it, i) => {
+                        const diff = competencia.precio_propio > 0 && it.precio > 0
+                          ? ((competencia.precio_propio - it.precio) / it.precio) * 100
+                          : null
+                        return (
+                          <tr key={i}>
+                            <td className="titulo-tarjeta">
+                              <a href={it.permalink} target="_blank" rel="noreferrer">{it.titulo}</a>
+                            </td>
+                            <td className="tenue" data-etiqueta="Vendedor">{it.vendedor}</td>
+                            <td className="num" data-etiqueta="Precio">{money(it.precio)}</td>
+                            <td className={`num ${diff !== null && diff > 5 ? 'caro' : diff !== null && diff < -5 ? 'barato' : 'tenue'}`}
+                              data-etiqueta="vs. propio">
+                              {diff === null ? '—' : `${diff > 0 ? '+' : ''}${diff.toFixed(1)} %`}
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
               )}
             </div>
 
             {verJson && (
               <div className="json-panel">
-                <div className="json-cabecera">
+                <div className="json-cabecera fila-apilable">
                   <strong>{NOMBRES[verJson] ?? verJson}</strong>
                   <code>
                     {datos.proyecciones.find((p) => p.canal === verJson)?.metodo}{' '}
@@ -188,9 +217,13 @@ function TarjetaCanal({ p, marca, onVerJson }: { p: Proyeccion; marca: string; o
   )
 }
 
-// MaquetaTienda imita la ficha real de cada plataforma, con su tipografía,
-// colores y elementos característicos: el objetivo es que quien revisa vea el
-// producto como lo verá el comprador, no una tarjeta genérica.
+// MaquetaTienda enseña el contenido —título, precio, portada, stock— con los
+// colores y la tipografía de cada tienda, para reconocer de un vistazo de qué
+// canal se habla. NO es la ficha real: solo se pinta lo que Integra envía, así
+// que aquí no aparece nada que decida la plataforma (cuotas, envío, impuestos).
+// Se quitaron las cuotas «en 36x» de MercadoLibre y el «Envío gratis» porque
+// eran inventados: ni el número de cuotas ni el coste del envío salen del
+// payload, y quien los leía se los creía.
 function MaquetaTienda({ p, marca }: { p: Proyeccion; marca: string }) {
   const sinStock = p.stock <= 0
   const img = p.imagen
@@ -199,9 +232,7 @@ function MaquetaTienda({ p, marca }: { p: Proyeccion; marca: string }) {
   const titulo = p.titulo || 'Sin título'
 
   switch (p.canal) {
-    case 'mercadolibre': {
-      // MercadoLibre Colombia muestra el precio en cuotas sin interés.
-      const cuota = p.precio > 0 ? p.precio / 36 : 0
+    case 'mercadolibre':
       return (
         <div className="mk">
           <div className="mk-barra mk-barra-ml">Mercado Libre</div>
@@ -210,14 +241,12 @@ function MaquetaTienda({ p, marca }: { p: Proyeccion; marca: string }) {
             <div className="mk-titulo-ml">{titulo}</div>
             {p.precio_tachado > 0 && <div className="mk-tachado">{money(p.precio_tachado)}</div>}
             <div className="mk-precio-ml">{money(p.precio)}</div>
-            {cuota > 0 && <div className="mk-cuotas">en 36x {money(cuota)}</div>}
             {sinStock
               ? <div className="mk-nodisp">Sin stock</div>
-              : <div className="mk-envio">Envío gratis</div>}
+              : <div className="mk-envio">{p.stock} disponibles</div>}
           </div>
         </div>
       )
-    }
     case 'falabella':
       return (
         <div className="mk">

@@ -274,6 +274,9 @@ func (s *Servicio) producto(c *store.CandidatoPublicacion, cap channel.Capabilit
 		SKU: c.SKU, Title: titulo, Description: c.Descripcion,
 		Brand: c.Marca, CategoryID: c.CategoriaCanal, Images: imgs,
 		Weight: c.Peso,
+		// Sin las tres aristas, Falabella rechaza el alta: las pide por
+		// separado y el peso no las sustituye.
+		LengthCm: c.LargoCm, WidthCm: c.AnchoCm, HeightCm: c.AltoCm,
 		Variants: []channel.Variant{{
 			SKU: c.SKU, Barcode: c.Barcode,
 			RegularPrice: c.PrecioCanal, Currency: c.Moneda, Quantity: c.Stock,

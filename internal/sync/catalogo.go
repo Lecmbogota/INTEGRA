@@ -106,7 +106,41 @@ func (s *Sincronizador) Catalogo(ctx context.Context, conexionID int64, desde ti
 
 	dominio := []interface{}{}
 	if !desde.IsZero() {
-		dominio = append(dominio, []interface{}{"write_date", ">", desde.UTC().Format("2006-01-02 15:04:05")})
+		corte := desde.UTC().Format("2006-01-02 15:04:05")
+
+		// La ventana incremental tiene que mirar también a la plantilla, o el
+		// nombre y la categoría se quedan congelados para siempre.
+		//
+		// product.product.name y product.product.categ_id no son columnas: son
+		// campos related a product_tmpl_id con store=False (comprobado con
+		// fields_get contra la instancia real). Renombrar o recategorizar se
+		// hace sobre product.template, y su write() solo propaga a las
+		// variantes el campo active —product/models/product_template.py:531—,
+		// así que product.product.write_date no se mueve y el dominio
+		// incremental no devolvía la variante. El sync reportaba «0 leídos» y
+		// parecía sano mientras los cuatro canales seguían publicando el
+		// nombre viejo. La baja no se veía afectada, y eso lo hacía aún más
+		// difícil de notar.
+		plantillas, maxPlantilla, err := s.plantillasModificadas(corte)
+		if err != nil {
+			return nil, err
+		}
+		// La marca de agua avanza también con la fecha de la plantilla: si solo
+		// se moviera con la de la variante, un cambio de nombre se releería en
+		// cada pasada hasta el fin de los tiempos.
+		if maxPlantilla.After(maxWrite) {
+			maxWrite = maxPlantilla
+		}
+
+		if len(plantillas) > 0 {
+			// Dominio en notación prefija de Odoo: "|" afecta a las dos
+			// condiciones siguientes.
+			dominio = append(dominio, "|",
+				[]interface{}{"write_date", ">", corte},
+				[]interface{}{"product_tmpl_id", "in", plantillas})
+		} else {
+			dominio = append(dominio, []interface{}{"write_date", ">", corte})
+		}
 	}
 
 	// Con el dominio por defecto Odoo esconde los archivados, así que un
@@ -263,6 +297,43 @@ func (s *Sincronizador) Catalogo(ctx context.Context, conexionID int64, desde ti
 }
 
 // ------------------------------------------------------------- auxiliares
+
+// plantillasModificadas devuelve las plantillas tocadas desde el corte y la
+// última fecha de modificación de entre ellas.
+//
+// Se lee con active_test=false por la misma razón que la lectura de variantes:
+// archivar una plantilla es una modificación como cualquier otra, y con el
+// dominio por defecto no se vería.
+func (s *Sincronizador) plantillasModificadas(corte string) ([]int64, time.Time, error) {
+	var ids []int64
+	var maxWrite time.Time
+
+	for offset := 0; ; offset += tamañoPagina {
+		filas, err := s.cli.SearchRead("product.template",
+			[]interface{}{[]interface{}{"write_date", ">", corte}},
+			[]string{"write_date"},
+			map[string]interface{}{
+				"limit": tamañoPagina, "offset": offset, "order": "id",
+				"context": map[string]interface{}{"active_test": false},
+			})
+		if err != nil {
+			return nil, time.Time{}, fmt.Errorf("leyendo plantillas modificadas (offset %d): %w", offset, err)
+		}
+		if len(filas) == 0 {
+			break
+		}
+		for _, r := range filas {
+			ids = append(ids, r.ID())
+			if ts, tiene := r.Time("write_date"); tiene && ts.After(maxWrite) {
+				maxWrite = ts
+			}
+		}
+		if len(filas) < tamañoPagina {
+			break
+		}
+	}
+	return ids, maxWrite, nil
+}
 
 // esMercancia interpreta el campo active de Odoo.
 //

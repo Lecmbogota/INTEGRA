@@ -19,6 +19,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/mdv/integra/internal/conectores/shopify"
 )
 
 var cliente = &http.Client{Timeout: 20 * time.Second}
@@ -91,8 +93,15 @@ func probarShopify(ctx context.Context, c Credenciales) (string, error) {
 		return "", fmt.Errorf("faltan la tienda (mitienda.myshopify.com) y el token de Admin API")
 	}
 	tienda := strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(c.Tienda, "https://"), "http://"), "/")
+	// La versión sale de shopify.VersionAPI y no de un literal: una versión
+	// retirada no da error, Shopify aplica «fall forward» y sirve la petición
+	// con la versión estable más antigua accesible
+	// (https://shopify.dev/docs/api/usage/versioning), así que la pantalla de
+	// cuentas estaba validando la tienda contra una versión distinta de la que
+	// el adaptador usa después —y dejaba de demostrar que el token sirve para
+	// esa—. Aquí estaba clavado "2024-10", retirado desde el 16/10/2025.
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		"https://"+tienda+"/admin/api/2024-10/shop.json", nil)
+		"https://"+tienda+"/admin/api/"+shopify.VersionAPI+"/shop.json", nil)
 	if err != nil {
 		return "", err
 	}
@@ -114,7 +123,11 @@ func probarWoo(ctx context.Context, c Credenciales) (string, error) {
 		return "", fmt.Errorf("faltan la URL de la tienda y las claves consumer key/secret")
 	}
 	base := strings.TrimSuffix(c.URL, "/")
-	if !strings.HasPrefix(base, "https://") {
+	// Se exige https salvo en la propia máquina: sobre http la API de
+	// WooCommerce solo admite OAuth 1.0a y la clave viajaría en claro. La
+	// excepción local es lo que permite usar la tienda de pruebas de
+	// docker-compose.woocommerce.yml, donde el tráfico no sale del equipo.
+	if !strings.HasPrefix(base, "https://") && !EsLocal(base) {
 		return "", fmt.Errorf("la tienda tiene que estar en https: sobre http WooCommerce " +
 			"no acepta la clave y el secreto y viajarían en claro por la red")
 	}

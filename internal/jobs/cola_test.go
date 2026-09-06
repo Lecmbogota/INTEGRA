@@ -13,6 +13,15 @@ import (
 // Los tests de la cola son de integración: la semántica que importa
 // (SKIP LOCKED, índices parciales, backoff en SQL) vive en PostgreSQL y un
 // mock solo probaría que el mock funciona. Se saltan sin base configurada.
+// prioridadDePrueba pone los trabajos de las pruebas por delante de todo.
+//
+// Reclamar sirve por prioridad, así que en una base con trabajo real
+// pendiente —132 publicaciones encoladas bastaron— el trabajo de la prueba no
+// entraba en la tanda reclamada y la prueba fallaba sin que hubiera nada roto.
+// Con la prioridad más alta la prueba deja de depender de que la cola esté
+// vacía, que es lo único que la hace determinista.
+const prioridadDePrueba = 1
+
 func abrirPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	dsn := os.Getenv("INTEGRA_DATABASE_URL")
@@ -35,7 +44,7 @@ func TestEncolarYReclamar(t *testing.T) {
 	ctx := context.Background()
 	cola := NuevaCola(abrirPool(t))
 
-	id, err := cola.Encolar(ctx, "test_publicar", map[string]any{"variante": 42}, Opciones{})
+	id, err := cola.Encolar(ctx, "test_publicar", map[string]any{"variante": 42}, Opciones{Priority: prioridadDePrueba})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +88,7 @@ func TestClaveUnicaDeduplica(t *testing.T) {
 	ctx := context.Background()
 	cola := NuevaCola(abrirPool(t))
 
-	op := Opciones{UniqueKey: fmt.Sprintf("test_dedup_%d", time.Now().UnixNano())}
+	op := Opciones{UniqueKey: fmt.Sprintf("test_dedup_%d", time.Now().UnixNano()), Priority: prioridadDePrueba}
 	id1, err := cola.Encolar(ctx, "test_dedup", nil, op)
 	if err != nil {
 		t.Fatal(err)
@@ -97,7 +106,7 @@ func TestFallarReintentaConBackoffYAgota(t *testing.T) {
 	ctx := context.Background()
 	cola := NuevaCola(abrirPool(t))
 
-	id, err := cola.Encolar(ctx, "test_fragil", nil, Opciones{MaxAttempts: 2})
+	id, err := cola.Encolar(ctx, "test_fragil", nil, Opciones{MaxAttempts: 2, Priority: prioridadDePrueba})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +155,7 @@ func TestRecuperarHuerfanos(t *testing.T) {
 	ctx := context.Background()
 	cola := NuevaCola(abrirPool(t))
 
-	id, err := cola.Encolar(ctx, "test_huerfano", nil, Opciones{})
+	id, err := cola.Encolar(ctx, "test_huerfano", nil, Opciones{Priority: prioridadDePrueba})
 	if err != nil {
 		t.Fatal(err)
 	}

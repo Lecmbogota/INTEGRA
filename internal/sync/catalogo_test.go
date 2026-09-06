@@ -34,6 +34,13 @@ type prodFalso struct {
 	sku    string
 	nombre string
 	activo bool
+	// tocadaLaVariante y tocadaLaPlantilla dicen cuál de los dos registros se
+	// modificó después de la marca de agua. Es la distinción que originaba el
+	// segundo defecto: renombrar o recategorizar mueve el write_date de la
+	// plantilla y no el de la variante, porque name y categ_id son campos
+	// related con store=False sobre product_tmpl_id.
+	tocadaLaVariante  bool
+	tocadaLaPlantilla bool
 }
 
 type odooFalso struct {
@@ -47,9 +54,16 @@ type odooFalso struct {
 	// lecturaVacia imita un sync incremental en el que nada cambió desde la
 	// marca de agua: la lectura por write_date no devuelve ni una fila.
 	lecturaVacia bool
+	// incremental hace que el servidor respete la ventana: solo devuelve lo
+	// marcado como tocado. Sin él la lectura devuelve el catálogo entero, que
+	// es lo que hacen las pruebas del sync completo.
+	incremental bool
 
 	mu            sync.Mutex
 	vioActiveTest bool
+	// vioLecturaDePlantillas anota si el sync llegó a preguntar por
+	// product.template, que es la única forma de enterarse de un renombrado.
+	vioLecturaDePlantillas bool
 }
 
 func nuevoOdoo(t *testing.T, productos ...prodFalso) *odooFalso {
@@ -89,6 +103,20 @@ func (o *odooFalso) despachar(t *testing.T, w http.ResponseWriter, cuerpo string
 	conActiveTest := strings.Contains(cuerpo, "active_test")
 
 	switch {
+	case pide("product.template"):
+		o.mu.Lock()
+		o.vioLecturaDePlantillas = true
+		o.mu.Unlock()
+		var out []interface{}
+		for _, p := range o.productos {
+			if !o.incremental || p.tocadaLaPlantilla {
+				out = append(out, map[string]interface{}{
+					"id": p.id + 1000, "write_date": fechaPlantilla,
+				})
+			}
+		}
+		responder(w, out)
+
 	case pide("product.product") && pide("search_read"):
 		o.mu.Lock()
 		o.vioActiveTest = conActiveTest
@@ -97,7 +125,11 @@ func (o *odooFalso) despachar(t *testing.T, w http.ResponseWriter, cuerpo string
 			responder(w, []interface{}{})
 			return
 		}
-		responder(w, o.filasProducto(conActiveTest))
+		// El "|" solo aparece cuando el dominio pregunta además por las
+		// plantillas modificadas. No sirve buscar "product_tmpl_id": ese
+		// nombre viaja siempre, en la lista de campos que se piden.
+		porPlantilla := strings.Contains(cuerpo, "<string>|</string>")
+		responder(w, o.filasProducto(conActiveTest, porPlantilla))
 
 	case pide("product.product") && pide("search"):
 		// El barrido de identificadores, sujeto a la misma regla: con el
@@ -148,10 +180,17 @@ func (o *odooFalso) despachar(t *testing.T, w http.ResponseWriter, cuerpo string
 
 // filasProducto reproduce la regla que originaba el defecto: sin active_test
 // en el contexto, Odoo no devuelve los archivados.
-func (o *odooFalso) filasProducto(conActiveTest bool) []interface{} {
+func (o *odooFalso) filasProducto(conActiveTest, porPlantilla bool) []interface{} {
 	var out []interface{}
 	for _, p := range o.productos {
 		if !p.activo && !conActiveTest {
+			continue
+		}
+		// La regla del segundo defecto: en una lectura incremental por
+		// write_date de la variante, un producto al que solo le cambió la
+		// plantilla NO sale. Solo aparece si el dominio pregunta también por
+		// las plantillas modificadas.
+		if o.incremental && !p.tocadaLaVariante && !(porPlantilla && p.tocadaLaPlantilla) {
 			continue
 		}
 		r := map[string]interface{}{
@@ -160,7 +199,7 @@ func (o *odooFalso) filasProducto(conActiveTest bool) []interface{} {
 			"name":            p.nombre,
 			"product_tmpl_id": []interface{}{p.id + 1000, p.nombre},
 			"categ_id":        []interface{}{int64(7), "Todo / Colchones"},
-			"write_date":      "2026-09-01 10:00:00",
+			"write_date":      fechaVariante,
 		}
 		if !o.sinCampoActive {
 			r["active"] = p.activo
@@ -169,6 +208,13 @@ func (o *odooFalso) filasProducto(conActiveTest bool) []interface{} {
 	}
 	return out
 }
+
+// Las dos fechas del caso: la variante se modificó por última vez antes de la
+// marca de agua de la prueba y la plantilla después.
+const (
+	fechaVariante  = "2026-08-20 10:00:00"
+	fechaPlantilla = "2026-09-03 08:00:00"
+)
 
 func responder(w http.ResponseWriter, v interface{}) {
 	var b strings.Builder
@@ -231,6 +277,7 @@ type tiendaFalsa struct {
 	inactivas           []int64
 	ajustes             int
 	siguiente           int64
+	watermark           time.Time
 }
 
 func nuevaTienda(variantes map[int64]int64) *tiendaFalsa {
@@ -280,7 +327,10 @@ func (t *tiendaFalsa) ReemplazarStock(_ context.Context, _ int64, filas []store.
 
 func (t *tiendaFalsa) RecalcularAtencion(context.Context) error { return nil }
 
-func (t *tiendaFalsa) ActualizarWatermark(context.Context, int64, time.Time) error { return nil }
+func (t *tiendaFalsa) ActualizarWatermark(_ context.Context, _ int64, hasta time.Time) error {
+	t.watermark = hasta
+	return nil
+}
 
 func (t *tiendaFalsa) AjustarActividad(_ context.Context, _ int64, activas, inactivas []int64) (int, int, error) {
 	t.ajustes++
@@ -439,5 +489,89 @@ func TestSinElCampoActiveNoSeDaDeBajaANadie(t *testing.T) {
 	}
 	if res.Bajas != 0 {
 		t.Errorf("Bajas = %d, se esperaba 0", res.Bajas)
+	}
+}
+
+// Renombrar o recategorizar un producto en Odoo se hace sobre
+// product.template, y su write() solo propaga `active` a las variantes
+// (product/models/product_template.py:531). Como name y categ_id son campos
+// related con store=False, product.product.write_date no se mueve: la lectura
+// incremental no devolvía la variante y el nombre viejo se quedaba publicado
+// para siempre en los cuatro canales, con el sync diciendo «0 leídos».
+func TestUnRenombradoEnLaPlantillaEntraEnLaLecturaIncremental(t *testing.T) {
+	odooSrv := nuevoOdoo(t, prodFalso{
+		id: 101, sku: "COL-101", nombre: "Colchón Alfa Renombrado", activo: true,
+		tocadaLaPlantilla: true, // el nombre cambió; la variante no se tocó
+	})
+	odooSrv.incremental = true
+	st := nuevaTienda(map[int64]int64{101: 1})
+
+	desde := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	res, err := nuevoCon(odooSrv.cliente(t), st, nil).Catalogo(context.Background(), 1, desde)
+	if err != nil {
+		t.Fatalf("sincronizando: %v", err)
+	}
+
+	odooSrv.mu.Lock()
+	pregunto := odooSrv.vioLecturaDePlantillas
+	odooSrv.mu.Unlock()
+	if !pregunto {
+		t.Error("el sync incremental no preguntó por product.template: " +
+			"sin eso un renombrado no se detecta jamás")
+	}
+	if res.Leidos == 0 {
+		t.Error("la lectura incremental no trajo el producto renombrado")
+	}
+	if !st.tieneIdentidad(101) {
+		t.Error("el nombre nuevo no llegó a Integra: los canales siguen publicando el viejo")
+	}
+}
+
+// La marca de agua tiene que avanzar también con la fecha de la plantilla. Si
+// solo se moviera con la de la variante, el mismo renombrado se releería en
+// todas las pasadas siguientes hasta el fin de los tiempos.
+func TestLaMarcaDeAguaAvanzaConLaFechaDeLaPlantilla(t *testing.T) {
+	odooSrv := nuevoOdoo(t, prodFalso{
+		id: 101, sku: "COL-101", nombre: "Colchón Alfa Renombrado", activo: true,
+		tocadaLaPlantilla: true,
+	})
+	odooSrv.incremental = true
+	st := nuevaTienda(map[int64]int64{101: 1})
+
+	desde := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := nuevoCon(odooSrv.cliente(t), st, nil).Catalogo(context.Background(), 1, desde); err != nil {
+		t.Fatalf("sincronizando: %v", err)
+	}
+
+	esperada, _ := time.Parse("2006-01-02 15:04:05", fechaPlantilla)
+	if !st.watermark.Equal(esperada) {
+		t.Errorf("marca de agua = %v, se esperaba la de la plantilla (%v): "+
+			"la variante conserva una fecha vieja y no puede mandar ella sola",
+			st.watermark, esperada)
+	}
+}
+
+// Contrapartida: un producto que no se tocó ni en la variante ni en la
+// plantilla no debe entrar en la lectura incremental. Ampliar la ventana al
+// padre no puede convertir cada sync incremental en uno completo.
+func TestLaVentanaIncrementalSigueDejandoFueraLoQueNoCambio(t *testing.T) {
+	odooSrv := nuevoOdoo(t,
+		prodFalso{id: 101, sku: "COL-101", nombre: "Colchón Alfa", activo: true,
+			tocadaLaVariante: true},
+		prodFalso{id: 102, sku: "COL-102", nombre: "Colchón Beta", activo: true},
+	)
+	odooSrv.incremental = true
+	st := nuevaTienda(map[int64]int64{101: 1, 102: 2})
+
+	desde := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := nuevoCon(odooSrv.cliente(t), st, nil).Catalogo(context.Background(), 1, desde); err != nil {
+		t.Fatalf("sincronizando: %v", err)
+	}
+
+	if !st.tieneIdentidad(101) {
+		t.Error("no se leyó el producto que sí cambió")
+	}
+	if st.tieneIdentidad(102) {
+		t.Error("se releyó un producto que no cambió: la lectura dejó de ser incremental")
 	}
 }

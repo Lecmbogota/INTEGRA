@@ -20,6 +20,10 @@ export function Promocion({ varianteId, precioBase }: {
   const [cuentas, setCuentas] = useState<CuentaCanal[]>([])
   const [error, setError] = useState<string | null>(null)
   const [guardando, setGuardando] = useState(false)
+  const [cargando, setCargando] = useState(true)
+  // Id de la oferta que se está cancelando: sin esto el botón no daba señal
+  // ninguna y se pulsaba tres veces seguidas.
+  const [cancelando, setCancelando] = useState<number | null>(null)
 
   // Valores por defecto: empieza ahora, sin fecha de fin.
   const [cuenta, setCuenta] = useState<number | null>(null)
@@ -28,6 +32,7 @@ export function Promocion({ varianteId, precioBase }: {
   const [termina, setTermina] = useState('')
 
   const cargar = useCallback(() => {
+    setCargando(true)
     Promise.all([api.ofertasDe(varianteId), api.cuentas()])
       .then(([o, c]) => {
         setOfertas(o)
@@ -35,6 +40,7 @@ export function Promocion({ varianteId, precioBase }: {
         if (c.length > 0 && cuenta === null) setCuenta(c[0].id)
       })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setCargando(false))
     // cuenta se omite a propósito: solo se usa para elegir el valor inicial.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [varianteId])
@@ -69,12 +75,23 @@ export function Promocion({ varianteId, precioBase }: {
     }
   }
 
-  async function cancelar(id: number) {
+  // Cancelar una promoción vigente devuelve el precio normal en la tienda, y
+  // no se deshace: por eso se pregunta antes y se nombra cuál se cancela.
+  async function cancelar(o: Oferta) {
+    const aviso = o.estado === 'vigente'
+      ? `Se cancela la promoción de ${money(o.precio)} en ${o.canal} y el producto vuelve al precio normal. ¿Cancelarla?`
+      : `Se cancela la promoción de ${money(o.precio)} programada en ${o.canal}. ¿Cancelarla?`
+    if (!window.confirm(aviso)) return
+
+    setCancelando(o.id)
+    setError(null)
     try {
-      await api.cancelarOferta(id)
+      await api.cancelarOferta(o.id)
       cargar()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setCancelando(null)
     }
   }
 
@@ -103,6 +120,12 @@ export function Promocion({ varianteId, precioBase }: {
               <option key={c.id} value={c.id}>{c.canal_nombre} · {c.nombre}</option>
             ))}
           </select>
+          {!cargando && cuentas.length === 0 && (
+            <small className="tenue">
+              No hay ninguna cuenta conectada. Conecta una en Integraciones para poder
+              programar promociones.
+            </small>
+          )}
         </label>
 
         <label>
@@ -126,7 +149,7 @@ export function Promocion({ varianteId, precioBase }: {
           <input type="datetime-local" value={termina} onChange={(e) => setTermina(e.target.value)} />
         </label>
 
-        <div className="ancha">
+        <div className="ancha grupo-acciones a-lo-ancho">
           <button className="primario" onClick={() => void crear()}
             disabled={guardando || cuentas.length === 0}>
             {guardando ? 'Creando…' : 'Crear promoción'}
@@ -135,35 +158,43 @@ export function Promocion({ varianteId, precioBase }: {
       </div>
 
       {ofertas.length > 0 && (
-        <table className="tabla-lineas tabla-ofertas">
-          <thead>
-            <tr><th>Canal</th><th className="num">Precio</th><th>Vigencia</th><th>Estado</th><th></th></tr>
-          </thead>
-          <tbody>
-            {ofertas.map((o) => {
-              const e = ESTADOS[o.estado] ?? { texto: o.estado, clase: 'aviso' }
-              return (
-                <tr key={o.id}>
-                  <td>{o.canal}</td>
-                  <td className="num"><strong>{money(o.precio)}</strong></td>
-                  <td className="tenue mini-texto">
-                    {fecha(o.inicia)}
-                    {o.termina ? ` → ${fecha(o.termina)}` : ' → sin fin'}
-                  </td>
-                  <td><span className={`pastilla ${e.clase}`}>{e.texto}</span></td>
-                  <td>
-                    {(o.estado === 'vigente' || o.estado === 'programada') && (
-                      <button onClick={() => void cancelar(o.id)}>Cancelar</button>
-                    )}
-                  </td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
+        <div className="tabla-envoltorio">
+          <table className="tabla-lineas tabla-ofertas tabla-tarjetas">
+            <thead>
+              <tr><th>Canal</th><th className="num">Precio</th><th>Vigencia</th><th>Estado</th><th></th></tr>
+            </thead>
+            <tbody>
+              {ofertas.map((o) => {
+                const e = ESTADOS[o.estado] ?? { texto: o.estado, clase: 'aviso' }
+                const cancelable = o.estado === 'vigente' || o.estado === 'programada'
+                return (
+                  <tr key={o.id}>
+                    <td className="titulo-tarjeta">{o.canal}</td>
+                    <td className="num" data-etiqueta="Precio"><strong>{money(o.precio)}</strong></td>
+                    <td className="tenue mini-texto apilada" data-etiqueta="Vigencia">
+                      {fecha(o.inicia)}
+                      {o.termina ? ` → ${fecha(o.termina)}` : ' → sin fin'}
+                    </td>
+                    <td data-etiqueta="Estado"><span className={`pastilla ${e.clase}`}>{e.texto}</span></td>
+                    <td className={cancelable ? 'acciones-fila' : ''}>
+                      {cancelable && (
+                        <button onClick={() => void cancelar(o)} disabled={cancelando === o.id}>
+                          {cancelando === o.id ? 'Cancelando…' : 'Cancelar promoción'}
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
 
-      {ofertas.length === 0 && (
+      {cargando && ofertas.length === 0 && (
+        <div className="vacio">Cargando promociones…</div>
+      )}
+      {!cargando && ofertas.length === 0 && (
         <div className="vacio">Este producto no tiene promociones.</div>
       )}
     </>

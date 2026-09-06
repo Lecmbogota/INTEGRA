@@ -16,11 +16,20 @@ const SEVERIDAD: Record<string, string> = {
   critical: 'bloqueante', error: 'bloqueante', warning: 'aviso', info: 'dudosa',
 }
 
+const NOMBRE_SEVERIDAD: Record<string, string> = {
+  critical: 'Crítico', error: 'Error', warning: 'Aviso', info: 'Info',
+}
+
 // Automatización: lo que hace que Integra funcione sola. Sin horarios, cada
 // sincronización y cada publicación dependen de que alguien pulse un botón.
 export function Automatizacion() {
   const [horarios, setHorarios] = useState<Horario[]>([])
   const [alertas, setAlertas] = useState<Alerta[]>([])
+  const [cargando, setCargando] = useState(true)
+  // Qué fila está esperando respuesta. En el móvil un botón sin estado se
+  // pulsa dos veces sin querer y la acción se manda repetida.
+  const [ocupadoHorario, setOcupadoHorario] = useState<number | null>(null)
+  const [ocupadaAlerta, setOcupadaAlerta] = useState<number | null>(null)
   const [nuevo, setNuevo] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -28,6 +37,7 @@ export function Automatizacion() {
     Promise.all([api.horarios(), api.alertas()])
       .then(([h, a]) => { setHorarios(h); setAlertas(a) })
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setCargando(false))
   }, [])
   useEffect(() => { cargar() }, [cargar])
 
@@ -44,15 +54,29 @@ export function Automatizacion() {
     }
   }
 
-  const alternar = (h: Horario) =>
-    conAviso(h.activo ? 'pausar la automatización' : 'reanudar la automatización',
+  async function alternar(h: Horario) {
+    setOcupadoHorario(h.id)
+    await conAviso(h.activo ? 'pausar la automatización' : 'reanudar la automatización',
       () => api.guardarHorario({ ...h, activo: !h.activo }))
+    setOcupadoHorario(null)
+  }
 
-  const borrar = (id: number) =>
-    conAviso('borrar la automatización', () => api.borrarHorario(id))
+  async function borrar(h: Horario) {
+    // Borrar un horario no se deshace y no se nota: la tarea simplemente deja
+    // de correr esa noche, y eso solo se descubre cuando el catálogo lleva
+    // días sin sincronizar.
+    if (!window.confirm(
+      `Se borrará la tarea «${h.nombre}» (${h.hora}). Dejará de ejecutarse y habrá que volver a crearla a mano. ¿Continuar?`)) return
+    setOcupadoHorario(h.id)
+    await conAviso('borrar la automatización', () => api.borrarHorario(h.id))
+    setOcupadoHorario(null)
+  }
 
-  const reconocer = (id: number) =>
-    conAviso('marcar el aviso como visto', () => api.reconocerAlerta(id))
+  async function reconocer(id: number) {
+    setOcupadaAlerta(id)
+    await conAviso('marcar el aviso como visto', () => api.reconocerAlerta(id))
+    setOcupadaAlerta(null)
+  }
 
   return (
     <>
@@ -69,21 +93,29 @@ export function Automatizacion() {
       <section className="panel">
         <h2>Avisos abiertos</h2>
         <div className="cuerpo">
-          {alertas.length === 0 && <div className="vacio">Nada roto. Todo en orden.</div>}
+          {cargando && <div className="vacio">Cargando…</div>}
+          {!cargando && alertas.length === 0 && <div className="vacio">Nada roto. Todo en orden.</div>}
           {alertas.map((a) => (
-            <div key={a.id} className="fila-cuenta">
-              <span className={`pastilla ${SEVERIDAD[a.severidad] ?? 'aviso'}`}>
-                {a.severidad === 'critical' ? 'Crítico' : a.severidad === 'error' ? 'Error' : 'Aviso'}
-              </span>
-              <div className="crece">
-                <div>{a.mensaje}</div>
+            <div key={a.id} className="fila-cuenta fila-apilable">
+              {/* La pastilla va dentro del bloque de texto: suelta, al apilarse
+                  la fila en el móvil se estiraría a todo el ancho. */}
+              <div className="expande-recorta">
+                <div className="fila">
+                  <span className={`pastilla ${SEVERIDAD[a.severidad] ?? 'aviso'}`}>
+                    {NOMBRE_SEVERIDAD[a.severidad] ?? 'Aviso'}
+                  </span>
+                  <span className="expande">{a.mensaje}</span>
+                </div>
                 <div className="tenue mini-texto">
                   {a.canal && `${a.canal} · `}{fecha(a.creada_at)}
                 </div>
               </div>
-              <button onClick={() => void reconocer(a.id)} title="Marcar como visto; volverá a avisar si reaparece">
-                Visto
-              </button>
+              <div className="grupo-acciones">
+                <button onClick={() => void reconocer(a.id)} disabled={ocupadaAlerta === a.id}
+                  title="Marcar como visto; volverá a avisar si reaparece">
+                  {ocupadaAlerta === a.id ? 'Guardando…' : 'Visto'}
+                </button>
+              </div>
             </div>
           ))}
         </div>
@@ -92,17 +124,22 @@ export function Automatizacion() {
       <section className="panel">
         <h2>Tareas programadas</h2>
         <div className="cuerpo">
-          {horarios.length === 0 && (
+          {cargando && <div className="vacio">Cargando…</div>}
+          {!cargando && horarios.length === 0 && (
             <div className="vacio">
               Sin horarios: hoy nada corre solo. Crea uno para que Integra sincronice
               y publique sin que nadie pulse un botón.
             </div>
           )}
           {horarios.map((h) => (
-            <div key={h.id} className="fila-cuenta">
-              <div className="hora-horario">{h.hora}</div>
-              <div className="crece">
-                <div>{h.nombre}</div>
+            <div key={h.id} className="fila-cuenta fila-apilable">
+              <div className="expande-recorta">
+                <div className="fila">
+                  {/* La hora se queda en fila con el nombre en cualquier ancho:
+                      su ancho fijo de 52px, apilada, se leería como una altura. */}
+                  <span className="hora-horario">{h.hora}</span>
+                  <span className="expande">{h.nombre}</span>
+                </div>
                 <div className="tenue mini-texto">
                   {ALCANCES[h.alcance] ?? h.alcance}
                   {' · '}
@@ -111,11 +148,15 @@ export function Automatizacion() {
                   {h.proxima_ejecucion && ` · próxima: ${fecha(h.proxima_ejecucion)}`}
                 </div>
               </div>
-              {h.activo
-                ? <span className="pastilla ok">Activo</span>
-                : <span className="pastilla dudosa">Pausado</span>}
-              <button onClick={() => void alternar(h)}>{h.activo ? 'Pausar' : 'Activar'}</button>
-              <button onClick={() => void borrar(h.id)}>Borrar</button>
+              <div className="grupo-acciones">
+                {h.activo
+                  ? <span className="pastilla ok">Activo</span>
+                  : <span className="pastilla dudosa">Pausado</span>}
+                <button onClick={() => void alternar(h)} disabled={ocupadoHorario === h.id}>
+                  {h.activo ? 'Pausar' : 'Activar'}
+                </button>
+                <button onClick={() => void borrar(h)} disabled={ocupadoHorario === h.id}>Borrar</button>
+              </div>
             </div>
           ))}
         </div>
@@ -149,10 +190,20 @@ function FormularioHorario({ onCerrar, onGuardado }: { onCerrar: () => void; onG
   }, [onCerrar])
 
   async function guardar() {
+    // Un horario sin nombre se guarda igual, pero luego la lista es una fila
+    // en blanco imposible de distinguir de las demás.
+    if (nombre.trim() === '') {
+      setError('Ponle un nombre a la tarea para reconocerla en la lista.')
+      return
+    }
+    if (!/^\d{2}:\d{2}$/.test(hora)) {
+      setError('La hora tiene que estar completa, en formato 24 h (por ejemplo 02:00).')
+      return
+    }
     setGuardando(true)
     setError(null)
     try {
-      await api.guardarHorario({ nombre, hora, alcance, dias, activo: true, zona: 'America/Bogota' })
+      await api.guardarHorario({ nombre: nombre.trim(), hora, alcance, dias, activo: true, zona: 'America/Bogota' })
       onGuardado()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -196,6 +247,7 @@ function FormularioHorario({ onCerrar, onGuardado }: { onCerrar: () => void; onG
               {DIAS.map((d) => (
                 <button key={d.n} type="button"
                   className={`dia ${dias.includes(d.n) ? 'activo' : ''}`}
+                  aria-pressed={dias.includes(d.n)}
                   onClick={() => setDias(dias.includes(d.n)
                     ? dias.filter((x) => x !== d.n)
                     : [...dias, d.n].sort())}>

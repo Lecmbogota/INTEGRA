@@ -28,7 +28,7 @@ export function PlantillaMasiva({ filtro, total, onCerrar, onAplicado }: {
     try {
       await api.descargarPlantilla(filtro)
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(`No se pudo generar la plantilla: ${e instanceof Error ? e.message : String(e)}`)
     } finally {
       setOcupado(null)
     }
@@ -42,25 +42,44 @@ export function PlantillaMasiva({ filtro, total, onCerrar, onAplicado }: {
     try {
       setPrevia(await api.cargarPlantilla(f, false))
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(`No se pudo leer el archivo: ${e instanceof Error ? e.message : String(e)}`)
     } finally {
       setOcupado(null)
     }
   }
 
   async function aplicar() {
-    if (!archivo) return
+    if (!archivo || !previa) return
+    const aviso = `Se van a guardar ${num(previa.precios)} precios` +
+      (previa.promociones > 0 ? ` y ${num(previa.promociones)} promociones` : '') +
+      '.\n\nEsta operación no se puede deshacer. ¿Continuar?'
+    if (!window.confirm(aviso)) return
+
     setOcupado('aplicar')
     setError(null)
     try {
       const r = await api.cargarPlantilla(archivo, true)
       setPrevia(r)
       if (r.aplicado) onAplicado()
+      // El servidor puede aceptar el archivo y aun así no aplicar nada; sin
+      // este aviso el operador se queda mirando una pantalla que no cambió.
+      else setError(r.problemas.length > 0
+        ? 'El archivo tiene errores, así que no se guardó nada. Están listados abajo.'
+        : 'No se guardó ningún cambio. Revisa el archivo y vuelve a intentarlo.')
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(`No se pudieron aplicar los cambios: ${e instanceof Error ? e.message : String(e)}`)
     } finally {
       setOcupado(null)
     }
+  }
+
+  // Cerrar con un archivo ya revisado y sin aplicar tira a la basura el trabajo
+  // de revisión; con una carga en curso, además, deja la duda de si se guardó.
+  function cerrar() {
+    if (ocupado !== null) return
+    if (previa && !previa.aplicado &&
+      !window.confirm('Se perderá la revisión del archivo y habrá que volver a subirlo. ¿Cerrar?')) return
+    onCerrar()
   }
 
   const problemas = previa?.problemas ?? []
@@ -68,17 +87,22 @@ export function PlantillaMasiva({ filtro, total, onCerrar, onAplicado }: {
     (previa.precios > 0 || previa.promociones > 0) && !previa.aplicado
 
   return (
-    <div className="capa" onClick={onCerrar}>
+    <div className="capa" onClick={cerrar}>
       <div className="hoja hoja-plantilla" onClick={(e) => e.stopPropagation()}>
         <header className="hoja-cabecera">
           <div>
             <h2>Actualización masiva por plantilla</h2>
             <div className="sub">Precios y promociones de muchos productos a la vez, desde Excel</div>
           </div>
-          <button onClick={onCerrar}>Cerrar ✕</button>
+          <button onClick={cerrar} disabled={ocupado !== null}>Cerrar ✕</button>
         </header>
 
         {error && <div className="aviso-caja">{error}</div>}
+
+        <p className="solo-movil mini-texto tenue">
+          Este flujo pide editar una hoja de Excel: se hace mucho mejor desde un
+          computador. Desde aquí puedes revisar y confirmar lo que ya preparaste.
+        </p>
 
         <ol className="pasos">
           <li className={previa ? 'hecho' : 'activo'}>
@@ -99,10 +123,19 @@ export function PlantillaMasiva({ filtro, total, onCerrar, onAplicado }: {
               Integra lo revisa y te enseña qué va a cambiar. Todavía no se guarda nada.
             </p>
             <input ref={entrada} type="file" accept=".xlsx" style={{ display: 'none' }}
-              onChange={(e) => { const f = e.target.files?.[0]; if (f) void revisar(f) }} />
+              onChange={(e) => {
+                const f = e.target.files?.[0]
+                // Se limpia el input para que volver a elegir el MISMO archivo
+                // (corregido fuera) dispare igual el onChange.
+                e.target.value = ''
+                if (f) void revisar(f)
+              }} />
             <button onClick={() => entrada.current?.click()} disabled={ocupado !== null}>
-              {ocupado === 'revision' ? 'Revisando…' : archivo ? `Cambiar archivo (${archivo.name})` : 'Elegir archivo…'}
+              {ocupado === 'revision' ? 'Revisando…' : archivo ? 'Cambiar archivo' : 'Elegir archivo…'}
             </button>
+            {archivo && (
+              <div className="mini-texto tenue">Archivo: {archivo.name}</div>
+            )}
           </li>
 
           {previa && (
@@ -132,14 +165,14 @@ export function PlantillaMasiva({ filtro, total, onCerrar, onAplicado }: {
                     Se muestran las filas tal como están numeradas en Excel.
                   </div>
                   <div className="tabla-envoltorio corta">
-                    <table className="tabla-lineas">
+                    <table className="tabla-lineas tabla-tarjetas">
                       <thead><tr><th>Fila</th><th>SKU</th><th>Qué pasa</th></tr></thead>
                       <tbody>
                         {problemas.slice(0, 200).map((p, i) => (
                           <tr key={i}>
-                            <td className="num">{p.fila}</td>
-                            <td className="sku">{p.sku || '—'}</td>
-                            <td>{p.mensaje}</td>
+                            <td className="num" data-etiqueta="Fila">{p.fila}</td>
+                            <td className="sku" data-etiqueta="SKU">{p.sku || '—'}</td>
+                            <td className="apilada" data-etiqueta="Qué pasa">{p.mensaje}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -155,32 +188,43 @@ export function PlantillaMasiva({ filtro, total, onCerrar, onAplicado }: {
 
               {problemas.length === 0 && previa.cambios.length > 0 && (
                 <div className="tabla-envoltorio corta">
-                  <table className="tabla-lineas">
+                  <table className="tabla-lineas tabla-tarjetas">
                     <thead>
                       <tr>
                         <th>SKU</th><th>Producto</th><th className="num">Precio</th>
-                        <th>Promoción</th><th>Vigencia</th>
+                        <th>Promoción</th><th className="oculto-movil">Vigencia</th>
                       </tr>
                     </thead>
                     <tbody>
                       {previa.cambios.slice(0, 200).map((c) => (
                         <tr key={c.fila}>
-                          <td className="sku">{c.sku}</td>
-                          <td className="mini-texto">{c.nombre}</td>
-                          <td className="num">
+                          <td className="sku" data-etiqueta="SKU">{c.sku}</td>
+                          <td className="mini-texto apilada" data-etiqueta="Producto">{c.nombre}</td>
+                          {/* En tarjeta cada celda es una fila de dos columnas:
+                              el contenido va envuelto en un solo elemento para
+                              que no se reparta en trozos sueltos. */}
+                          <td className="num" data-etiqueta="Precio">
                             {c.precio_despues !== null ? (
-                              <>
+                              <div>
                                 <span className="tachado">{money(c.precio_antes)}</span>{' '}
                                 <strong>{money(c.precio_despues)}</strong>
-                              </>
+                              </div>
                             ) : <span className="tenue">sin cambio</span>}
                           </td>
-                          <td>
+                          <td data-etiqueta="Promoción">
                             {c.promo_precio !== null
-                              ? <>{money(c.promo_precio)} <span className="tenue">en {c.promo_canal}</span></>
+                              ? <div>
+                                  {money(c.promo_precio)} <span className="tenue">en {c.promo_canal}</span>
+                                  {/* La vigencia se esconde como columna en el
+                                      móvil, pero una promoción sin fechas no se
+                                      puede revisar: viaja junto al precio. */}
+                                  <div className="solo-movil mini-texto tenue">
+                                    {c.promo_inicia ? corta(c.promo_inicia) : 'ahora'} → {c.promo_termina ? corta(c.promo_termina) : 'sin fin'}
+                                  </div>
+                                </div>
                               : <span className="tenue">—</span>}
                           </td>
-                          <td className="tenue mini-texto">
+                          <td className="tenue mini-texto oculto-movil">
                             {c.promo_precio === null ? '—'
                               : `${c.promo_inicia ? corta(c.promo_inicia) : 'ahora'} → ${c.promo_termina ? corta(c.promo_termina) : 'sin fin'}`}
                           </td>
@@ -206,12 +250,14 @@ export function PlantillaMasiva({ filtro, total, onCerrar, onAplicado }: {
         </ol>
 
         <footer className="hoja-pie">
-          <button onClick={onCerrar}>{previa?.aplicado ? 'Cerrar' : 'Cancelar'}</button>
-          {puedeAplicar && (
+          <button onClick={cerrar} disabled={ocupado !== null}>
+            {previa?.aplicado ? 'Cerrar' : 'Cancelar'}
+          </button>
+          {puedeAplicar && previa && (
             <button className="primario" onClick={() => void aplicar()} disabled={ocupado !== null}>
               {ocupado === 'aplicar'
                 ? 'Aplicando…'
-                : `Aplicar ${num(previa!.precios + previa!.promociones)} cambios`}
+                : `Aplicar ${num(previa.precios + previa.promociones)} cambios`}
             </button>
           )}
         </footer>

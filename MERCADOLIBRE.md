@@ -4,6 +4,12 @@ Resumen de la documentación oficial (portal `developers.mercadolibre.com.co`,
 páginas consultadas el 5 de septiembre de 2026) recortado a lo que necesita el
 adaptador `channel.Adapter` de Integra: publicar, actualizar y leer pedidos.
 
+Reverificado el 6 de septiembre de 2026 contra «Gestionar envíos», «Gestiona
+ventas» e «Ítems y Búsquedas», que es de donde salen las correcciones de 3.4,
+3.5 y 4.4. Lo que este documento decía antes sobre `receiver_address` en
+`/shipments/$ID` era falso y costó que todos los pedidos entraran a Odoo sin
+dirección.
+
 Base de la API: `https://api.mercadolibre.com`. Site de Colombia: `MCO`.
 Moneda: `COP`. Los IDs de ítem tienen forma `MCO123456789`; los de User Product,
 `MCOU123456789`.
@@ -20,6 +26,8 @@ Fuentes:
 - Imágenes: https://developers.mercadolibre.com.co/es_ar/trabajar-con-imagenes
 - Stock distribuido: https://developers.mercadolibre.com.co/es_ar/stock-distribuido
 - Órdenes: https://developers.mercadolibre.com.co/es_ar/gestiona-ventas
+- Envíos: https://developers.mercadolibre.com.co/es_ar/envios
+- Ítems y búsquedas: https://developers.mercadolibre.com.co/es_ar/items-y-busquedas
 - Notificaciones: https://developers.mercadolibre.com.co/es_ar/productos-recibe-notificaciones
 - Usuarios de prueba: https://developers.mercadolibre.com.co/es_ar/realiza-pruebas
 - Rate limit: https://developers.mercadolibre.com.co/es_ar/rate-limit-error-429
@@ -351,10 +359,64 @@ curl -H 'Authorization: Bearer $ACCESS_TOKEN' 'https://api.mercadolibre.com/user
 ```
 
 `available_quantity`, `channels` e `initial_quantity` solo aparecen con el
-token del dueño. Para listados grandes, `items/search` acepta
-`search_type=scan` con `scroll_id`; no mezclar scroll con offset/limit y
-consumir el scroll completo antes de que expire. Para agrupar por familia:
+token del dueño. Para agrupar por familia:
 `GET /users/$SELLER_ID/items/search?user_product_id=MCOU1,MCOU2`.
+
+**La paginación por offset se corta en los 1000 primeros ítems.** «Ítems y
+Búsquedas» → «Buscar más de 1000 registros»:
+
+> Para realizar búsquedas de más de 1000 registros de Items, Preguntas y
+> Respuestas de la forma users/$USER_ID/items/search o /questions/search debes:
+> Enviar el parámetro search_type=scan a la consulta y quitar el offset.
+
+La primera llamada del scan devuelve un `scroll_id` que **expira en 5 minutos**
+y que hay que reenviar en todas las siguientes («Utiliza el mismo scroll_id
+para todas las llamadas»):
+
+```bash
+curl -H 'Authorization: Bearer $ACCESS_TOKEN' 'https://api.mercadolibre.com/users/$USER_ID/items/search?search_type=scan'
+curl -H 'Authorization: Bearer $ACCESS_TOKEN' 'https://api.mercadolibre.com/users/$USER_ID/items/search?search_type=scan&scroll_id=YXBpY29yZS1p...'
+```
+
+No se mezcla scroll con offset. Por eso `ListRemote` usa scan siempre y no
+solo cuando `paging.total` pasa de 1000: si se pagina por offset, una cuenta
+con más de 1000 publicaciones deja fuera de la conciliación todo lo que haya a
+partir de la 1001, que se trata como inexistente y se puede llegar a duplicar
+al publicar. El `scroll_id` viaja en `channel.Cursor.Token`, y como caduca a
+los 5 minutos la conciliación tiene que consumir las páginas seguidas. La única
+señal de final es una página vacía: ya no hay `offset` que comparar contra
+`paging.total`.
+
+`buscarPorSKU` (adopción por `seller_sku`) sigue sin scan: pide `limit=5` y no
+pagina.
+
+### 3.5 Buscar en los listados (competencia) — **exige token**
+
+No todo lo de `/sites/$SITE_ID` es público. Es fácil dar por hecho que la
+búsqueda lo es porque es la misma que usa la web, y no lo es:
+
+```bash
+curl -X GET -H 'Authorization: Bearer $ACCESS_TOKEN' 'https://api.mercadolibre.com/sites/$SITE_ID/search?q=$CONSULTA&limit=8'
+curl -X GET -H 'Authorization: Bearer $ACCESS_TOKEN' 'https://api.mercadolibre.com/sites/$SITE_ID/search?seller_id=$SELLER_ID&sort=price_asc'
+```
+
+Todos los ejemplos de «Ítems y Búsquedas» llevan la cabecera de autorización, y
+la propia página remite a los errores 401 y 403 al consumir el recurso.
+Comprobado contra la API real el 6/9/2026: sin token,
+`GET /sites/MCO/search?q=iphone&limit=1` responde
+`403 {"message":"forbidden","error":"forbidden","status":403}`.
+
+Qué sí es público en ese paquete (`internal/mercadolibre`), y por eso el
+predictor y los atributos funcionan sin cuenta conectada:
+
+| Recurso | ¿Token? |
+|---|---|
+| `GET /sites/$SITE/domain_discovery/search?q=` | no (200 sin token) |
+| `GET /categories/$CAT/attributes` | no (200 sin token) |
+| `GET /sites/$SITE/search?...` | **sí, si no 403** |
+
+`BuscadorCompetencia` recibe por eso una `FuenteToken` (`ConToken`) y ni
+siquiera hace la petición si no la tiene: el 403 es seguro.
 
 ---
 
@@ -449,26 +511,84 @@ Notas:
 
 ### 4.4 Envío
 
+**Son dos recursos distintos con dos contratos distintos.** Confundirlos es
+lo que tuvo al conector metiendo pedidos en Odoo sin dirección de entrega, sin
+nombre del receptor y sin teléfono, y encima en silencio, porque `FetchOrders`
+ignora el error del envío.
+
 ```bash
-# Envíos de una orden (vista nueva; siempre devuelve array)
-curl -H 'Authorization: Bearer $ACCESS_TOKEN' -H 'X-New-Domain: true' \
-  https://api.mercadolibre.com/orders/$ORDER_ID/shipments
-# Detalle con dirección y nombre/teléfono del receptor
-curl -H 'Authorization: Bearer $ACCESS_TOKEN' -H 'X-Api-Version: 2' \
-  'https://api.mercadolibre.com/shipments/$SHIPMENT_ID?views=origin,destination'
+# (a) Envíos de una orden — vista actual, siempre devuelve array
+curl -H 'Authorization: Bearer $ACCESS_TOKEN' -H 'X-New-Domain: true' -H 'X-Api-Version: 2' \
+  'https://api.mercadolibre.com/orders/$ORDER_ID/shipments?views=destination'
+# (b) Detalle del envío — formato nuevo, cabecera OBLIGATORIA desde el 12/10/2025
+curl -H 'Authorization: Bearer $ACCESS_TOKEN' -H 'x-format-new: true' \
+  https://api.mercadolibre.com/shipments/$SHIPMENT_ID
 ```
 
-Iterar y filtrar `type == "forward"` (los `return` y `return_to_buyer` son
+Iterar (a) y filtrar `type == "forward"` (los `return` y `return_to_buyer` son
 devoluciones). La vista vieja de `/orders/$ID/shipments` sin `list_all` se
 deprecará a finales de septiembre de 2026. El envío se asocia a la orden de
 forma asíncrona: puede tardar unos segundos en aparecer (204).
 
+El conector usa (a) solo para resolver **qué** envío despachar (`envioDeOrden`,
+que necesita el id, la dirección logística y el modo), y por eso lo llama sin
+`?views=destination`: la dirección la saca de (b), que es el recurso del que ML
+sirve el detalle completo. Quien quiera la dirección desde (a) tiene que pedir
+las dos cosas de la línea de arriba.
+
 Estados de envío: `pending`, `handling`, `ready_to_ship`, `shipped`,
 `delivered`, `not_delivered`, `not_verified`, `cancelled`.
 
-`receiver_address` (con `?views=destination` y `X-Api-Version: 2`) trae
-`receiver_name`, `receiver_phone`, calle, ciudad, departamento y zip, que es
-lo que necesita `channel.Address` para crear el contacto en Odoo.
+#### (a) `/orders/$ORDER_ID/shipments`
+
+Aquí, y **solo** aquí, existe `receiver_address`. La tabla de headers de
+«Gestiona ventas» dice que `X-Api-Version: 2` se envía «para recibir los datos
+PII completos (receiver_name, receiver_phone) dentro de receiver_address», y la
+nota añade que `sender_address` y `receiver_address` «no fueron eliminados de la
+vista actual. Para recibirlos, debés agregar explícitamente el parámetro
+?views=origin,destination». Ninguna de las dos cabeceras es obligatoria aquí.
+
+#### (b) `/shipments/$SHIPMENT_ID` — `x-format-new: true`, obligatoria
+
+«Gestionar envíos» lo repite dos veces:
+
+> Importante: Tengas en cuenta que para trabajar con el Json de shipments, al
+> hacer un GET, debes utilizar el header "x-format-new: true".
+
+> A partir del 12 de octubre de 2025, los campos "order_id" y
+> "external_reference" serán descontinuados en los recursos de shipments y
+> dejarán de ser retornados en las respuestas. Además, el envío del header
+> x-format-new: true pasará a ser obligatorio en todas las solicitudes.
+
+**Ese formato no tiene `receiver_address`.** Dónde está cada dato:
+
+| Dato | Campo en el formato nuevo |
+|---|---|
+| Nombre del receptor | `destination.receiver_name` |
+| Teléfono del receptor | `destination.receiver_phone` |
+| Id del comprador | `destination.receiver_id` |
+| Dirección de entrega | `destination.shipping_address` → `address_line`, `street_name`, `street_number`, `comment`, `zip_code`, `neighborhood.name`, `city.name`, `state.name`, `country.id` |
+| Dirección de origen | `origin.shipping_address` (+ `origin.node.node_id` en multiorigen) |
+| Unidad de negocio | `logistic.mode`, `logistic.type`, `logistic.direction` |
+| Sitio | `source.site_id` |
+| Costo del envío | `lead_time.cost` (también `list_cost`, `currency_id`, estimaciones) |
+| Estado | `status`, `substatus`, `tracking_number`, `tracking_method` |
+| Bulto | `dimensions` (`height`, `width`, `length`, `weight`) |
+
+Tres avisos de la misma página que condicionan lo que se puede prometer en Odoo:
+
+- «El domicilio del comprador en destination se ocultará hasta que se confirme
+  el pago del pedido»: un pedido sin pagar puede venir sin dirección de forma
+  legítima, y hay que releerlo con el tópico `shipments`.
+- «la información del teléfono en receiver_phone solo estará disponible para
+  pedidos con Mercado Envios 1 (ME1)». En ME2 no hay teléfono del comprador.
+- Chile, Ecuador y Perú no traen `zip_code`.
+
+El conector decodifica los dos recursos con el mismo struct (`envioML`), así
+que declara las dos formas y las fusiona campo a campo en `envioML.entrega()`.
+`order_id` y `external_reference` ya no vuelven en ningún recurso de shipments:
+la relación envío → orden se pide a `GET /shipments/$ID/orders` con
+`X-New-Domain: true`.
 
 ### 4.5 Confirmar / despachar (`AckOrder`)
 
@@ -565,7 +685,8 @@ curl -X POST https://api.mercadolibre.com/users/test_user \
 - **Rate limit por Client ID** (app), por endpoint. 429 → backoff exponencial
   con jitter, menos concurrencia, agrupar llamadas (multiget de `/items?ids=`).
   Encaja con el backoff que ya tiene el worker de `jobs`.
-- `403 forbidden`: token de otro usuario, IP bloqueada o faltan scopes.
+- `403 forbidden`: token de otro usuario, IP bloqueada, faltan scopes — o no
+  se mandó token a un recurso que lo exige, como `/sites/$SITE/search`.
 - `seller.unable_to_list`: el vendedor tiene algo pendiente en su cuenta;
   mirar `cause` y hacer una primera publicación manual desde la web.
 - `item.category_id.invalid`, `body.invalid_fields`: categoría o campo no
@@ -586,8 +707,8 @@ curl -X POST https://api.mercadolibre.com/users/test_user \
 | `UpdatePrice` | `PUT /items/$ID {price}` verificando el precio de la respuesta; error claro si `item.price.not_modifiable` (automatización activa). Migrar a `POST /items/$ID/prices/standard` cuando ML lo active |
 | `Pause` / `Resume` | `PUT /items/$ID {status: paused|active}` |
 | `FetchStatus` | `GET /items?ids=...&attributes=id,status,sub_status,available_quantity,price` |
-| `ListRemote` | `GET /users/$SELLER/items/search` (+ multiget de `/items?ids=`) |
-| `FetchOrders` | `GET /orders/search?seller=&order.date_last_updated.from=&offset=` (la búsqueda ya trae el detalle) → por orden con envío, `GET /shipments/$ID` con `X-Api-Version: 2` para la dirección |
+| `ListRemote` | `GET /users/$SELLER/items/search?search_type=scan` arrastrando `scroll_id` (nunca offset: se corta en 1000) + multiget de `/items?ids=` |
+| `FetchOrders` | `GET /orders/search?seller=&order.date_last_updated.from=&offset=` (la búsqueda ya trae el detalle) → por orden con envío, `GET /shipments/$ID` con `x-format-new: true` y la dirección en `destination.shipping_address` |
 | `AckOrder` | depende de la logística; ver guía "Envíos" |
 | Webhook (nuevo) | `POST /api/webhooks/mercadolibre` → job → GET del `resource` |
 

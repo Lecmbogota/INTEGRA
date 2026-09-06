@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { api, money, type EdicionProducto, type Marca, type Producto } from './api'
 import { Promocion } from './Promocion'
 
@@ -13,6 +13,13 @@ const LIMITES: Record<string, { nombre: string; max: number }> = {
 }
 
 type Pestana = 'venta' | 'promocion' | 'titulos' | 'envio' | 'interno'
+
+// Un campo mal escrito vive en una pestaña concreta, y el error se enseñaba
+// sin decir en cuál: quien tecleaba mal el peso lo leía desde «Títulos» y no
+// encontraba qué corregir. Por eso el fallo viaja con la pestaña que lo tiene.
+type Recolectado =
+  | { ok: true; campos: EdicionProducto }
+  | { ok: false; pestana: Pestana; mensaje: string }
 
 // Editor de los campos propiedad de Integra. De Odoo solo llegan la
 // referencia, el nombre y el stock; todo lo demás vive aquí.
@@ -46,12 +53,6 @@ export function Editar({ producto, marcas, onCerrar, onGuardado }: {
   const [guardando, setGuardando] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  useEffect(() => {
-    const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onCerrar() }
-    window.addEventListener('keydown', h)
-    return () => window.removeEventListener('keydown', h)
-  }, [onCerrar])
-
   // Peso volumétrico: es lo que de verdad cobran los canales cuando supera al
   // peso real, y por eso se muestra en vivo mientras se teclean las medidas.
   const volumetrico = (() => {
@@ -67,12 +68,19 @@ export function Editar({ producto, marcas, onCerrar, onGuardado }: {
     return Number.isFinite(n) && n >= 0 ? n : NaN
   }
 
-  async function guardar() {
+  // recolectar es la única fuente de verdad sobre qué cambió: la usan el
+  // guardado y el aviso de salida, así que no pueden contradecirse.
+  function recolectar(): Recolectado {
     const campos: EdicionProducto = {}
 
     if (precio !== (producto.precio === null ? '' : String(producto.precio))) {
       const n = numero(precio)
-      if (Number.isNaN(n)) { setError('El precio debe ser un número positivo.'); return }
+      if (Number.isNaN(n)) {
+        return {
+          ok: false, pestana: 'venta',
+          mensaje: 'El precio de venta debe ser un número positivo. Déjalo vacío para quitarlo.',
+        }
+      }
       campos.precio = n
     }
     if (marca !== producto.marca) campos.marca = marca.trim()
@@ -84,23 +92,36 @@ export function Editar({ producto, marcas, onCerrar, onGuardado }: {
     if (videoURL !== (producto.video_url || '')) campos.video_url = videoURL.trim()
     if (nota !== (producto.nota_interna || '')) campos.nota_interna = nota
 
-    for (const [clave, actual, previo] of [
-      ['peso', peso, producto.peso],
-      ['largo_cm', dim.largo, producto.largo_cm],
-      ['ancho_cm', dim.ancho, producto.ancho_cm],
-      ['alto_cm', dim.alto, producto.alto_cm],
+    for (const [clave, etiqueta, actual, previo] of [
+      ['peso', 'El peso real', peso, producto.peso],
+      ['largo_cm', 'El largo', dim.largo, producto.largo_cm],
+      ['ancho_cm', 'El ancho', dim.ancho, producto.ancho_cm],
+      ['alto_cm', 'El alto', dim.alto, producto.alto_cm],
     ] as const) {
-      if (actual === (previo > 0 ? String(previo) : '')) continue
+      if (actual.trim() === (previo > 0 ? String(previo) : '')) continue
       const n = numero(actual)
-      if (n === null || Number.isNaN(n)) {
-        setError(`«${clave}» debe ser un número positivo.`); return
+      if (Number.isNaN(n)) {
+        return {
+          ok: false, pestana: 'envio',
+          mensaje: `${etiqueta} debe ser un número positivo, o quedar vacío.`,
+        }
       }
-      ;(campos as Record<string, unknown>)[clave] = n
+      // Vaciar la casilla es la única forma de borrar una medida ya guardada;
+      // antes respondía «debe ser un número» y no había manera de deshacerla.
+      ;(campos as Record<string, unknown>)[clave] = n ?? 0
     }
 
     if (garantiaMeses !== (producto.garantia_meses === null ? '' : String(producto.garantia_meses))) {
       const n = numero(garantiaMeses)
-      if (n !== null && !Number.isNaN(n)) campos.garantia_meses = Math.round(n)
+      if (Number.isNaN(n)) {
+        return {
+          ok: false, pestana: 'venta',
+          mensaje: 'La garantía debe ser un número de meses, o quedar vacía.',
+        }
+      }
+      // Antes un valor no numérico se descartaba en silencio y el usuario se
+      // iba creyendo que había guardado la garantía.
+      campos.garantia_meses = n === null ? 0 : Math.round(n)
     }
 
     const titulosCambiados: Record<string, string> = {}
@@ -110,12 +131,37 @@ export function Editar({ producto, marcas, onCerrar, onGuardado }: {
     }
     if (Object.keys(titulosCambiados).length > 0) campos.titulos = titulosCambiados
 
-    if (Object.keys(campos).length === 0) { onCerrar(); return }
+    return { ok: true, campos }
+  }
+
+  const recolectado = recolectar()
+  // Un valor inválido también cuenta como cambio: alguien escribió algo.
+  const sucio = !recolectado.ok || Object.keys(recolectado.campos).length > 0
+
+  // Cerrar tira el formulario entero, y se cierra con Escape o tocando fuera
+  // de la hoja —en un móvil eso pasa sin querer—, así que si hay algo escrito
+  // se pregunta antes.
+  const intentarCerrar = useCallback(() => {
+    if (guardando) return
+    if (sucio && !window.confirm('Hay cambios sin guardar en esta ficha. ¿Cerrar y descartarlos?')) return
+    onCerrar()
+  }, [guardando, sucio, onCerrar])
+
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => { if (e.key === 'Escape') intentarCerrar() }
+    window.addEventListener('keydown', h)
+    return () => window.removeEventListener('keydown', h)
+  }, [intentarCerrar])
+
+  async function guardar() {
+    const r = recolectar()
+    if (!r.ok) { setPestana(r.pestana); setError(r.mensaje); return }
+    if (Object.keys(r.campos).length === 0) { onCerrar(); return }
 
     setGuardando(true)
     setError(null)
     try {
-      await api.editarProducto(producto.id, campos)
+      await api.editarProducto(producto.id, r.campos)
       onGuardado()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -124,14 +170,14 @@ export function Editar({ producto, marcas, onCerrar, onGuardado }: {
   }
 
   return (
-    <div className="capa" onClick={onCerrar}>
+    <div className="capa" onClick={intentarCerrar}>
       <div className="hoja hoja-editor" onClick={(e) => e.stopPropagation()}>
         <header className="hoja-cabecera">
           <div>
             <h2>Editar producto</h2>
             <div className="sub">{producto.sku || '(sin referencia)'} · {producto.nombre}</div>
           </div>
-          <button onClick={onCerrar}>Cerrar ✕</button>
+          <button onClick={intentarCerrar} disabled={guardando}>Cerrar ✕</button>
         </header>
 
         <div className="pestanas">
@@ -144,7 +190,7 @@ export function Editar({ producto, marcas, onCerrar, onGuardado }: {
           ))}
         </div>
 
-        {error && <div className="aviso-caja">Error: {error}</div>}
+        {error && <div className="aviso-caja">No se guardó: {error}</div>}
 
         {pestana === 'venta' && (
           <div className="form-edicion">
@@ -217,7 +263,14 @@ export function Editar({ producto, marcas, onCerrar, onGuardado }: {
         )}
 
         {pestana === 'promocion' && (
-          <Promocion varianteId={producto.id} precioBase={producto.precio} />
+          <>
+            {/* El pie dice «Guardar cambios», pero no toca las promociones:
+                cada una se crea y se cancela por su cuenta y al instante. */}
+            <div className="nota-previa">
+              Las promociones se guardan al crearlas, aparte del resto de la ficha.
+            </div>
+            <Promocion varianteId={producto.id} precioBase={producto.precio} />
+          </>
         )}
 
         {pestana === 'titulos' && (
@@ -225,7 +278,7 @@ export function Editar({ producto, marcas, onCerrar, onGuardado }: {
             <div className="nota-previa">
               Cada canal tiene su propio límite. El de MercadoLibre son 60 caracteres
               y es el que decide si el comprador te encuentra: pon primero producto,
-              marca y modelo.
+              marca y modelo. El que dejes vacío se publica con el nombre de Odoo.
             </div>
             <div className="form-edicion">
               {Object.entries(LIMITES).map(([canal, cfg]) => {
@@ -252,7 +305,8 @@ export function Editar({ producto, marcas, onCerrar, onGuardado }: {
             <div className="nota-previa">
               Los canales cobran el envío por el <strong>peso volumétrico</strong>
               {' '}(largo × ancho × alto ÷ 5000) cuando supera al peso real. Sin medidas,
-              el envío sale mal cobrado o el canal bloquea la venta.
+              el envío sale mal cobrado o el canal bloquea la venta. Deja una casilla
+              vacía para borrar la medida guardada.
             </div>
             <div className="form-edicion">
               <label>
@@ -262,17 +316,17 @@ export function Editar({ producto, marcas, onCerrar, onGuardado }: {
               </label>
               <label>
                 <span>Largo (cm)</span>
-                <input inputMode="decimal" value={dim.largo}
+                <input inputMode="decimal" placeholder="sin medida" value={dim.largo}
                   onChange={(e) => setDim({ ...dim, largo: e.target.value })} />
               </label>
               <label>
                 <span>Ancho (cm)</span>
-                <input inputMode="decimal" value={dim.ancho}
+                <input inputMode="decimal" placeholder="sin medida" value={dim.ancho}
                   onChange={(e) => setDim({ ...dim, ancho: e.target.value })} />
               </label>
               <label>
                 <span>Alto (cm)</span>
-                <input inputMode="decimal" value={dim.alto}
+                <input inputMode="decimal" placeholder="sin medida" value={dim.alto}
                   onChange={(e) => setDim({ ...dim, alto: e.target.value })} />
               </label>
               {volumetrico !== null && (
@@ -306,9 +360,9 @@ export function Editar({ producto, marcas, onCerrar, onGuardado }: {
         )}
 
         <footer className="hoja-pie">
-          <button onClick={onCerrar} disabled={guardando}>Cancelar</button>
-          <button className="primario" onClick={() => void guardar()} disabled={guardando}>
-            {guardando ? 'Guardando…' : 'Guardar cambios'}
+          <button onClick={intentarCerrar} disabled={guardando}>Cancelar</button>
+          <button className="primario" onClick={() => void guardar()} disabled={guardando || !sucio}>
+            {guardando ? 'Guardando…' : sucio ? 'Guardar cambios' : 'Sin cambios que guardar'}
           </button>
         </footer>
       </div>

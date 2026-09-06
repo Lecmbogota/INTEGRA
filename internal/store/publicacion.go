@@ -19,7 +19,13 @@ type CandidatoPublicacion struct {
 	Marca       string
 	Barcode     string
 	Peso        float64
-	Imagenes    []string
+	// Medidas del paquete en centímetros. Falabella las exige por separado
+	// dentro de ProductData y rechaza el alta entera si faltan: el peso solo
+	// no basta.
+	LargoCm  float64
+	AnchoCm  float64
+	AltoCm   float64
+	Imagenes []string
 
 	CategoriaCanal string
 	PrecioBase     float64
@@ -57,6 +63,7 @@ func (s *Store) CandidatosPublicacion(ctx context.Context, cuentaID int64) ([]Ca
 		       COALESCE(c.titulos->>$2, p.name),
 		       COALESCE(c.descripcion, COALESCE(p.description_sale,'')),
 		       COALESCE(b.name,''), COALESCE(v.barcode,''), COALESCE(v.weight,0),
+		       COALESCE(v.largo_cm,0), COALESCE(v.ancho_cm,0), COALESCE(v.alto_cm,0),
 		       COALESCE(cm.channel_category_id, ''),
 		       COALESCE(v.price, 0),
 		       COALESCE(ep.sale_price, ep.regular_price, 0),
@@ -106,7 +113,7 @@ func (s *Store) CandidatosPublicacion(ctx context.Context, cuentaID int64) ([]Ca
 		var c CandidatoPublicacion
 		var precioEfectivo float64
 		if err := filas.Scan(&c.VarianteID, &c.ProductoID, &c.SKU, &c.Titulo, &c.Descripcion,
-			&c.Marca, &c.Barcode, &c.Peso, &c.CategoriaCanal, &c.PrecioBase, &precioEfectivo, &c.Stock,
+			&c.Marca, &c.Barcode, &c.Peso, &c.LargoCm, &c.AnchoCm, &c.AltoCm, &c.CategoriaCanal, &c.PrecioBase, &precioEfectivo, &c.Stock,
 			&c.ExternalID, &c.ContentHash, &c.PriceHash, &c.StockHash, &c.Imagenes); err != nil {
 			return nil, err
 		}

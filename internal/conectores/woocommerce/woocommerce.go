@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/mdv/integra/internal/channel"
+	"github.com/mdv/integra/internal/conectores"
 )
 
 // formatoFecha es el ISO 8601 sin zona que espera la API: tanto los filtros de
@@ -62,7 +63,15 @@ func ValidarURLTienda(bruta string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("la URL de la tienda no es válida: %w", err)
 	}
-	if !strings.EqualFold(u.Scheme, "https") || u.Host == "" {
+	if u.Host == "" {
+		return "", fmt.Errorf("la URL de la tienda no tiene servidor: %q", base)
+	}
+	// La excepción local es lo que hace utilizable la tienda de pruebas de
+	// docker-compose.woocommerce.yml, que vive en http://localhost:8090 y a la
+	// que ponerle un certificado sería más problema que solución. Fuera de la
+	// propia máquina se sigue exigiendo https: sobre HTTP la API solo admite
+	// OAuth 1.0a y el consumer secret viajaría en claro.
+	if !strings.EqualFold(u.Scheme, "https") && !conectores.EsLocal(base) {
 		return "", fmt.Errorf("la URL de la tienda debe empezar por https:// (llegó %q): "+
 			"sobre HTTP WooCommerce solo admite OAuth 1.0a y el consumer secret viajaría en claro", base)
 	}
@@ -343,27 +352,24 @@ func (a *Adaptador) FetchOrders(ctx context.Context, desde time.Time, cur channe
 	}
 
 	var resp []struct {
-		ID           int64  `json:"id"`
-		Number       string `json:"number"`
-		Status       string `json:"status"`
-		DateCreated  string `json:"date_created_gmt"`
-		DateModified string `json:"date_modified_gmt"`
-		Currency     string `json:"currency"`
-		Total        string `json:"total"`
-		TotalTax     string `json:"total_tax"`
-		ShippingTot  string `json:"shipping_total"`
-		Billing      struct {
-			FirstName string `json:"first_name"`
-			LastName  string `json:"last_name"`
-			Email     string `json:"email"`
-			Phone     string `json:"phone"`
-			Address1  string `json:"address_1"`
-			Address2  string `json:"address_2"`
-			City      string `json:"city"`
-			State     string `json:"state"`
-			Postcode  string `json:"postcode"`
-			Country   string `json:"country"`
-		} `json:"billing"`
+		ID           int64           `json:"id"`
+		Number       string          `json:"number"`
+		Status       string          `json:"status"`
+		DateCreated  string          `json:"date_created_gmt"`
+		DateModified string          `json:"date_modified_gmt"`
+		Currency     string          `json:"currency"`
+		Total        string          `json:"total"`
+		TotalTax     string          `json:"total_tax"`
+		ShippingTot  string          `json:"shipping_total"`
+		Billing      direccionPedido `json:"billing"`
+		// El recurso Order trae DOS objetos de dirección independientes:
+		// «billing – Billing address» y «shipping – Shipping address», cada
+		// uno con su propia tabla de propiedades
+		// (https://woocommerce.github.io/woocommerce-rest-api-docs/#order-properties).
+		// Cuando el comprador marca «enviar a una dirección diferente» en el
+		// checkout, shipping.* difiere de billing.*: leer solo billing
+		// despachaba la guía a la dirección de facturación.
+		Shipping  direccionPedido `json:"shipping"`
 		LineItems []struct {
 			ID       int64   `json:"id"`
 			Name     string  `json:"name"`
@@ -387,18 +393,34 @@ func (a *Adaptador) FetchOrders(ctx context.Context, desde time.Time, cur channe
 		fecha, _ := time.Parse(formatoFecha, o.DateCreated)
 		modificado, _ := time.Parse(formatoFecha, o.DateModified)
 
+		// La dirección que viaja a Odoo es la de ENTREGA: es con la que se
+		// monta la guía. Se cae a billing solo cuando shipping viene en
+		// blanco, que es lo normal en un pedido que no requiere envío
+		// (producto digital) o cuando el comprador no marcó dirección
+		// distinta; la documentación advierte que los campos vacíos llegan
+		// como null o cadena vacía, no omitidos, así que hay que mirar el
+		// contenido y no la presencia del objeto.
+		entrega := o.Shipping
+		if !entrega.tieneDireccion() {
+			entrega = o.Billing
+		}
+		// El nombre del destinatario sale del bloque de entrega; el correo y
+		// el teléfono siguen saliendo de billing porque la tabla «Order -
+		// Shipping properties» no los incluye.
+		nombre := entrega.nombre()
+		if nombre == "" {
+			nombre = o.Billing.nombre()
+		}
+
 		ord := channel.Order{
 			ExternalID: fmt.Sprint(o.ID), Number: o.Number, Status: o.Status,
 			OrderedAt: fecha, UpdatedAt: modificado, Currency: o.Currency,
 			Total: total, Tax: imp, Shipping: envio,
 			Buyer: channel.Buyer{
-				Name:  strings.TrimSpace(o.Billing.FirstName + " " + o.Billing.LastName),
-				Email: o.Billing.Email, Phone: o.Billing.Phone,
-				Address: channel.Address{
-					Line1: o.Billing.Address1, Line2: o.Billing.Address2,
-					City: o.Billing.City, State: o.Billing.State,
-					PostalCode: o.Billing.Postcode, Country: o.Billing.Country,
-				},
+				Name:    nombre,
+				Email:   o.Billing.Email,
+				Phone:   o.Billing.Phone,
+				Address: entrega.direccion(),
 			},
 		}
 		for _, li := range o.LineItems {
@@ -415,6 +437,46 @@ func (a *Adaptador) FetchOrders(ctx context.Context, desde time.Time, cur channe
 		Next:   channel.Cursor{Page: pagina + 1},
 		Done:   esUltimaPagina(cab, pagina, len(resp)),
 	}, nil
+}
+
+// direccionPedido son los campos comunes a las tablas «Order - Billing
+// properties» y «Order - Shipping properties» del recurso Order.
+//
+// Se usa el mismo tipo para los dos bloques porque comparten los nueve campos
+// de dirección; email y phone solo aparecen en la tabla de billing, así que en
+// shipping llegan siempre vacíos y no se usan.
+// https://woocommerce.github.io/woocommerce-rest-api-docs/#order-properties
+type direccionPedido struct {
+	FirstName string `json:"first_name"`
+	LastName  string `json:"last_name"`
+	Company   string `json:"company"`
+	Address1  string `json:"address_1"`
+	Address2  string `json:"address_2"`
+	City      string `json:"city"`
+	State     string `json:"state"`
+	Postcode  string `json:"postcode"`
+	Country   string `json:"country"`
+	Email     string `json:"email"` // solo en billing
+	Phone     string `json:"phone"` // solo en billing
+}
+
+// tieneDireccion dice si el bloque trae algo con lo que despachar. No basta
+// con que el objeto exista: WooCommerce lo manda siempre, con los campos en
+// blanco cuando el pedido no lleva envío.
+func (d direccionPedido) tieneDireccion() bool {
+	return strings.TrimSpace(d.Address1+d.Address2+d.City+d.Postcode) != ""
+}
+
+func (d direccionPedido) nombre() string {
+	return strings.TrimSpace(d.FirstName + " " + d.LastName)
+}
+
+func (d direccionPedido) direccion() channel.Address {
+	return channel.Address{
+		Line1: d.Address1, Line2: d.Address2,
+		City: d.City, State: d.State,
+		PostalCode: d.Postcode, Country: d.Country,
+	}
 }
 
 // esUltimaPagina decide si queda algo por pedir.
