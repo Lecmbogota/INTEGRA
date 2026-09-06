@@ -16,8 +16,10 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/mdv/integra/internal/channel"
 	"github.com/mdv/integra/internal/jobs"
 	"github.com/mdv/integra/internal/odoo"
+	"github.com/mdv/integra/internal/publicar"
 	"github.com/mdv/integra/internal/store"
 )
 
@@ -397,6 +399,16 @@ type tiendaFalsa struct {
 	partner int64
 	fallos  []string
 	alertas []alertaFalsa
+
+	// Lo que responde a la ingesta. Con los ceros la base está "vacía": el
+	// pedido es nuevo, no hay stock que mover y ninguna otra cuenta tiene la
+	// variante publicada.
+	yaEstaba    bool    // GuardarOrden dice que el pedido ya existía
+	descontadas float64 // unidades que DescontarStockPublicado dice haber bajado
+	devueltas   float64 // unidades que DevolverStockReservado dice haber devuelto
+	destinos    []store.DestinoStock
+	errDestinos error
+	guardados   int64 // pedidos guardados; numera los ids que devuelve
 }
 
 func nuevaTienda() *tiendaFalsa {
@@ -445,21 +457,27 @@ func (t *tiendaFalsa) CrearAlerta(_ context.Context, tipo, _ string, _ *int64, m
 	return nil
 }
 
-// El resto de la interfaz no interviene en el montaje del pedido.
+// La parte de la interfaz que usa la ingesta: responde lo que se le programó.
+func (t *tiendaFalsa) GuardarOrden(context.Context, store.DatosOrden) (int64, bool, error) {
+	t.guardados++
+	return t.guardados, !t.yaEstaba, nil
+}
+func (t *tiendaFalsa) DescontarStockPublicado(context.Context, int64) (float64, error) {
+	return t.descontadas, nil
+}
+func (t *tiendaFalsa) DevolverStockReservado(context.Context, int64, string) (float64, error) {
+	return t.devueltas, nil
+}
+func (t *tiendaFalsa) DestinosDeStockDeOrden(context.Context, int64) ([]store.DestinoStock, error) {
+	return t.destinos, t.errDestinos
+}
+
+// El resto no interviene ni en el montaje ni en lo que se prueba de la ingesta.
 func (t *tiendaFalsa) WatermarkOrdenes(context.Context, int64) (time.Time, error) {
 	return time.Time{}, nil
 }
 func (t *tiendaFalsa) ActualizarWatermarkOrdenes(context.Context, int64, time.Time, string) error {
 	return nil
-}
-func (t *tiendaFalsa) GuardarOrden(context.Context, store.DatosOrden) (int64, bool, error) {
-	return 0, false, nil
-}
-func (t *tiendaFalsa) DescontarStockPublicado(context.Context, int64) (float64, error) {
-	return 0, nil
-}
-func (t *tiendaFalsa) DevolverStockReservado(context.Context, int64, string) (float64, error) {
-	return 0, nil
 }
 func (t *tiendaFalsa) MarcarOrdenCancelada(context.Context, int64, string) (store.Cancelacion, error) {
 	return store.Cancelacion{}, nil
@@ -639,5 +657,208 @@ func TestUnPedidoQueCuadraNoGeneraAlerta(t *testing.T) {
 	}
 	if len(st.alertas) != 0 {
 		t.Errorf("se alertó de un pedido que cuadra: %+v", st.alertas)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Ingesta: lo que una venta deja pedido para los demás canales.
+//
+// El stock bajaba en la base al instante (DescontarStockPublicado), pero nadie
+// encolaba su envío a las otras cuentas: el diff por hash solo corre desde el
+// horario, una vez al día, así que la última unidad vendida en un canal se
+// seguía ofreciendo en los otros tres hasta la corrida siguiente.
+// ---------------------------------------------------------------------------
+
+// canalFalso entrega los pedidos que se le programen y no habla con nadie.
+type canalFalso struct{ pedidos []channel.Order }
+
+func (c *canalFalso) Kind() channel.Kind                 { return channel.WooCommerce }
+func (c *canalFalso) Capabilities() channel.Capabilities { return channel.Capabilities{} }
+func (c *canalFalso) Publish(context.Context, channel.PublishRequest) (channel.PublishResult, error) {
+	return channel.PublishResult{}, nil
+}
+func (c *canalFalso) Update(context.Context, channel.UpdateRequest) (channel.UpdateResult, error) {
+	return channel.UpdateResult{}, nil
+}
+func (c *canalFalso) UpdateStock(context.Context, []channel.StockUpdate) ([]channel.OpResult, error) {
+	return nil, nil
+}
+func (c *canalFalso) UpdatePrice(context.Context, []channel.PriceUpdate) ([]channel.OpResult, error) {
+	return nil, nil
+}
+func (c *canalFalso) Pause(context.Context, channel.ExternalRef) error  { return nil }
+func (c *canalFalso) Resume(context.Context, channel.ExternalRef) error { return nil }
+func (c *canalFalso) FetchStatus(context.Context, []channel.ExternalRef) ([]channel.ListingStatus, error) {
+	return nil, nil
+}
+func (c *canalFalso) ListRemote(context.Context, channel.Cursor) (channel.RemotePage, error) {
+	return channel.RemotePage{Done: true}, nil
+}
+func (c *canalFalso) FetchOrders(context.Context, time.Time, channel.Cursor) (channel.OrderPage, error) {
+	return channel.OrderPage{Orders: c.pedidos, Done: true}, nil
+}
+func (c *canalFalso) AckOrder(context.Context, channel.ExternalRef, channel.Fulfillment) error {
+	return nil
+}
+
+// colaFalsa anota cada trabajo pedido con su carga y sus opciones: lo que se
+// comprueba es exactamente qué queda en la cola, no solo que haya algo.
+type colaFalsa struct{ trabajos []trabajoPedido }
+
+type trabajoPedido struct {
+	kind    string
+	payload any
+	op      jobs.Opciones
+}
+
+func (c *colaFalsa) Encolar(_ context.Context, kind string, payload any, op jobs.Opciones) (int64, error) {
+	c.trabajos = append(c.trabajos, trabajoPedido{kind: kind, payload: payload, op: op})
+	return int64(len(c.trabajos)), nil
+}
+
+// stocks devuelve los envíos de stock pedidos, por cuenta y variante.
+func (c *colaFalsa) stocks() map[publicar.PayloadPublicar]jobs.Opciones {
+	out := map[publicar.PayloadPublicar]jobs.Opciones{}
+	for _, t := range c.trabajos {
+		if t.kind == publicar.TrabajoStock {
+			out[t.payload.(publicar.PayloadPublicar)] = t.op
+		}
+	}
+	return out
+}
+
+func (c *colaFalsa) cuantos(kind string) int {
+	n := 0
+	for _, t := range c.trabajos {
+		if t.kind == kind {
+			n++
+		}
+	}
+	return n
+}
+
+// venta es un pedido de WooCommerce de una unidad del SKU COL-101 (la
+// variante 55 de la base simulada), tal como lo entregaría el adaptador.
+func venta(numero, estado string) channel.Order {
+	return channel.Order{
+		ExternalID: "WC-" + numero, Number: numero, Status: estado,
+		OrderedAt: time.Date(2026, 9, 6, 10, 0, 0, 0, time.UTC),
+		Currency:  "COP", Total: 115000,
+		Buyer: channel.Buyer{Name: "Ana Pérez", Email: "ana@example.com"},
+		Lines: []channel.OrderLine{{
+			ExternalID: "L1", SKU: "COL-101", Title: "Colchón Alfa",
+			Quantity: 1, UnitPrice: 115000, TotalPrice: 115000,
+		}},
+	}
+}
+
+// ingerirEn corre la ingesta de la cuenta 3 contra el canal simulado y
+// devuelve la cola con lo que dejó pedido.
+func ingerirEn(t *testing.T, st *tiendaFalsa, pedidos ...channel.Order) *colaFalsa {
+	t.Helper()
+	cola := &colaFalsa{}
+	s := nuevoCon(st, slog.New(slog.DiscardHandler), nil)
+	s.cola = cola
+	s.adaptador = func(context.Context, int64) (channel.Adapter, error) {
+		return &canalFalso{pedidos: pedidos}, nil
+	}
+	if err := s.ingerir(context.Background(), jobs.Trabajo{
+		Kind: TrabajoIngerir, Payload: []byte(`{"cuenta_id":3}`),
+	}); err != nil {
+		t.Fatalf("ingiriendo: %v", err)
+	}
+	return cola
+}
+
+// Las otras dos cuentas tienen publicada la variante: la venta tiene que
+// dejarles pedido el envío de stock, con la clave y la prioridad del
+// planificador. Y dos pedidos de la misma variante en la misma tanda piden un
+// solo envío, que al ejecutarse lee el stock ya descontado por los dos.
+func TestUnaVentaEncolaElStockDeSuVarianteEnLasOtrasCuentas(t *testing.T) {
+	st := nuevaTienda()
+	st.descontadas = 1
+	st.destinos = []store.DestinoStock{{CuentaID: 4, VarianteID: 55}, {CuentaID: 5, VarianteID: 55}}
+
+	cola := ingerirEn(t, st, venta("1001", "processing"), venta("1002", "processing"))
+
+	stocks := cola.stocks()
+	if len(stocks) != 2 {
+		t.Fatalf("se esperaban envíos de stock a las cuentas 4 y 5, y se pidió: %+v", cola.trabajos)
+	}
+	for _, cuenta := range []int64{4, 5} {
+		op, hay := stocks[publicar.PayloadPublicar{CuentaID: cuenta, VarianteID: 55}]
+		if !hay {
+			t.Errorf("la cuenta %d tiene la variante publicada y no se le pidió el stock", cuenta)
+			continue
+		}
+		clave := fmt.Sprintf("%s:%d:55", publicar.TrabajoStock, cuenta)
+		if op.UniqueKey != clave {
+			t.Errorf("clave única %q, se esperaba %q: sin la clave del planificador el mismo envío iría dos veces",
+				op.UniqueKey, clave)
+		}
+		if op.Priority != 10 {
+			t.Errorf("prioridad %d: el stock va por delante de todo, con 10", op.Priority)
+		}
+		if op.CuentaID != cuenta {
+			t.Errorf("el trabajo no queda atado a la cuenta %d: %+v", cuenta, op)
+		}
+	}
+	if n := cola.cuantos(TrabajoAOdoo); n != 2 {
+		t.Errorf("cada pedido nuevo sigue pidiendo su montaje en Odoo, y se pidieron %d", n)
+	}
+}
+
+// Lo contrario también cuenta: una cancelación devuelve la unidad a la base y,
+// si no se manda, los demás canales siguen sin ofrecerla hasta el día
+// siguiente. Es una venta que no se hace.
+func TestUnaCancelacionEncolaElStockDevueltoEnLasOtrasCuentas(t *testing.T) {
+	st := nuevaTienda()
+	st.yaEstaba = true // el pedido se ingirió vivo en una pasada anterior
+	st.devueltas = 1
+	st.destinos = []store.DestinoStock{{CuentaID: 4, VarianteID: 55}}
+
+	cola := ingerirEn(t, st, venta("1003", "cancelled"))
+
+	if _, hay := cola.stocks()[publicar.PayloadPublicar{CuentaID: 4, VarianteID: 55}]; !hay {
+		t.Errorf("el stock devuelto por la cancelación no se pidió a la cuenta 4: %+v", cola.trabajos)
+	}
+	if n := cola.cuantos(TrabajoAOdoo); n != 0 {
+		t.Errorf("un pedido cancelado no se monta en Odoo, y se pidió %d veces", n)
+	}
+}
+
+// Sin movimiento de stock no hay nada que mandar: un pedido repetido por el
+// sondeo, una venta de algo que ya estaba en cero o una cancelación cuyas
+// unidades ya habían vuelto. Y si la base no sabe decir a quién avisar, la
+// ingesta sigue: el pedido ya está guardado y el horario reconcilia por hash.
+func TestSinStockQueMoverNoSeEncolaNingunEnvio(t *testing.T) {
+	casos := []struct {
+		nombre string
+		tienda func(*tiendaFalsa)
+		pedido channel.Order
+	}{
+		{"pedido repetido", func(t *tiendaFalsa) { t.yaEstaba = true; t.descontadas = 1 },
+			venta("2001", "processing")},
+		{"venta sin stock que descontar", func(t *tiendaFalsa) { t.descontadas = 0 },
+			venta("2002", "processing")},
+		{"cancelación ya devuelta", func(t *tiendaFalsa) { t.yaEstaba = true; t.devueltas = 0 },
+			venta("2003", "cancelled")},
+		{"la base no sabe a quién avisar", func(t *tiendaFalsa) {
+			t.descontadas = 1
+			t.errDestinos = fmt.Errorf("conexión perdida")
+		}, venta("2004", "processing")},
+	}
+	for _, c := range casos {
+		t.Run(c.nombre, func(t *testing.T) {
+			st := nuevaTienda()
+			st.destinos = []store.DestinoStock{{CuentaID: 4, VarianteID: 55}}
+			c.tienda(st)
+
+			cola := ingerirEn(t, st, c.pedido)
+
+			if n := cola.cuantos(publicar.TrabajoStock); n != 0 {
+				t.Errorf("se pidieron %d envíos de stock sin que el stock se moviera: %+v", n, cola.trabajos)
+			}
+		})
 	}
 }
