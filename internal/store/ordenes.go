@@ -520,7 +520,20 @@ func (s *Store) ListarOrdenes(ctx context.Context, limite int) ([]Orden, error) 
 		}
 		out = append(out, o)
 	}
-	return out, filas.Err()
+	if err := filas.Err(); err != nil {
+		return nil, err
+	}
+
+	// Las líneas se cargan aparte, como en OrdenesPendientesOdoo. Sin esto la
+	// pantalla decía «este pedido llegó sin líneas de detalle» en todos: no se
+	// veía qué se había vendido, que es lo primero que se mira al abrir un
+	// pedido, y un SKU sin emparejar pasaba desapercibido.
+	for i := range out {
+		if out[i].Lineas, err = s.LineasDeOrden(ctx, out[i].ID); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 // ResumenOrdenes cuenta el estado de la ingesta para el panel.
