@@ -23,6 +23,7 @@ import (
 	"github.com/mdv/integra/internal/imagen"
 	"github.com/mdv/integra/internal/jobs"
 	"github.com/mdv/integra/internal/mercadolibre"
+	"github.com/mdv/integra/internal/notificaciones"
 	"github.com/mdv/integra/internal/ordenes"
 	"github.com/mdv/integra/internal/proyeccion"
 	"github.com/mdv/integra/internal/publicar"
@@ -48,6 +49,10 @@ type Server struct {
 	// interfaz sirve el frontend ya compilado. Nulo en desarrollo, donde lo
 	// sirve Vite en otro puerto.
 	interfaz http.Handler
+	// enviarCorreo entrega el correo de prueba de un destino de avisos. Se
+	// inyecta solo en las pruebas: en producción vale nil y se usa el envío
+	// real por SMTP.
+	enviarCorreo notificaciones.Enviador
 
 	// masivo es el estado del barrido de imágenes en curso, en memoria.
 	masivoMu sync.Mutex
@@ -106,6 +111,7 @@ func Nuevo(st *store.Store, log *slog.Logger, addr string, alm *imagen.Almacen, 
 	s.registrarObservabilidad(mux)
 	s.registrarIntegraciones(mux)
 	s.registrarBodegas(mux)
+	s.registrarAvisos(mux)
 	// Público a propósito (ver middleware_auth.go): lo llaman los canales, no
 	// el navegador. La autenticidad se comprueba en el propio manejador.
 	s.registrarWebhooks(mux)
