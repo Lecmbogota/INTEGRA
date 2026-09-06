@@ -1,0 +1,24 @@
+# Credenciales — nunca deben entrar al repositorio
+.env
+*.key
+*.pem
+
+# Informes generados: pueden contener datos del catálogo
+odoo-report.json
+*-report.json
+
+# Binarios
+/bin/
+*.exe
+integra
+odoo-explorer
+
+# Herramientas
+.idea/
+.vscode/
+node_modules/
+dist/
+
+# Banco de imágenes y datos locales: cientos de MB, no son código
+/datos/
+.claude/scheduled_tasks.lock

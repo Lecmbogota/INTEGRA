@@ -1,0 +1,398 @@
+package store
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+)
+
+// Resumen alimenta el panel principal.
+type Resumen struct {
+	Productos      int        `json:"productos"`
+	Variantes      int        `json:"variantes"`
+	Marcas         int        `json:"marcas"`
+	ConSKU         int        `json:"con_sku"`
+	ConPrecio      int        `json:"con_precio"`
+	ConStock       int        `json:"con_stock"`
+	ConDescripcion int        `json:"con_descripcion"`
+	Publicables    int        `json:"publicables"`
+	EnAtencion     int        `json:"en_atencion"`
+	UltimaSync     *time.Time `json:"ultima_sincronizacion"`
+	StockTotal     float64    `json:"stock_total"`
+	Excluidos      int        `json:"excluidos"`
+}
+
+func (s *Store) Resumen(ctx context.Context) (*Resumen, error) {
+	var r Resumen
+	// Todos los conteos miran solo mercancía publicable. Contar los gastos y
+	// activos fijos como "productos" daba un catálogo de 632 cuando la
+	// mercancía real son 452, y ensuciaba todos los porcentajes.
+	const soloMercancia = `p.excluded_reason IS NULL AND p.active`
+
+	err := s.pool.QueryRow(ctx, `
+		SELECT
+		  (SELECT count(*) FROM products p WHERE `+soloMercancia+`),
+		  (SELECT count(*) FROM product_variants v JOIN products p ON p.id = v.product_id
+		     WHERE v.active AND `+soloMercancia+`),
+		  (SELECT count(DISTINCT p.brand_id) FROM products p WHERE `+soloMercancia+` AND p.brand_id IS NOT NULL),
+		  (SELECT count(*) FROM product_variants v JOIN products p ON p.id = v.product_id
+		     WHERE v.active AND `+soloMercancia+` AND v.sku IS NOT NULL),
+		  (SELECT count(*) FROM product_variants v JOIN products p ON p.id = v.product_id
+		     WHERE `+soloMercancia+` AND v.price IS NOT NULL),
+		  (SELECT count(DISTINCT vs.variant_id) FROM variant_stock vs
+		     JOIN product_variants v ON v.id = vs.variant_id
+		     JOIN products p ON p.id = v.product_id
+		     WHERE vs.qty_on_hand > 0 AND `+soloMercancia+`),
+		  (SELECT count(*) FROM products p
+		     LEFT JOIN product_content c ON c.product_id = p.id
+		     WHERE `+soloMercancia+`
+		       AND NULLIF(TRIM(COALESCE(c.descripcion, p.description_sale, '')), '') IS NOT NULL),
+		  (SELECT count(*) FROM attention_queue WHERE resolved_at IS NULL),
+		  (SELECT max(last_sync_at) FROM odoo_connections),
+		  (SELECT COALESCE(sum(vs.qty_on_hand), 0) FROM variant_stock vs
+		     JOIN product_variants v ON v.id = vs.variant_id
+		     JOIN products p ON p.id = v.product_id WHERE `+soloMercancia+`),
+		  (SELECT count(*) FROM products WHERE excluded_reason IS NOT NULL)
+	`).Scan(&r.Productos, &r.Variantes, &r.Marcas, &r.ConSKU, &r.ConPrecio,
+		&r.ConStock, &r.ConDescripcion, &r.EnAtencion, &r.UltimaSync,
+		&r.StockTotal, &r.Excluidos)
+	if err != nil {
+		return nil, fmt.Errorf("calculando el resumen: %w", err)
+	}
+
+	// Publicable = tiene todo lo que exigen los cuatro canales.
+	err = s.pool.QueryRow(ctx, `
+		SELECT count(*)
+		FROM product_variants v
+		JOIN products p ON p.id = v.product_id
+		LEFT JOIN product_content c ON c.product_id = p.id
+		WHERE v.active AND p.active AND p.excluded_reason IS NULL
+		  AND v.sku IS NOT NULL
+		  AND NULLIF(TRIM(COALESCE(c.descripcion, p.description_sale, '')), '') IS NOT NULL
+		  AND v.price IS NOT NULL
+		  AND EXISTS (SELECT 1 FROM variant_stock st WHERE st.variant_id = v.id AND st.qty_on_hand > 0)
+	`).Scan(&r.Publicables)
+	if err != nil {
+		return nil, fmt.Errorf("contando publicables: %w", err)
+	}
+	return &r, nil
+}
+
+// FilaProducto es una fila de la tabla de catálogo.
+type FilaProducto struct {
+	ID             int64    `json:"id"`
+	SKU            string   `json:"sku"`
+	Nombre         string   `json:"nombre"`
+	Marca          string   `json:"marca"`
+	Categoria      string   `json:"categoria"`
+	Precio         *float64 `json:"precio"`
+	PrecioSugerido *float64 `json:"precio_sugerido"`
+	Barcode        string   `json:"barcode"`
+	Peso           float64  `json:"peso"`
+	Descripcion    string   `json:"descripcion"`
+	Excluido       bool     `json:"excluido"`
+	Stock          float64  `json:"stock"`
+	Problemas      []string `json:"problemas"`
+
+	// Ficha comercial completa.
+	Titulos       map[string]string `json:"titulos"`
+	LargoCm       float64           `json:"largo_cm"`
+	AnchoCm       float64           `json:"ancho_cm"`
+	AltoCm        float64           `json:"alto_cm"`
+	Condicion     string            `json:"condicion"`
+	GarantiaMeses *int              `json:"garantia_meses"`
+	GarantiaTipo  string            `json:"garantia_tipo"`
+	VideoURL      string            `json:"video_url"`
+	NotaInterna   string            `json:"nota_interna"`
+}
+
+// FiltroProductos acota la consulta del catálogo.
+type FiltroProductos struct {
+	Busqueda      string
+	Marca         string
+	Categoria     string
+	SoloProblemas bool
+	VerExcluidos  bool
+	// SoloSinPrecio acota a lo que aún no tiene PVP. Existe sobre todo para
+	// la edición masiva: aplicar «precio = coste × factor» a una selección
+	// que incluya productos ya tarifados los sobrescribiría en silencio.
+	SoloSinPrecio bool
+	Limite        int
+	Offset        int
+}
+
+func (s *Store) ListarProductos(ctx context.Context, f FiltroProductos) ([]FilaProducto, int, error) {
+	if f.Limite <= 0 || f.Limite > 500 {
+		f.Limite = 100
+	}
+
+	cond := []string{"v.active"}
+	if f.VerExcluidos {
+		cond = append(cond, "p.excluded_reason IS NOT NULL")
+	} else {
+		cond = append(cond, "p.active", "p.excluded_reason IS NULL")
+	}
+	args := []any{}
+
+	if q := strings.TrimSpace(f.Busqueda); q != "" {
+		args = append(args, "%"+strings.ToLower(q)+"%")
+		cond = append(cond, fmt.Sprintf(
+			"(lower(p.name) LIKE $%d OR lower(COALESCE(v.sku,'')) LIKE $%d)", len(args), len(args)))
+	}
+	if m := strings.TrimSpace(f.Marca); m != "" {
+		args = append(args, m)
+		cond = append(cond, fmt.Sprintf("b.code = $%d", len(args)))
+	}
+	if c := strings.TrimSpace(f.Categoria); c != "" {
+		args = append(args, c)
+		cond = append(cond, fmt.Sprintf("p.categ_path = $%d", len(args)))
+	}
+	if f.SoloProblemas {
+		cond = append(cond,
+			"EXISTS (SELECT 1 FROM attention_queue a WHERE a.variant_id = v.id AND a.resolved_at IS NULL)")
+	}
+	if f.SoloSinPrecio {
+		cond = append(cond, "v.price IS NULL")
+	}
+	where := "WHERE " + strings.Join(cond, " AND ")
+
+	var total int
+	if err := s.pool.QueryRow(ctx, `
+		SELECT count(*) FROM product_variants v
+		JOIN products p ON p.id = v.product_id
+		LEFT JOIN brands b ON b.id = p.brand_id `+where, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("contando productos: %w", err)
+	}
+
+	args = append(args, f.Limite, f.Offset)
+	sql := `
+		SELECT v.id, COALESCE(v.sku,''), p.name, COALESCE(b.name,''), COALESCE(p.categ_path,''),
+		       v.price, v.computed_price,
+		       COALESCE(v.barcode,''), COALESCE(v.weight,0),
+		       COALESCE(c.descripcion, COALESCE(p.description_sale,'')),
+		       (p.excluded_reason IS NOT NULL),
+		       COALESCE((SELECT sum(st.qty_on_hand) FROM variant_stock st WHERE st.variant_id = v.id), 0),
+		       COALESCE(ARRAY(SELECT a.reason FROM attention_queue a
+		                      WHERE a.variant_id = v.id AND a.resolved_at IS NULL
+		                      ORDER BY a.reason), '{}'),
+		       COALESCE(c.titulos, '{}'::jsonb),
+		       COALESCE(v.largo_cm,0), COALESCE(v.ancho_cm,0), COALESCE(v.alto_cm,0),
+		       p.condicion, p.garantia_meses, COALESCE(p.garantia_tipo,''),
+		       COALESCE(p.video_url,''), COALESCE(p.nota_interna,'')
+		FROM product_variants v
+		JOIN products p ON p.id = v.product_id
+		LEFT JOIN brands b ON b.id = p.brand_id
+		LEFT JOIN product_content c ON c.product_id = p.id ` + where + `
+		ORDER BY p.name
+		LIMIT $` + fmt.Sprint(len(args)-1) + ` OFFSET $` + fmt.Sprint(len(args))
+
+	filas, err := s.pool.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("listando productos: %w", err)
+	}
+	defer filas.Close()
+
+	var out []FilaProducto
+	for filas.Next() {
+		var r FilaProducto
+		var titulos []byte
+		if err := filas.Scan(&r.ID, &r.SKU, &r.Nombre, &r.Marca, &r.Categoria,
+			&r.Precio, &r.PrecioSugerido, &r.Barcode, &r.Peso, &r.Descripcion,
+			&r.Excluido, &r.Stock, &r.Problemas,
+			&titulos, &r.LargoCm, &r.AnchoCm, &r.AltoCm,
+			&r.Condicion, &r.GarantiaMeses, &r.GarantiaTipo,
+			&r.VideoURL, &r.NotaInterna); err != nil {
+			return nil, 0, err
+		}
+		if err := json.Unmarshal(titulos, &r.Titulos); err != nil {
+			return nil, 0, err
+		}
+		out = append(out, r)
+	}
+	return out, total, filas.Err()
+}
+
+// FilaPrioridad es un producto en la cola de "qué publicar primero".
+type FilaPrioridad struct {
+	VarianteID int64    `json:"variante_id"`
+	SKU        string   `json:"sku"`
+	Nombre     string   `json:"nombre"`
+	Marca      string   `json:"marca"`
+	Precio     *float64 `json:"precio"`
+	Stock      float64  `json:"stock"`
+	ValorStock float64  `json:"valor_stock"`
+	Listo      bool     `json:"listo"`
+	Bloqueos   int      `json:"bloqueos"`
+}
+
+// PrioridadPublicacion ordena el catálogo por dónde conviene empezar a
+// publicar: primero lo que ya cumple todos los requisitos, y dentro de eso lo
+// que más valor de inventario tiene esperando venderse. Cuando existan las
+// órdenes (Fase 5) el criterio se enriquecerá con la rotación real.
+func (s *Store) PrioridadPublicacion(ctx context.Context, limite int) ([]FilaPrioridad, error) {
+	if limite <= 0 || limite > 100 {
+		limite = 10
+	}
+	filas, err := s.pool.Query(ctx, `
+		SELECT v.id, COALESCE(v.sku,''), p.name, COALESCE(b.name,''),
+		       v.price,
+		       COALESCE(st.total, 0),
+		       COALESCE(st.total, 0) * COALESCE(v.price, 0),
+		       (bl.n = 0 AND COALESCE(st.total,0) > 0 AND v.price IS NOT NULL),
+		       bl.n::int
+		FROM product_variants v
+		JOIN products p ON p.id = v.product_id
+		LEFT JOIN brands b ON b.id = p.brand_id
+		LEFT JOIN LATERAL (
+		    SELECT sum(qty_on_hand) AS total FROM variant_stock WHERE variant_id = v.id
+		) st ON TRUE
+		LEFT JOIN LATERAL (
+		    SELECT count(*) AS n FROM attention_queue a
+		    WHERE a.variant_id = v.id AND a.resolved_at IS NULL AND a.severity = 'blocking'
+		) bl ON TRUE
+		WHERE v.active AND p.active AND p.excluded_reason IS NULL
+		ORDER BY (bl.n = 0 AND COALESCE(st.total,0) > 0 AND v.price IS NOT NULL) DESC,
+		         COALESCE(st.total, 0) * COALESCE(v.price, 0) DESC,
+		         p.name
+		LIMIT $1`, limite)
+	if err != nil {
+		return nil, fmt.Errorf("calculando la prioridad de publicación: %w", err)
+	}
+	defer filas.Close()
+
+	var out []FilaPrioridad
+	for filas.Next() {
+		var f FilaPrioridad
+		if err := filas.Scan(&f.VarianteID, &f.SKU, &f.Nombre, &f.Marca,
+			&f.Precio, &f.Stock, &f.ValorStock, &f.Listo, &f.Bloqueos); err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	return out, filas.Err()
+}
+
+// ConteoMarca alimenta el filtro por marca y el gráfico del panel.
+type ConteoMarca struct {
+	Codigo   string `json:"codigo"`
+	Nombre   string `json:"nombre"`
+	Cantidad int    `json:"cantidad"`
+	Alias    int    `json:"alias"`
+}
+
+func (s *Store) Marcas(ctx context.Context) ([]ConteoMarca, error) {
+	filas, err := s.pool.Query(ctx, `
+		SELECT b.code, b.name, count(p.id)::int,
+		       (SELECT count(*)::int FROM brand_aliases a WHERE a.brand_id = b.id)
+		FROM brands b
+		LEFT JOIN products p ON p.brand_id = b.id AND p.active AND p.excluded_reason IS NULL
+		GROUP BY b.id, b.code, b.name
+		HAVING count(p.id) > 0
+		ORDER BY count(p.id) DESC, b.name`)
+	if err != nil {
+		return nil, fmt.Errorf("listando marcas: %w", err)
+	}
+	defer filas.Close()
+
+	var out []ConteoMarca
+	for filas.Next() {
+		var m ConteoMarca
+		if err := filas.Scan(&m.Codigo, &m.Nombre, &m.Cantidad, &m.Alias); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, filas.Err()
+}
+
+// ConteoCategoria alimenta el filtro por categoría.
+type ConteoCategoria struct {
+	Nombre   string `json:"nombre"`
+	Cantidad int    `json:"cantidad"`
+}
+
+func (s *Store) Categorias(ctx context.Context) ([]ConteoCategoria, error) {
+	filas, err := s.pool.Query(ctx, `
+		SELECT p.categ_path, count(p.id)::int
+		FROM products p
+		WHERE p.active AND p.excluded_reason IS NULL AND p.categ_path IS NOT NULL AND p.categ_path != ''
+		GROUP BY p.categ_path
+		ORDER BY p.categ_path ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("listando categorías: %w", err)
+	}
+	defer filas.Close()
+
+	var out []ConteoCategoria
+	for filas.Next() {
+		var c ConteoCategoria
+		if err := filas.Scan(&c.Nombre, &c.Cantidad); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, filas.Err()
+}
+
+// ConteoAtencion agrupa la cola de atención por motivo.
+type ConteoAtencion struct {
+	Motivo    string `json:"motivo"`
+	Severidad string `json:"severidad"`
+	Cantidad  int    `json:"cantidad"`
+}
+
+func (s *Store) Atencion(ctx context.Context) ([]ConteoAtencion, error) {
+	filas, err := s.pool.Query(ctx, `
+		SELECT reason, severity, count(*)::int
+		FROM attention_queue WHERE resolved_at IS NULL
+		GROUP BY reason, severity ORDER BY count(*) DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("leyendo la cola de atención: %w", err)
+	}
+	defer filas.Close()
+
+	var out []ConteoAtencion
+	for filas.Next() {
+		var a ConteoAtencion
+		if err := filas.Scan(&a.Motivo, &a.Severidad, &a.Cantidad); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, filas.Err()
+}
+
+// StockAlmacen alimenta el desglose por bodega.
+type StockAlmacen struct {
+	Codigo    string  `json:"codigo"`
+	Nombre    string  `json:"nombre"`
+	Unidades  float64 `json:"unidades"`
+	Variantes int     `json:"variantes"`
+}
+
+func (s *Store) StockPorAlmacen(ctx context.Context) ([]StockAlmacen, error) {
+	filas, err := s.pool.Query(ctx, `
+		SELECT w.code, w.name,
+		       COALESCE(sum(vs.qty_on_hand), 0),
+		       count(DISTINCT vs.variant_id)::int
+		FROM odoo_warehouses w
+		LEFT JOIN variant_stock vs ON vs.odoo_warehouse_id = w.id
+		GROUP BY w.id, w.code, w.name
+		ORDER BY sum(vs.qty_on_hand) DESC NULLS LAST`)
+	if err != nil {
+		return nil, fmt.Errorf("leyendo el stock por almacén: %w", err)
+	}
+	defer filas.Close()
+
+	var out []StockAlmacen
+	for filas.Next() {
+		var a StockAlmacen
+		if err := filas.Scan(&a.Codigo, &a.Nombre, &a.Unidades, &a.Variantes); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, filas.Err()
+}

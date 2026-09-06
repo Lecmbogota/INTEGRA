@@ -1,0 +1,74 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: integra-postgres
+    environment:
+      POSTGRES_USER: integra
+      POSTGRES_PASSWORD: integra_dev
+      POSTGRES_DB: integra
+      # Ordenación determinista: sin esto, el orden de los índices depende
+      # del locale de la imagen y las pruebas fallan en unas máquinas y en
+      # otras no.
+      POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
+    ports:
+      # 5432 y 5433 caen dentro de los rangos que Windows reserva para Hyper-V
+      # (comprobable con: netsh interface ipv4 show excludedportrange protocol=tcp).
+      # 5544 está en un hueco libre.
+      - "5544:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U integra -d integra"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: integra-api
+    command: ["serve"]
+    environment:
+      INTEGRA_DATABASE_URL: postgres://integra:integra_dev@postgres:5432/integra?sslmode=disable
+      INTEGRA_MASTER_KEY: ${INTEGRA_MASTER_KEY:?define INTEGRA_MASTER_KEY, generala con go run ./cmd/integra genkey}
+      INTEGRA_HTTP_ADDR: ":8080"
+      INTEGRA_LOG_LEVEL: debug
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: integra-worker
+    # Mismo binario que la API, distinto subcomando: así no pueden divergir
+    # las dependencias ni la versión del esquema entre ambos procesos.
+    command: ["worker"]
+    environment:
+      INTEGRA_DATABASE_URL: postgres://integra:integra_dev@postgres:5432/integra?sslmode=disable
+      INTEGRA_MASTER_KEY: ${INTEGRA_MASTER_KEY:?define INTEGRA_MASTER_KEY}
+      INTEGRA_LOG_LEVEL: debug
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # El frontend llega en la Fase 5. Se deja comentado a propósito: un servicio
+  # que no puede construirse rompería `docker compose up` entero.
+  #
+  # web:
+  #   build:
+  #     context: ./web
+  #   container_name: integra-web
+  #   environment:
+  #     VITE_API_URL: http://localhost:8080
+  #   ports:
+  #     - "5173:5173"
+  #   depends_on:
+  #     - api
+
+volumes:
+  postgres_data:

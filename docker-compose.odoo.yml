@@ -1,0 +1,52 @@
+# Odoo local para desarrollo y pruebas.
+#
+# Va en su propio fichero porque NO es parte de Integra: es la contraparte
+# contra la que se prueba. Levantarlo con el compose principal obligaría a
+# arrastrar un Odoo en producción, donde el Odoo real es el del cliente.
+#
+#   docker compose -f docker-compose.odoo.yml up -d
+#
+# La primera vez hay que inicializar la base (ver README, sección «Odoo de
+# pruebas»): se crea con datos de demostración, que traen productos, clientes
+# y almacenes reales con los que probar el ciclo completo.
+
+services:
+  odoo-db:
+    image: postgres:16-alpine
+    container_name: integra-odoo-db
+    environment:
+      POSTGRES_USER: odoo
+      POSTGRES_PASSWORD: odoo
+      POSTGRES_DB: postgres
+      # Odoo exige que su usuario pueda crear bases de datos.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8"
+    volumes:
+      - odoo_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U odoo"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  odoo:
+    image: odoo:18
+    container_name: integra-odoo
+    depends_on:
+      odoo-db:
+        condition: service_healthy
+    ports:
+      # 8069 es el puerto propio de Odoo y está fuera de los rangos que
+      # Windows reserva para Hyper-V (comprobado con
+      # netsh interface ipv4 show excludedportrange protocol=tcp).
+      - "8069:8069"
+    environment:
+      HOST: odoo-db
+      USER: odoo
+      PASSWORD: odoo
+    volumes:
+      - odoo_data:/var/lib/odoo
+      - ./datos/odoo-config:/etc/odoo
+
+volumes:
+  odoo_db_data:
+  odoo_data:
