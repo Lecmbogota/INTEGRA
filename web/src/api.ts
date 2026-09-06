@@ -800,7 +800,11 @@ export const api = {
 
   publicaciones: () => pedir<ResumenPublicacion[]>('/api/publicaciones'),
   planificar: (cuentaId: number) =>
-    pedir<{ publicar: number; precio: number; stock: number; sin_cambios: number; no_listos: number }>(
+    pedir<{
+      publicar: number; precio: number; stock: number; sin_cambios: number; no_listos: number
+      // Lo que se retira del canal por haber salido del catálogo, y lo que vuelve a abrirse al regresar.
+      pausar: number; reanudar: number
+    }>(
       `/api/cuentas/${cuentaId}/planificar`, { method: 'POST' }),
 
   cuentas: () => pedir<CuentaCanal[]>('/api/cuentas'),

@@ -1197,7 +1197,9 @@ func cmdWorker(ctx context.Context) error {
 
 	// Los canales descargan las imágenes desde esta URL: tiene que ser
 	// alcanzable desde internet cuando se publique de verdad.
-	publicar.NuevoServicio(st, cif, log, cfg.PublicBaseURL).Registrar(w)
+	publicar.NuevoServicio(st, cif, log, cfg.PublicBaseURL).
+		ConConciliacion(cfg.ConciliacionCada, cfg.RecrearPublicacionesCaidas).
+		Registrar(w)
 
 	// La ingesta de pedidos y su montaje en Odoo comparten worker: ambos son
 	// llamadas a servicios ajenos que fallan y se reintentan igual.
