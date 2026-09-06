@@ -129,6 +129,17 @@ func encolar(ctx context.Context, cola encolador, kind string, cuentaID, variant
 	return err
 }
 
+// EncolarStock pide el envío de stock de una variante a una cuenta sin pasar
+// por Planificar. Lo usa la ingesta de pedidos: una venta baja el stock en la
+// base al instante, pero el diff por hash solo corre desde el horario, así que
+// los demás canales seguían ofreciendo la unidad vendida hasta el día
+// siguiente. Lleva la misma clave única y la misma prioridad que el trabajo
+// que encola Planificar: una planificación que llegue después no lo duplica,
+// y el stock sigue por delante de todo lo demás.
+func EncolarStock(ctx context.Context, cola encolador, cuentaID, varianteID int64) error {
+	return encolar(ctx, cola, TrabajoStock, cuentaID, varianteID, 10)
+}
+
 // HashContenido cubre todo lo que obliga a reenviar la ficha completa.
 func HashContenido(c store.CandidatoPublicacion) string {
 	var b strings.Builder

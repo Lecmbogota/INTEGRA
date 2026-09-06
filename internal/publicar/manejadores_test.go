@@ -97,11 +97,15 @@ func (a *almacenFalso) AnotarErrorPublicacion(ctx context.Context, cuentaID, pro
 	return nil
 }
 
-// colaFalsa anota qué trabajos se pidieron, en orden.
-type colaFalsa struct{ encolados []string }
+// colaFalsa anota qué trabajos se pidieron, en orden, y con qué clave única.
+type colaFalsa struct {
+	encolados []string
+	claves    []string
+}
 
 func (c *colaFalsa) Encolar(ctx context.Context, kind string, payload any, op jobs.Opciones) (int64, error) {
 	c.encolados = append(c.encolados, kind)
+	c.claves = append(c.claves, op.UniqueKey)
 	return int64(len(c.encolados)), nil
 }
 
@@ -369,6 +373,40 @@ func TestPlanificarPublicacionNuevaSoloEncolaLaCreacion(t *testing.T) {
 	}
 	if len(cola.encolados) != 1 || cola.encolados[0] != TrabajoPublicar {
 		t.Fatalf("solo la creación: %v", cola.encolados)
+	}
+}
+
+// EncolarStock existe para que la ingesta de pedidos mande el stock sin
+// esperar al horario. Tiene que dejar en la cola exactamente el trabajo que
+// dejaría Planificar al ver el mismo cambio: con otra clave, una venta y un
+// horario en el mismo minuto mandarían el stock dos veces al canal.
+func TestEncolarStockDejaElMismoTrabajoQuePlanificar(t *testing.T) {
+	c := candidatoListo()
+	c.ExternalID = "77"
+	viejo := c
+	viejo.Stock = 7
+	c.ContentHash = HashContenido(viejo)
+	c.PriceHash = HashPrecio(viejo)
+	c.StockHash = HashStock(viejo)
+	c.Stock = 6 // se vendió una unidad en otro canal
+
+	planificada := &colaFalsa{}
+	if _, err := Planificar(context.Background(), &catalogoFalso{items: []store.CandidatoPublicacion{c}}, planificada, 1); err != nil {
+		t.Fatal(err)
+	}
+	directa := &colaFalsa{}
+	if err := EncolarStock(context.Background(), directa, 1, c.VarianteID); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(planificada.encolados) != 1 || planificada.encolados[0] != TrabajoStock {
+		t.Fatalf("la planificación debía pedir solo el stock: %v", planificada.encolados)
+	}
+	if len(directa.encolados) != 1 || directa.encolados[0] != TrabajoStock {
+		t.Fatalf("EncolarStock debía pedir solo el stock: %v", directa.encolados)
+	}
+	if directa.claves[0] != planificada.claves[0] {
+		t.Errorf("claves distintas: EncolarStock %q, Planificar %q", directa.claves[0], planificada.claves[0])
 	}
 }
 

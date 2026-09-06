@@ -21,6 +21,7 @@ import (
 	"github.com/mdv/integra/internal/crypto"
 	"github.com/mdv/integra/internal/jobs"
 	"github.com/mdv/integra/internal/odoo"
+	"github.com/mdv/integra/internal/publicar"
 	"github.com/mdv/integra/internal/store"
 )
 
@@ -62,6 +63,7 @@ type almacen interface {
 	GuardarOrden(ctx context.Context, d store.DatosOrden) (int64, bool, error)
 	DescontarStockPublicado(ctx context.Context, ordenID int64) (float64, error)
 	DevolverStockReservado(ctx context.Context, ordenID int64, motivo string) (float64, error)
+	DestinosDeStockDeOrden(ctx context.Context, ordenID int64) ([]store.DestinoStock, error)
 	MarcarOrdenCancelada(ctx context.Context, ordenID int64, estadoCanal string) (store.Cancelacion, error)
 	CrearAlerta(ctx context.Context, tipo, severidad string, cuentaID *int64, mensaje string, detalle any) error
 	OrdenPendientePorID(ctx context.Context, id int64) (*store.Orden, error)
@@ -73,26 +75,41 @@ type almacen interface {
 	DireccionEnvioDeOrden(ctx context.Context, ordenID int64) (DireccionEnvio, error)
 }
 
+// encolador es lo que este paquete necesita de la cola. Es una interfaz, como
+// en internal/publicar, para poder comprobar en las pruebas qué trabajos deja
+// pedidos una ingesta sin un PostgreSQL detrás; *jobs.Cola la cumple.
+type encolador interface {
+	Encolar(ctx context.Context, kind string, payload any, op jobs.Opciones) (int64, error)
+}
+
 // Servicio ingiere pedidos y los monta en Odoo.
 type Servicio struct {
-	st almacen
-	// stConcreto es el mismo almacén sin la interfaz. Construir el adaptador
-	// de un canal exige el tipo concreto, así que la ingesta lo necesita;
-	// queda nulo en las pruebas del montaje, que no hablan con ningún canal.
-	stConcreto *store.Store
-	cif        *crypto.Cifrador
-	log        *slog.Logger
+	st  almacen
+	log *slog.Logger
 	// abrirOdoo se inyecta para no duplicar aquí el descifrado de la conexión.
 	abrirOdoo func(context.Context) (*odoo.Client, error)
-	// cola encola el montaje en Odoo de cada pedido ingerido. La rellena
-	// Registrar con la cola del worker; en la ruta de línea de comandos
-	// (`integra ordenes`) queda nula y el montaje se hace en el acto.
-	cola *jobs.Cola
+	// adaptador resuelve el canal de una cuenta. Es un campo, y no una
+	// llamada directa, para que las pruebas de la ingesta puedan inyectar un
+	// canal simulado; queda nulo en las del montaje, que no hablan con nadie.
+	adaptador func(ctx context.Context, cuentaID int64) (channel.Adapter, error)
+	// cola encola el montaje en Odoo de cada pedido ingerido y el envío de
+	// stock a las demás cuentas. La rellena Registrar con la cola del worker;
+	// en la ruta de línea de comandos (`integra ordenes`) queda nula y el
+	// montaje se hace en el acto.
+	cola encolador
 }
 
 func NuevoServicio(st *store.Store, cif *crypto.Cifrador, log *slog.Logger,
 	abrirOdoo func(context.Context) (*odoo.Client, error)) *Servicio {
-	return &Servicio{st: tienda{st}, stConcreto: st, cif: cif, log: log, abrirOdoo: abrirOdoo}
+	return &Servicio{
+		st: tienda{st}, log: log, abrirOdoo: abrirOdoo,
+		// El adaptador se construye por trabajo y no se cachea: así una
+		// credencial reemplazada surte efecto en la siguiente ingesta sin
+		// reiniciar el worker.
+		adaptador: func(ctx context.Context, cuentaID int64) (channel.Adapter, error) {
+			return conectores.AdaptadorDeCuenta(ctx, st, cif, cuentaID)
+		},
+	}
 }
 
 // nuevoCon inyecta la persistencia. Lo usan las pruebas, que sustituyen la
@@ -117,7 +134,7 @@ func (s *Servicio) Registrar(w *jobs.Worker) {
 // manejador de orden_a_odoo estaba registrado pero nadie lo encolaba, así que
 // el pedido solo llegaba a Odoo si alguien ejecutaba `integra ordenes` a mano.
 // La clave única evita que dos pasadas encolen dos veces el mismo pedido.
-func EncolarMontaje(ctx context.Context, cola *jobs.Cola, cuentaID, ordenID int64) error {
+func EncolarMontaje(ctx context.Context, cola encolador, cuentaID, ordenID int64) error {
 	_, err := cola.Encolar(ctx, TrabajoAOdoo, payloadOdoo{OrdenID: ordenID},
 		jobs.Opciones{
 			UniqueKey: fmt.Sprintf("%s:%d", TrabajoAOdoo, ordenID),
@@ -128,7 +145,7 @@ func EncolarMontaje(ctx context.Context, cola *jobs.Cola, cuentaID, ordenID int6
 }
 
 // EncolarIngesta pide traer los pedidos nuevos de una cuenta.
-func EncolarIngesta(ctx context.Context, cola *jobs.Cola, cuentaID int64) error {
+func EncolarIngesta(ctx context.Context, cola encolador, cuentaID int64) error {
 	_, err := cola.Encolar(ctx, TrabajoIngerir, payloadIngerir{CuentaID: cuentaID},
 		jobs.Opciones{
 			UniqueKey: fmt.Sprintf("%s:%d", TrabajoIngerir, cuentaID),
@@ -181,6 +198,12 @@ func (s *Servicio) ingerir(ctx context.Context, t jobs.Trabajo) error {
 
 	nuevos := 0
 	maxFecha := desde
+	// Las cuentas a las que hay que mandar el stock que esta ingesta movió.
+	// Se acumulan y se encolan al final, no pedido a pedido: si el worker
+	// atendiera el envío entre dos pedidos de la misma variante, el segundo
+	// descuento se quedaría sin publicar hasta el siguiente horario, que es
+	// justo la ventana que se está cerrando.
+	avisos := map[store.DestinoStock]struct{}{}
 	for _, o := range pedidos {
 		d := store.DatosOrden{
 			CuentaID: p.CuentaID, ExternalID: o.ExternalID, Numero: o.Number,
@@ -222,7 +245,9 @@ func (s *Servicio) ingerir(ctx context.Context, t jobs.Trabajo) error {
 		// acaba de refrescarle el estado del canal y esta es la única pasada
 		// en la que ese cambio se puede notar. Va antes del corte por `nuevo`.
 		if esCancelado(o.Status) {
-			s.cancelar(ctx, ordenID, o)
+			if s.cancelar(ctx, ordenID, o) {
+				s.anotarDestinosDeStock(ctx, avisos, ordenID, o.Number)
+			}
 			continue
 		}
 
@@ -241,6 +266,7 @@ func (s *Servicio) ingerir(ctx context.Context, t jobs.Trabajo) error {
 				"pedido", o.Number, "orden_id", ordenID, "error", err)
 		} else if n > 0 {
 			s.log.Info("stock descontado por venta", "pedido", o.Number, "unidades", n)
+			s.anotarDestinosDeStock(ctx, avisos, ordenID, o.Number)
 		}
 		// El montaje va en su propio trabajo: si Odoo está caído, se
 		// reintenta con backoff sin arrastrar a la ingesta, que ya hizo su
@@ -252,6 +278,10 @@ func (s *Servicio) ingerir(ctx context.Context, t jobs.Trabajo) error {
 			}
 		}
 	}
+	// Antes de avanzar la marca de agua: si avanzarla fallara, el reintento
+	// de la ingesta volvería a ver estos pedidos como ya guardados y no
+	// descontaría —ni avisaría— nada por segunda vez.
+	s.encolarStock(ctx, avisos)
 
 	if err := s.st.ActualizarWatermarkOrdenes(ctx, p.CuentaID, maxFecha, ""); err != nil {
 		return err
@@ -269,7 +299,11 @@ func (s *Servicio) ingerir(ctx context.Context, t jobs.Trabajo) error {
 // (para que no acabe en Odoo un pedido que ya no existe) y dejar constancia.
 // El sale.order que ya esté creado NO se toca: cancelarlo mueve reservas y
 // contabilidad, y eso lo decide una persona.
-func (s *Servicio) cancelar(ctx context.Context, ordenID int64, o channel.Order) {
+//
+// Devuelve si volvió stock a la base, para que la ingesta lo mande a las
+// demás cuentas: una unidad que vuelve a estar disponible y no se publica es
+// una venta que no se hace.
+func (s *Servicio) cancelar(ctx context.Context, ordenID int64, o channel.Order) (hayStock bool) {
 	// La devolución va antes de marcar, y no al revés: si se marcara primero
 	// y la devolución fallara, la marca impediría reintentarla en la
 	// siguiente pasada y esas unidades quedarían apartadas para siempre.
@@ -280,15 +314,16 @@ func (s *Servicio) cancelar(ctx context.Context, ordenID int64, o channel.Order)
 		s.log.Error("no se pudo devolver el stock del pedido cancelado",
 			"pedido", o.Number, "orden_id", ordenID, "error", err)
 	}
+	hayStock = devueltas > 0
 
 	c, err := s.st.MarcarOrdenCancelada(ctx, ordenID, o.Status)
 	if err != nil {
 		s.log.Error("no se pudo marcar el pedido como cancelado",
 			"pedido", o.Number, "orden_id", ordenID, "error", err)
-		return
+		return hayStock
 	}
 	if !c.Cambio {
-		return // ya estaba cancelado: no se repite el aviso
+		return hayStock // ya estaba cancelado: no se repite el aviso
 	}
 	s.log.Warn("pedido cancelado en el canal", "canal", c.Canal, "numero", c.Numero,
 		"unidades_devueltas", devueltas, "odoo_pedido", c.OdooPedidoID)
@@ -296,7 +331,7 @@ func (s *Servicio) cancelar(ctx context.Context, ordenID int64, o channel.Order)
 	// La alerta solo tiene sentido si hay algo que decidir. Si el pedido
 	// nunca llegó a Odoo, cancelarlo no deja nada pendiente para nadie.
 	if c.OdooPedidoID == nil {
-		return
+		return hayStock
 	}
 	cuenta := c.CuentaID
 	mensaje := fmt.Sprintf(
@@ -308,6 +343,53 @@ func (s *Servicio) cancelar(ctx context.Context, ordenID int64, o channel.Order)
 			"odoo_sale_order_id": *c.OdooPedidoID, "estado_canal": o.Status,
 		}); err != nil {
 		s.log.Error("no se pudo crear la alerta de cancelación", "orden_id", ordenID, "error", err)
+	}
+	return hayStock
+}
+
+// anotarDestinosDeStock apunta las cuentas a las que hay que mandar el stock
+// de las variantes de un pedido que acaba de moverlo. Un fallo aquí no tumba
+// la ingesta: el pedido ya está guardado, y el horario reconcilia el stock
+// por hash como hasta ahora; solo se pierde la inmediatez.
+func (s *Servicio) anotarDestinosDeStock(ctx context.Context, avisos map[store.DestinoStock]struct{},
+	ordenID int64, numero string) {
+
+	destinos, err := s.st.DestinosDeStockDeOrden(ctx, ordenID)
+	if err != nil {
+		s.log.Error("no se pudo saber a qué cuentas mandar el stock del pedido",
+			"pedido", numero, "orden_id", ordenID, "error", err)
+		return
+	}
+	for _, d := range destinos {
+		avisos[d] = struct{}{}
+	}
+}
+
+// encolarStock pide el envío de stock a cada cuenta anotada durante la
+// ingesta. Es lo que faltaba para que una venta en un canal bajara el stock
+// en los otros tres en el acto y no en la corrida del día siguiente: el
+// descuento sobre la base ya se hacía, pero nadie lo mandaba.
+//
+// Comparte clave única con lo que encola Planificar, así que un horario que
+// caiga a la vez no manda el mismo stock dos veces. Queda una ventana que la
+// clave no cubre: si el trabajo de una cuenta ya está en ejecución cuando otra
+// ingesta vuelve a moverla, ese segundo aviso se descarta y lo recoge el
+// siguiente horario. Son segundos y dos ventas de la misma variante a la vez.
+func (s *Servicio) encolarStock(ctx context.Context, avisos map[store.DestinoStock]struct{}) {
+	if s.cola == nil || len(avisos) == 0 {
+		return
+	}
+	encolados := 0
+	for d := range avisos {
+		if err := publicar.EncolarStock(ctx, s.cola, d.CuentaID, d.VarianteID); err != nil {
+			s.log.Error("no se pudo encolar el envío de stock a otra cuenta",
+				"cuenta", d.CuentaID, "variante", d.VarianteID, "error", err)
+			continue
+		}
+		encolados++
+	}
+	if encolados > 0 {
+		s.log.Info("stock movido por ventas: envío encolado a las demás cuentas", "envios", encolados)
 	}
 }
 
@@ -787,10 +869,6 @@ func (s *Servicio) productoOdoo(ctx context.Context, varianteID int64) (int64, e
 		return 0, fmt.Errorf("la variante %d no tiene producto de Odoo asociado", varianteID)
 	}
 	return id, nil
-}
-
-func (s *Servicio) adaptador(ctx context.Context, cuentaID int64) (channel.Adapter, error) {
-	return conectores.AdaptadorDeCuenta(ctx, s.stConcreto, s.cif, cuentaID)
 }
 
 // referencia es la clave que ata el pedido de Odoo con el del canal. Va en

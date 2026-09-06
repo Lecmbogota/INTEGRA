@@ -774,6 +774,60 @@ func (s *Store) ReservasAbiertasDeOrden(ctx context.Context, ordenID int64) ([]R
 	return out, filas.Err()
 }
 
+// DestinoStock es una cuenta a la que hay que mandar el stock de una variante.
+type DestinoStock struct {
+	CuentaID   int64
+	VarianteID int64
+}
+
+// DestinosDeStockDeOrden dice a qué otras cuentas hay que mandar el stock de
+// las variantes de un pedido después de descontarlo (o de devolverlo).
+//
+// Descontar sobre variant_stock solo cambia el número que el diff por hash
+// vería en su siguiente planificación, y esa la dispara el horario, una vez al
+// día. Entre la venta y esa corrida los otros canales seguían ofreciendo la
+// unidad vendida: para cerrar la ventana hay que encolar el envío de stock en
+// el acto, y esta consulta dice a dónde.
+//
+// La cuenta del pedido queda fuera: el canal que vendió ya descontó la unidad
+// por su cuenta, y volver a escribirle el stock en ese mismo instante podría
+// pisar una segunda venta que todavía no se ha ingerido. El horario la
+// reconcilia después por hash, como a todas.
+//
+// "Publicada" es lo mismo que para Planificar —hay identificador externo—:
+// sin él el envío de stock no tendría a qué apuntar. Y solo entran las
+// variantes que siguen siendo candidatas, porque el trabajo de stock las lee
+// con UnCandidato y fallaría en vano con las demás.
+func (s *Store) DestinosDeStockDeOrden(ctx context.Context, ordenID int64) ([]DestinoStock, error) {
+	filas, err := s.pool.Query(ctx, `
+		SELECT DISTINCT vcl.channel_account_id, l.variant_id
+		FROM channel_orders o
+		JOIN channel_order_lines l ON l.channel_order_id = o.id
+		     AND l.variant_id IS NOT NULL AND l.quantity > 0
+		JOIN product_variants v ON v.id = l.variant_id AND v.active AND v.sku IS NOT NULL
+		JOIN products p ON p.id = v.product_id AND p.active AND p.excluded_reason IS NULL
+		JOIN variant_channel_listings vcl ON vcl.variant_id = v.id
+		     AND vcl.channel_account_id <> o.channel_account_id
+		JOIN product_channel_listings pcl ON pcl.id = vcl.listing_id AND pcl.external_id IS NOT NULL
+		JOIN channel_accounts a ON a.id = vcl.channel_account_id AND a.active
+		WHERE o.id = $1
+		ORDER BY vcl.channel_account_id, l.variant_id`, ordenID)
+	if err != nil {
+		return nil, fmt.Errorf("buscando a qué cuentas mandar el stock del pedido %d: %w", ordenID, err)
+	}
+	defer filas.Close()
+
+	var out []DestinoStock
+	for filas.Next() {
+		var d DestinoStock
+		if err := filas.Scan(&d.CuentaID, &d.VarianteID); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, filas.Err()
+}
+
 // ------------------------------------------------------------ cancelaciones
 
 // Cancelacion es el resultado de marcar cancelado un pedido.
