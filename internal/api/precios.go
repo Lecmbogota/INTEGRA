@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -54,10 +55,13 @@ func (s *Server) cancelarOferta(w http.ResponseWriter, r *http.Request) {
 		escribir(w, http.StatusBadRequest, map[string]string{"error": "identificador inválido"})
 		return
 	}
+	antes, _ := s.st.OfertaPorID(r.Context(), id)
 	if err := s.st.CancelarOferta(r.Context(), id); err != nil {
 		escribir(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
 		return
 	}
+	s.auditar(r, "cancel", "offers", strconv.FormatInt(id, 10), antes,
+		map[string]any{"active": false})
 	escribir(w, http.StatusOK, map[string]string{"estado": "cancelada"})
 }
 
@@ -106,11 +110,21 @@ func (s *Server) guardarReglaPrecio(w http.ResponseWriter, r *http.Request) {
 	}
 	req.ChannelAccountID = cuentaID
 
+	var antes any
+	accion := "create"
+	if req.ID != 0 {
+		accion = "update"
+		if previa, err := s.st.ReglaPrecioPorID(r.Context(), req.ID); err == nil && previa != nil {
+			antes = previa
+		}
+	}
+
 	id, err := s.st.GuardarReglaPrecioCanal(r.Context(), req)
 	if err != nil {
 		s.fallo(w, err)
 		return
 	}
+	s.auditar(r, accion, "channel_price_rules", strconv.FormatInt(id, 10), antes, req)
 
 	escribir(w, http.StatusOK, map[string]any{
 		"ok": true,
@@ -158,10 +172,16 @@ func (s *Server) guardarSueloCosto(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	antes, err := s.st.SueloCostoDeCuenta(r.Context(), cuentaID)
+	if err != nil {
+		escribir(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
 	if err := s.st.ActualizarSueloCosto(r.Context(), cuentaID, req); err != nil {
 		escribir(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
 		return
 	}
+	s.auditar(r, "update", "channel_accounts", strconv.FormatInt(cuentaID, 10), antes, req)
 
 	total, err := s.st.RecalcularPreciosCuenta(r.Context(), cuentaID)
 	if err != nil {
@@ -191,12 +211,21 @@ func (s *Server) guardarOverridePrecio(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.st.GuardarOverridePrecio(r.Context(), varianteID, req.ChannelAccountID, req.Price, req.Reason, nil); err != nil {
+	antes, _ := s.st.OverridePrecioDe(r.Context(), varianteID, req.ChannelAccountID)
+	if err := s.st.GuardarOverridePrecio(r.Context(), varianteID, req.ChannelAccountID, req.Price, req.Reason, usuarioDe(r)); err != nil {
 		s.fallo(w, err)
 		return
 	}
+	s.auditar(r, "update", "price_overrides", refOverride(varianteID, req.ChannelAccountID), antes, req)
 
 	escribir(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// refOverride identifica el override en la auditoría: un precio manual es de
+// una variante EN una cuenta, así que la clave tiene que llevar las dos o el
+// registro no dice en qué canal se cambió el precio.
+func refOverride(varianteID, cuentaID int64) string {
+	return fmt.Sprintf("%d:%d", varianteID, cuentaID)
 }
 
 func (s *Server) eliminarOverridePrecio(w http.ResponseWriter, r *http.Request) {
@@ -213,10 +242,12 @@ func (s *Server) eliminarOverridePrecio(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	antes, _ := s.st.OverridePrecioDe(r.Context(), varianteID, cuentaID)
 	if err := s.st.EliminarOverridePrecio(r.Context(), varianteID, cuentaID); err != nil {
 		s.fallo(w, err)
 		return
 	}
+	s.auditar(r, "delete", "price_overrides", refOverride(varianteID, cuentaID), antes, nil)
 
 	escribir(w, http.StatusOK, map[string]any{"ok": true})
 }
@@ -241,11 +272,12 @@ func (s *Server) guardarOferta(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, err := s.st.GuardarOferta(r.Context(), varianteID, req.ChannelAccountID, req.OfferPrice, req.StartsAt, req.EndsAt, nil)
+	id, err := s.st.GuardarOferta(r.Context(), varianteID, req.ChannelAccountID, req.OfferPrice, req.StartsAt, req.EndsAt, usuarioDe(r))
 	if err != nil {
 		s.fallo(w, err)
 		return
 	}
+	s.auditar(r, "create", "offers", strconv.FormatInt(id, 10), nil, req)
 
 	escribir(w, http.StatusOK, map[string]any{
 		"ok": true,

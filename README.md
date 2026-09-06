@@ -325,6 +325,17 @@ avisan y sí se retienen.
 Un coste desconocido (cero en Odoo, lo normal mientras el producto no se haya
 comprado nunca) no cuenta como pérdida y no frena nada.
 
+## Registro de auditoría
+
+Toda escritura sobre dinero o acceso queda en `audit_logs` con el usuario, la
+IP, el valor anterior y el nuevo: precios de ficha, ediciones masivas, cargas
+de plantilla, reglas de canal, precios manuales, promociones, comisiones de
+canal, credenciales de canal y conexiones a Odoo. Se consulta en
+`GET /api/auditoria` (solo administradores).
+
+Las credenciales y las API keys nunca se copian ahí: queda constancia de que se
+cambiaron, nunca de cuáles son.
+
 ## Actualización masiva por plantilla
 
 Para cambiar cientos de precios o programar muchas promociones a la vez, en

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"time"
 )
 
@@ -49,8 +50,8 @@ func (s *Store) RegistrarAuditoria(ctx context.Context, userID *int64, action, e
 	}
 
 	var ipParam *string
-	if ip != "" {
-		ipParam = &ip
+	if sola := soloDireccion(ip); sola != "" {
+		ipParam = &sola
 	}
 	var entityIDParam *string
 	if entityID != "" {
@@ -62,6 +63,28 @@ func (s *Store) RegistrarAuditoria(ctx context.Context, userID *int64, action, e
 		VALUES ($1, $2, $3, $4, $5, $6, $7::inet)`,
 		userID, action, entity, entityIDParam, beforeJSON, afterJSON, ipParam)
 	return err
+}
+
+// soloDireccion se queda con la IP y tira el puerto.
+//
+// Todos los llamantes pasan r.RemoteAddr, que es "10.0.0.4:53124", y la
+// columna es de tipo inet: el INSERT fallaba en el cast y, como el registro de
+// auditoría se escribe sin dejar que un fallo tumbe la operación auditada, no
+// se guardaba absolutamente nada y nadie se enteraba. Lo que no se puede
+// parsear se descarta: quedarse sin la IP es peor que quedarse sin el evento.
+func soloDireccion(ip string) string {
+	if ip == "" {
+		return ""
+	}
+	if host, _, err := net.SplitHostPort(ip); err == nil {
+		ip = host
+	}
+	// Una IPv6 llega entre corchetes cuando trae puerto; net.ParseIP los
+	// rechaza, así que se comprueba lo ya limpio.
+	if net.ParseIP(ip) == nil {
+		return ""
+	}
+	return ip
 }
 
 // ListarAuditoria consulta los registros de auditoría ordenados del más reciente al más antiguo.
