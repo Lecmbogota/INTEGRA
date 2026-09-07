@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, fecha, num, type FiltroMediateca, type ImagenBanco, type OrdenMediateca, type PaginaImagenes, type Producto } from './api'
 import { EditorFoto } from './EditorFoto'
+import { Guia } from './Guia'
+import { PASOS_ASIGNAR } from './guias/mediateca'
 
 // El banco de imágenes visto entero, no producto a producto.
 //
@@ -134,10 +136,10 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
   // lo que no se quería.
   useEffect(() => { setSeleccion(new Set()) }, [filtro, orden, busqueda, offset])
 
-  // Escape cierra lo que esté abierto encima.
+  // Escape cierra el visor. El editor y el diálogo de asignar cierran con
+  // su propio Escape, que sabe si tienen la ayuda abierta encima.
   useEffect(() => {
-    const h = (e: KeyboardEvent) => { if (e.key === 'Escape') { setVisor(null); setAsignando(null) } }
-    // El editor cierra con su propio Escape.
+    const h = (e: KeyboardEvent) => { if (e.key === 'Escape') setVisor(null) }
     window.addEventListener('keydown', h)
     return () => window.removeEventListener('keydown', h)
   }, [])
@@ -229,7 +231,7 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
           {/* La regla que hace útil subir en masa: la carpeta del fabricante
               viene como «SKU-1.jpg», «SKU-2.jpg», y así cada foto cae sola en
               su producto. Lo que no case con ningún SKU queda en huérfanas. */}
-          <label className="casilla" style={{ marginTop: 10 }}>
+          <label className="casilla" style={{ marginTop: 10 }} data-guia="med-por-nombre">
             <input type="checkbox" checked={porNombre} onChange={(e) => setPorNombre(e.target.checked)} />
             Asignar cada foto al producto cuyo SKU lleve en el nombre del archivo
             <span className="tenue"> (HDWT860UZSVA-2.jpg → HDWT860UZSVA)</span>
@@ -246,11 +248,11 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
 
       {pagina && (
         <div className="tarjetas">
-          <Cifra etiqueta="Productos sin foto" valor={num(pagina.productos_sin_foto)}
+          <Cifra etiqueta="Productos sin foto" valor={num(pagina.productos_sin_foto)} guia="med-cifra-sin-foto"
             pie="No pueden publicarse en ningún canal" tono={pagina.productos_sin_foto > 0 ? 'error' : 'ok'} />
-          <Cifra etiqueta="Fotos pequeñas" valor={num(pagina.pequenas)}
+          <Cifra etiqueta="Fotos pequeñas" valor={num(pagina.pequenas)} guia="med-cifra-pequenas"
             pie="Por debajo de 600 px: MercadoLibre las rechaza" tono={pagina.pequenas > 0 ? 'error' : 'ok'} />
-          <Cifra etiqueta="Disco en huérfanas" valor={tamano(pagina.bytes_huerfanos)}
+          <Cifra etiqueta="Disco en huérfanas" valor={tamano(pagina.bytes_huerfanos)} guia="med-cifra-huerfanas"
             pie="Fotos que no usa ningún producto" />
         </div>
       )}
@@ -259,18 +261,18 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
         <h2>Banco de imágenes{pagina ? ` · ${num(total)}` : ''}</h2>
         <div className="cuerpo">
           <div className="filtros">
-            <div className="grupo-badges">
+            <div className="grupo-badges" data-guia="med-filtros">
               {FILTROS.map(([id, nombre, pista]) => (
                 <button key={id} type="button" className={`badge ${filtro === id ? 'activo' : ''}`}
                   title={pista} onClick={() => { setFiltro(id); setOffset(0) }}>{nombre}</button>
               ))}
             </div>
-            <input type="search" className="crece" placeholder="Buscar por SKU o nombre del producto"
+            <input type="search" className="crece" placeholder="Buscar por SKU o nombre del producto" data-guia="med-buscar"
               value={busqueda} onChange={(e) => { setBusqueda(e.target.value); setOffset(0) }} />
           </div>
           <div className="filtros">
             <span className="tenue">Orden:</span>
-            <div className="grupo-badges">
+            <div className="grupo-badges" data-guia="med-orden">
               {ORDENES.map(([id, nombre]) => (
                 <button key={id} type="button" className={`badge ${orden === id ? 'activo' : ''}`}
                   onClick={() => { setOrden(id); setOffset(0) }}>{nombre}</button>
@@ -282,7 +284,7 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
               borrar solo para las que no usa nadie, porque el servidor
               rechaza el resto y no tiene sentido ofrecerlo. */}
           {items.length > 0 && (
-            <div className="filtros">
+            <div className="filtros" data-guia="med-lote">
               <label className="casilla">
                 <input type="checkbox" checked={todasMarcadas} onChange={marcarTodas} />
                 Marcar las {num(items.length)} de esta página
@@ -321,9 +323,9 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
                 const pequena = Math.min(i.ancho, i.alto) < 600
                 const marcada = seleccion.has(i.id)
                 return (
-                  <figure key={i.id} className={`${huerfana ? 'huerfana' : ''} ${marcada ? 'seleccionada' : ''}`}>
+                  <figure key={i.id} className={`${huerfana ? 'huerfana' : ''} ${marcada ? 'seleccionada' : ''}`} data-guia="med-tarjeta">
                     <img className="abrible" src={`/imagenes/${i.sha256}/miniatura_300`} alt="" loading="lazy"
-                      title="Ver en grande" onClick={() => setVisor(i)} />
+                      title="Ver en grande" onClick={() => setVisor(i)} data-guia="med-miniatura" />
                     <figcaption>
                       <span className="dim">
                         <input type="checkbox" checked={marcada} onChange={() => alternar(i.id)}
@@ -336,7 +338,7 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
                       </span>
                       {/* Cada producto que la usa es un enlace a su vista previa,
                           que es donde se sube, se quita o se elige portada. */}
-                      <div className="etiquetas">
+                      <div className="etiquetas" data-guia="med-productos">
                         {huerfana
                           ? <span className="pastilla aviso">Sin producto</span>
                           : i.productos.map((p) => (
@@ -347,7 +349,7 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
                             </button>
                           ))}
                       </div>
-                      <div className="acciones">
+                      <div className="acciones" data-guia="med-acciones">
                         <button onClick={() => setEditando(i)} disabled={ocupada}
                           title="Recortar, girar, encajar en cuadrado, cambiar formato">
                           Editar
@@ -370,7 +372,7 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
           )}
 
           {pagina && total > POR_PAGINA && (
-            <div className="paginacion">
+            <div className="paginacion" data-guia="med-paginacion">
               <button onClick={() => setOffset(Math.max(0, offset - POR_PAGINA))} disabled={offset === 0 || cargando}>
                 ← Anterior
               </button>
@@ -443,6 +445,15 @@ function DialogoAsignar({ imagenes, ocupada, onCerrar, onConfirmar }: {
   const [buscando, setBuscando] = useState(false)
   const [elegido, setElegido] = useState<Producto | null>(null)
   const [principal, setPrincipal] = useState(false)
+  const [ayuda, setAyuda] = useState(false)
+
+  // Escape cierra el diálogo, salvo que la ayuda esté abierta encima: ahí
+  // cierra la ayuda y el diálogo se queda.
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => { if (e.key === 'Escape' && !ayuda && !ocupada) onCerrar() }
+    window.addEventListener('keydown', h)
+    return () => window.removeEventListener('keydown', h)
+  }, [onCerrar, ayuda, ocupada])
 
   useEffect(() => {
     if (q.trim().length < 2) { setCandidatos([]); setTotal(0); return }
@@ -464,7 +475,7 @@ function DialogoAsignar({ imagenes, ocupada, onCerrar, onConfirmar }: {
   const varias = imagenes.length > 1
 
   function teclado(e: React.KeyboardEvent) {
-    if (elegibles.length === 0) return
+    if (ayuda || elegibles.length === 0) return
     const i = elegido ? elegibles.findIndex((p) => p.id === elegido.id) : -1
     if (e.key === 'ArrowDown') { e.preventDefault(); setElegido(elegibles[Math.min(elegibles.length - 1, i + 1)]) }
     if (e.key === 'ArrowUp') { e.preventDefault(); setElegido(elegibles[Math.max(0, i - 1)]) }
@@ -483,20 +494,24 @@ function DialogoAsignar({ imagenes, ocupada, onCerrar, onConfirmar }: {
                 : `${imagenes[0].ancho}×${imagenes[0].alto} · ${tamano(imagenes[0].bytes)}`}
             </div>
           </div>
-          <button onClick={onCerrar} disabled={ocupada}>Cerrar ✕</button>
+          <div className="grupo-acciones">
+            <button type="button" className="mini" title="Cómo funciona esta pantalla" onClick={() => setAyuda(true)}>?</button>
+            <button onClick={onCerrar} disabled={ocupada}>Cerrar ✕</button>
+          </div>
         </header>
+        {ayuda && <Guia pasos={PASOS_ASIGNAR} nombre="Asignar a producto" onCerrar={() => setAyuda(false)} />}
 
         <div className="dialogo-asignar">
           {/* Las miniaturas de lo que se va a asignar: con varias marcadas,
               ver cuáles son evita enlazar la moto junto con la cámara. */}
-          <div className="tira-miniaturas">
+          <div className="tira-miniaturas" data-guia="med-asignar-tira">
             {imagenes.map((i, n) => (
               <img key={i.id} src={`/imagenes/${i.sha256}/miniatura_300`} alt=""
                 title={`${n + 1} · ${i.ancho}×${i.alto}`} />
             ))}
           </div>
 
-          <input type="search" autoFocus className="buscador-producto"
+          <input type="search" autoFocus className="buscador-producto" data-guia="med-asignar-buscador"
             placeholder="Referencia o parte del nombre (mínimo 2 letras)"
             value={q} onChange={(e) => { setQ(e.target.value); setElegido(null) }} />
 
@@ -531,7 +546,7 @@ function DialogoAsignar({ imagenes, ocupada, onCerrar, onConfirmar }: {
             </div>
           )}
 
-          <label className="casilla">
+          <label className="casilla" data-guia="med-asignar-portada">
             <input type="checkbox" checked={principal} onChange={(e) => setPrincipal(e.target.checked)} />
             {varias ? 'La primera como portada' : 'Ponerla como portada'}
           </label>
@@ -539,7 +554,7 @@ function DialogoAsignar({ imagenes, ocupada, onCerrar, onConfirmar }: {
 
         <div className="hoja-pie">
           <button onClick={onCerrar} disabled={ocupada}>Cancelar</button>
-          <button className="primario" disabled={!elegido || ocupada}
+          <button className="primario" disabled={!elegido || ocupada} data-guia="med-asignar-confirmar"
             onClick={() => elegido && onConfirmar(elegido, principal)}>
             {ocupada ? 'Asignando…' : elegido ? `Asignar a ${elegido.sku || elegido.nombre}` : 'Asignar'}
           </button>
@@ -549,11 +564,11 @@ function DialogoAsignar({ imagenes, ocupada, onCerrar, onConfirmar }: {
   )
 }
 
-function Cifra({ etiqueta, valor, pie, tono }: {
-  etiqueta: string; valor: string; pie?: string; tono?: 'ok' | 'error'
+function Cifra({ etiqueta, valor, pie, tono, guia }: {
+  etiqueta: string; valor: string; pie?: string; tono?: 'ok' | 'error'; guia?: string
 }) {
   return (
-    <div className="tarjeta">
+    <div className="tarjeta" data-guia={guia}>
       <div className="etiqueta">{etiqueta}</div>
       <div className={`valor ${tono ?? ''}`}>{valor}</div>
       {pie && <div className="pie">{pie}</div>}

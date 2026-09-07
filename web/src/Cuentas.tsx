@@ -96,7 +96,7 @@ export function Cuentas() {
             <div className="fila-cuenta fila-apilable">
               <div className="expande-recorta">
                 <div>{c.nombre}</div>
-                <div className="tenue mini-texto">
+                <div className="tenue mini-texto" data-guia="can-conexion">
                   {!cuenta
                     ? 'sin conectar'
                     : cuenta.probada_ok === null
@@ -122,16 +122,16 @@ export function Cuentas() {
                 {cuenta && cuenta.probada_ok === false && <span className="pastilla bloqueante">Falla</span>}
                 {cuenta && cuenta.bodegas === 0 && <span className="pastilla bloqueante">Sin bodegas</span>}
                 {cuenta && (
-                  <button onClick={() => setBodegasDe(cuenta)}>
+                  <button onClick={() => setBodegasDe(cuenta)} data-guia="can-bodegas">
                     {cuenta.bodegas === 0 ? 'Asignar bodegas' : 'Bodegas'}
                   </button>
                 )}
                 {cuenta && (
-                  <button onClick={() => void probar(cuenta.id)} disabled={probando === cuenta.id}>
+                  <button onClick={() => void probar(cuenta.id)} disabled={probando === cuenta.id} data-guia="can-probar">
                     {probando === cuenta.id ? 'Probando…' : 'Probar'}
                   </button>
                 )}
-                <button onClick={() => setAbriendo(c.codigo)}>
+                <button onClick={() => setAbriendo(c.codigo)} data-guia="can-conectar">
                   {cuenta ? 'Reemplazar' : 'Conectar'}
                 </button>
               </div>
@@ -207,9 +207,9 @@ function SueloDeCosto({ cuenta, onGuardado }: { cuenta: CuentaCanal; onGuardado:
       </div>
       <div className="grupo-acciones">
         <input value={margen} onChange={(e) => setMargen(e.target.value)}
-          inputMode="decimal" size={4} aria-label="Margen mínimo en por ciento" />
+          inputMode="decimal" size={4} aria-label="Margen mínimo en por ciento" data-guia="can-margen" />
         <span className="tenue mini-texto">%</span>
-        <label className="tenue mini-texto">
+        <label className="tenue mini-texto" data-guia="can-bloquear">
           <input type="checkbox" checked={bloquear}
             onChange={(e) => setBloquear(e.target.checked)} /> No publicar
         </label>

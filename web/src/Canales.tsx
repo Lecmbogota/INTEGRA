@@ -64,7 +64,7 @@ export function Canales() {
   }
 
   return (
-    <section className="panel">
+    <section className="panel" data-guia="can-comisiones">
       <h2>Comisiones por canal</h2>
       <div className="cuerpo">
         <div className="nota-previa">
@@ -79,7 +79,7 @@ export function Canales() {
               <thead>
                 <tr>
                   <th>Canal</th><th className="num">Comisión %</th><th className="num">Costo fijo</th>
-                  <th className="num">$100.000 →</th><th></th>
+                  <th className="num" data-guia="can-ejemplo">$100.000 →</th><th></th>
                 </tr>
               </thead>
               <tbody>

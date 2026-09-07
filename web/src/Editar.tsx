@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api, money, type EdicionProducto, type Marca, type Producto } from './api'
 import { Promocion } from './Promocion'
+import { Guia } from './Guia'
+import { PASOS_EDITAR } from './guias/editar'
 
 // Límite de caracteres del título en cada canal. MercadoLibre es el que
 // aprieta: 60 caracteres obligan a decidir qué sobra, y el título es lo
@@ -55,6 +57,7 @@ export function Editar({ producto, marcas, onCerrar, onGuardado, pestanaInicial 
 
   const [guardando, setGuardando] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [ayuda, setAyuda] = useState(false)
 
   // Peso volumétrico: es lo que de verdad cobran los canales cuando supera al
   // peso real, y por eso se muestra en vivo mientras se teclean las medidas.
@@ -175,15 +178,19 @@ export function Editar({ producto, marcas, onCerrar, onGuardado, pestanaInicial 
   return (
     <div className="capa" onClick={intentarCerrar}>
       <div className="hoja hoja-editor" onClick={(e) => e.stopPropagation()}>
-        <header className="hoja-cabecera">
+        <header className="hoja-cabecera" data-guia="edit-cabecera">
           <div>
             <h2>Editar producto</h2>
             <div className="sub">{producto.sku || '(sin referencia)'} · {producto.nombre}</div>
           </div>
-          <button onClick={intentarCerrar} disabled={guardando}>Cerrar ✕</button>
+          <div className="grupo-acciones">
+            <button className="mini" type="button" title="Cómo funciona esta pantalla"
+              aria-label="Cómo funciona esta pantalla" onClick={() => setAyuda(true)}>?</button>
+            <button onClick={intentarCerrar} disabled={guardando}>Cerrar ✕</button>
+          </div>
         </header>
 
-        <div className="pestanas">
+        <div className="pestanas" data-guia="edit-pestanas">
           {([
             ['venta', 'Venta'], ['promocion', 'Promoción'], ['titulos', 'Títulos'],
             ['envio', 'Envío'], ['interno', 'Interno'],
@@ -197,7 +204,7 @@ export function Editar({ producto, marcas, onCerrar, onGuardado, pestanaInicial 
 
         {pestana === 'venta' && (
           <div className="form-edicion">
-            <label>
+            <label data-guia="edit-precio">
               <span>Precio de venta (COP)</span>
               <input inputMode="decimal" placeholder="sin precio"
                 value={precio} onChange={(e) => setPrecio(e.target.value)} />
@@ -210,7 +217,7 @@ export function Editar({ producto, marcas, onCerrar, onGuardado, pestanaInicial 
               )}
             </label>
 
-            <label>
+            <label data-guia="edit-marca">
               <span>Marca</span>
               <input list="marcas-conocidas" placeholder="sin marca"
                 value={marca} onChange={(e) => setMarca(e.target.value)} />
@@ -219,7 +226,7 @@ export function Editar({ producto, marcas, onCerrar, onGuardado, pestanaInicial 
               </datalist>
             </label>
 
-            <label>
+            <label data-guia="edit-condicion">
               <span>Condición</span>
               <select value={condicion} onChange={(e) => setCondicion(e.target.value)}>
                 <option value="nuevo">Nuevo</option>
@@ -228,14 +235,14 @@ export function Editar({ producto, marcas, onCerrar, onGuardado, pestanaInicial 
               </select>
             </label>
 
-            <label>
+            <label data-guia="edit-ean">
               <span>Código de barras (EAN)</span>
               <input value={barcode} placeholder="sin código"
                 onChange={(e) => setBarcode(e.target.value)} />
               <small className="tenue">Falabella lo exige para publicar</small>
             </label>
 
-            <label>
+            <label data-guia="edit-garantia">
               <span>Garantía (meses)</span>
               <input inputMode="numeric" placeholder="sin garantía"
                 value={garantiaMeses} onChange={(e) => setGarantiaMeses(e.target.value)} />
@@ -251,13 +258,13 @@ export function Editar({ producto, marcas, onCerrar, onGuardado, pestanaInicial 
               </select>
             </label>
 
-            <label className="ancha">
+            <label className="ancha" data-guia="edit-descripcion">
               <span>Descripción de venta</span>
               <textarea rows={7} placeholder="Descripción que verán los canales…"
                 value={descripcion} onChange={(e) => setDescripcion(e.target.value)} />
             </label>
 
-            <label className="casilla ancha">
+            <label className="casilla ancha" data-guia="edit-excluir">
               <input type="checkbox" checked={excluido}
                 onChange={(e) => setExcluido(e.target.checked)} />
               Excluir del catálogo publicable
@@ -362,12 +369,14 @@ export function Editar({ producto, marcas, onCerrar, onGuardado, pestanaInicial 
           </div>
         )}
 
-        <footer className="hoja-pie">
+        <footer className="hoja-pie" data-guia="edit-pie">
           <button onClick={intentarCerrar} disabled={guardando}>Cancelar</button>
           <button className="primario" onClick={() => void guardar()} disabled={guardando || !sucio}>
             {guardando ? 'Guardando…' : sucio ? 'Guardar cambios' : 'Sin cambios que guardar'}
           </button>
         </footer>
+
+        {ayuda && <Guia pasos={PASOS_EDITAR} nombre="Editar producto" onCerrar={() => setAyuda(false)} />}
       </div>
     </div>
   )

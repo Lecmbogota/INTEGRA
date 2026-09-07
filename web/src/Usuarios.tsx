@@ -69,7 +69,7 @@ export function Usuarios() {
           <h1 className="titulo-seccion">Usuarios</h1>
           <div className="sub">Quién entra a Integra y qué puede hacer</div>
         </div>
-        <button className="primario" onClick={() => setEditando('nuevo')}>Nuevo usuario</button>
+        <button className="primario" onClick={() => setEditando('nuevo')} data-guia="usr-nuevo">Nuevo usuario</button>
       </header>
 
       {error && <div className="aviso-caja">{error}</div>}
@@ -82,11 +82,11 @@ export function Usuarios() {
 
           {usuarios.length > 0 && (
             <div className="tabla-envoltorio">
-              <table className="tabla-tarjetas">
+              <table className="tabla-tarjetas" data-guia="usr-tabla">
                 <thead>
                   <tr>
                     <th>Nombre</th><th>Correo</th><th>Rol</th>
-                    <th className="oculto-movil">Última entrada</th><th>Estado</th><th></th>
+                    <th className="oculto-movil">Última entrada</th><th data-guia="usr-estado">Estado</th><th></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -104,8 +104,8 @@ export function Usuarios() {
                           : <span className="pastilla dudosa">Sin acceso</span>}
                       </td>
                       <td className="acciones-fila">
-                        <button onClick={() => setEditando(u)}>Editar</button>
-                        <button onClick={() => void alternarAcceso(u)} disabled={ocupado === u.id}>
+                        <button onClick={() => setEditando(u)} data-guia="usr-editar">Editar</button>
+                        <button onClick={() => void alternarAcceso(u)} disabled={ocupado === u.id} data-guia="usr-acceso">
                           {u.active ? 'Quitar acceso' : 'Devolver acceso'}
                         </button>
                       </td>
@@ -118,7 +118,7 @@ export function Usuarios() {
         </div>
       </section>
 
-      <section className="panel">
+      <section className="panel" data-guia="usr-roles">
         <h2>Qué puede cada rol</h2>
         <div className="cuerpo">
           {ROLES.map((r) => (
@@ -132,7 +132,7 @@ export function Usuarios() {
         </div>
       </section>
 
-      <div className="nota-previa">
+      <div className="nota-previa" data-guia="usr-nota">
         Quitar el acceso no borra a la persona: lo que hizo sigue en la auditoría, que es
         justo para lo que sirve. Para eliminarla del todo hay que usar
         <code className="bloque-cmd">integra borrar-usuario &lt;correo&gt; --confirmar</code>

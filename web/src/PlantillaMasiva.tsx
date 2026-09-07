@@ -1,5 +1,7 @@
 import { useRef, useState } from 'react'
 import { api, money, num, type Categoria, type FiltroCatalogo, type Marca, type ResultadoPlantilla } from './api'
+import { Guia } from './Guia'
+import { PASOS_PLANTILLA } from './guias/plantilla'
 
 // Actualización masiva de precios y promociones por hoja de cálculo.
 //
@@ -40,6 +42,7 @@ export function PlantillaMasiva({ filtro, total, marcas, categorias, onFiltrar, 
   const entrada = useRef<HTMLInputElement>(null)
   // Las categorías pueden ser decenas: se enseñan ocho y el resto a demanda.
   const [verTodas, setVerTodas] = useState(false)
+  const [ayuda, setAyuda] = useState(false)
 
   const hayFiltro = !!(filtro.q || filtro.marca || filtro.categoria ||
     filtro.problemas || filtro.excluidos || filtro.sin_precio || filtro.sin_publicar ||
@@ -129,12 +132,16 @@ export function PlantillaMasiva({ filtro, total, marcas, categorias, onFiltrar, 
   return (
     <div className="capa" onClick={cerrar}>
       <div className="hoja hoja-plantilla" onClick={(e) => e.stopPropagation()}>
-        <header className="hoja-cabecera">
+        <header className="hoja-cabecera" data-guia="plan-cabecera">
           <div>
             <h2>Actualización masiva por plantilla</h2>
             <div className="sub">Precios y promociones de muchos productos a la vez, desde Excel</div>
           </div>
-          <button onClick={cerrar} disabled={ocupado !== null}>Cerrar ✕</button>
+          <div className="grupo-acciones">
+            <button className="mini" type="button" title="Cómo funciona esta pantalla"
+              aria-label="Cómo funciona esta pantalla" onClick={() => setAyuda(true)}>?</button>
+            <button onClick={cerrar} disabled={ocupado !== null}>Cerrar ✕</button>
+          </div>
         </header>
 
         {error && <div className="aviso-caja">{error}</div>}
@@ -145,7 +152,7 @@ export function PlantillaMasiva({ filtro, total, marcas, categorias, onFiltrar, 
         </p>
 
         <ol className="pasos">
-          <li className={previa ? 'hecho' : 'activo'}>
+          <li className={previa ? 'hecho' : 'activo'} data-guia="plan-paso1">
             <div className="paso-titulo">1. Descarga la plantilla</div>
             <p className="tenue">
               Trae <strong>{num(total)}</strong> productos {hayFiltro ? 'del filtro que tienes puesto' : 'del catálogo entero'},
@@ -159,7 +166,7 @@ export function PlantillaMasiva({ filtro, total, marcas, categorias, onFiltrar, 
                 opciones y no deja ver de un vistazo qué hay ni combinar dos.
                 Aquí se ve todo y se pulsa lo que se quiere. */}
             <div className="filtros-plantilla">
-              <div className="grupo-badges">
+              <div className="grupo-badges" data-guia="plan-marcas">
                 <span className="etiqueta-grupo">Marca</span>
                 {marcas.map((m) => (
                   <button key={m.codigo}
@@ -170,7 +177,7 @@ export function PlantillaMasiva({ filtro, total, marcas, categorias, onFiltrar, 
                 ))}
               </div>
 
-              <div className="grupo-badges">
+              <div className="grupo-badges" data-guia="plan-categorias">
                 <span className="etiqueta-grupo">Categoría</span>
                 {categorias.slice(0, verTodas ? categorias.length : 8).map((c) => (
                   <button key={c.nombre}
@@ -187,7 +194,7 @@ export function PlantillaMasiva({ filtro, total, marcas, categorias, onFiltrar, 
                 )}
               </div>
 
-              <div className="grupo-badges">
+              <div className="grupo-badges" data-guia="plan-falta">
                 <span className="etiqueta-grupo">Le falta</span>
                 {CONDICIONES.map((c) => (
                   <button key={c.clave}
@@ -218,7 +225,7 @@ export function PlantillaMasiva({ filtro, total, marcas, categorias, onFiltrar, 
                 })}>Quitar todos</button>
               </div>
             )}
-            <button onClick={() => void descargar()} disabled={ocupado !== null}>
+            <button onClick={() => void descargar()} disabled={ocupado !== null} data-guia="plan-descargar">
               {ocupado === 'descarga' ? 'Preparando…' : 'Descargar plantilla (.xlsx)'}
             </button>
           </li>
@@ -236,7 +243,7 @@ export function PlantillaMasiva({ filtro, total, marcas, categorias, onFiltrar, 
                 e.target.value = ''
                 if (f) void revisar(f)
               }} />
-            <button onClick={() => entrada.current?.click()} disabled={ocupado !== null}>
+            <button onClick={() => entrada.current?.click()} disabled={ocupado !== null} data-guia="plan-elegir">
               {ocupado === 'revision' ? 'Revisando…' : archivo ? 'Cambiar archivo' : 'Elegir archivo…'}
             </button>
             {archivo && (
@@ -355,7 +362,7 @@ export function PlantillaMasiva({ filtro, total, marcas, categorias, onFiltrar, 
           )}
         </ol>
 
-        <footer className="hoja-pie">
+        <footer className="hoja-pie" data-guia="plan-pie">
           <button onClick={cerrar} disabled={ocupado !== null}>
             {previa?.aplicado ? 'Cerrar' : 'Cancelar'}
           </button>
@@ -367,6 +374,8 @@ export function PlantillaMasiva({ filtro, total, marcas, categorias, onFiltrar, 
             </button>
           )}
         </footer>
+
+        {ayuda && <Guia pasos={PASOS_PLANTILLA} nombre="Actualización por plantilla" onCerrar={() => setAyuda(false)} />}
       </div>
     </div>
   )

@@ -35,7 +35,7 @@ export function Atributos() {
 
   return (
     <>
-      <header className="principal">
+      <header className="principal" data-guia="attr-cabecera">
         <div>
           <h1 className="titulo-seccion">Atributos</h1>
           <div className="sub">
@@ -49,9 +49,11 @@ export function Atributos() {
         const pct = r && r.con_categoria > 0
           ? Math.round((r.completos / r.con_categoria) * 100) : 0
         return (
-          <section key={c.codigo} className="panel">
+          <section key={c.codigo} className="panel" data-guia="attr-resumen">
             <h2>{c.nombre}</h2>
-            <div className="cuerpo">
+            {/* El recorrido resalta el primer attr-tarjetas que haya: el de
+                MercadoLibre si tiene categorías, si no el de Falabella. */}
+            <div className="cuerpo" data-guia="attr-tarjetas">
               {cargando ? (
                 <div className="vacio">Cargando…</div>
               ) : fallos[c.codigo] ? (
@@ -79,13 +81,13 @@ export function Atributos() {
         )
       })}
 
-      <div className="nota-previa">
+      <div className="nota-previa" data-guia="attr-nota-tiendas">
         <strong>Shopify y WooCommerce no aparecen</strong> porque son tiendas propias:
         no exigen atributos para publicar. Lo que allí se ve como «especificaciones»
         sale del texto del producto.
       </div>
 
-      <div className="nota-previa">
+      <div className="nota-previa" data-guia="attr-nota-deduccion">
         Los valores se deducen de lo que Integra ya sabe: la marca, el SKU y las
         especificaciones extraídas del nombre. <strong>Nunca se inventan</strong> — un
         atributo que no se puede deducir queda vacío para que lo escribas tú, porque un
@@ -93,7 +95,7 @@ export function Atributos() {
         Abre cualquier producto desde <strong>Productos</strong> para completarlos.
       </div>
 
-      <div className="nota-previa">
+      <div className="nota-previa" data-guia="attr-nota-refrescar">
         Para refrescar los requisitos desde MercadoLibre y volver a deducir, ejecuta:
         <code className="bloque-cmd">integra atributos</code>
       </div>
@@ -175,12 +177,12 @@ export function PanelAtributos({ varianteId }: { varianteId: number }) {
   const faltan = attrs.filter((a) => a.obligatorio && !a.value_name.trim()).length
 
   return (
-    <div className="competencia">
+    <div className="competencia" data-guia="attr-panel">
       {/* En el móvil las tres piezas de la cabecera no caben en una línea; con
           apila-movil se ponen una debajo de otra en vez de estrujarse. */}
       <div className="competencia-cabecera fila apila-movil">
         <strong>Atributos del canal</strong>
-        <div className="pestanas pestanas-mini expande">
+        <div className="pestanas pestanas-mini expande" data-guia="attr-panel-canal">
           {CANALES_CON_ATRIBUTOS.map((c) => (
             <button key={c.codigo}
               className={`pestana ${canal === c.codigo ? 'activa' : ''}`}

@@ -132,10 +132,10 @@ export function Pedidos() {
           <div className="sub">Lo que se vendió en los canales y su camino hacia Odoo</div>
         </div>
         <div className="acciones-cabecera">
-          <button onClick={() => void cargar()} disabled={refrescando}>
+          <button data-guia="ped-actualizar" onClick={() => void cargar()} disabled={refrescando}>
             {refrescando ? 'Actualizando…' : 'Actualizar'}
           </button>
-          <button className="primario" onClick={() => void traer()} disabled={trayendo}>
+          <button className="primario" data-guia="ped-traer" onClick={() => void traer()} disabled={trayendo}>
             {trayendo ? 'Trayendo…' : 'Traer pedidos nuevos'}
           </button>
         </div>
@@ -145,7 +145,7 @@ export function Pedidos() {
       {nota && <div className="nota-previa">{nota}</div>}
 
       {resumen && (
-        <div className="tarjetas">
+        <div className="tarjetas" data-guia="ped-resumen">
           <Tarjeta etiqueta="Pedidos" valor={num(resumen.total)} pie="en total" />
           <Tarjeta etiqueta="Vendido hoy" valor={money(resumen.monto_hoy)} pie="suma del día" />
           <Tarjeta etiqueta="En Odoo" valor={num(resumen.en_odoo)} tono="ok"
@@ -164,7 +164,7 @@ export function Pedidos() {
         <div className="cuerpo">
           {/* Con los fallidos contados en la tarjeta de arriba pero repartidos
               entre cincuenta filas, encontrarlos en el móvil era imposible. */}
-          <div className="filtros">
+          <div className="filtros" data-guia="ped-filtro">
             <select aria-label="Filtrar los pedidos por estado"
               value={filtro} onChange={(e) => setFiltro(e.target.value)}>
               <option value="">Todos los estados</option>
@@ -179,7 +179,7 @@ export function Pedidos() {
             </span>
           </div>
         </div>
-        <div className="tabla-envoltorio">
+        <div className="tabla-envoltorio" data-guia="ped-tabla">
           <table className="tabla-tarjetas">
             <thead>
               <tr>
@@ -213,7 +213,7 @@ export function Pedidos() {
                     </tr>
                     {desplegada && (
                       <tr>
-                        <td colSpan={7} className="detalle-pedido">
+                        <td colSpan={7} className="detalle-pedido" data-guia="ped-detalle">
                           {o.error && (
                             <div className="aviso-caja">
                               {o.error}
@@ -258,7 +258,7 @@ export function Pedidos() {
                               ofrecer un botón que no puede hacer nada. */}
                           {(o.estado === 'failed' || o.estado === 'received' || o.estado === 'mapped') && (
                             <div className="grupo-acciones">
-                              <button className="primario" onClick={() => void reintentar(o)}
+                              <button className="primario" data-guia="ped-reintentar" onClick={() => void reintentar(o)}
                                 disabled={reintentando === o.id}>
                                 {reintentando === o.id ? 'Reintentando…' : 'Reintentar en Odoo'}
                               </button>
@@ -269,7 +269,7 @@ export function Pedidos() {
                               Odoo: lo que dispara el aviso al canal es el
                               albarán validado allí, no este botón. */}
                           {o.estado === 'created_in_odoo' && (
-                            <div className="bloque-despacho">
+                            <div className="bloque-despacho" data-guia="ped-despacho">
                               {o.despachado_at ? (
                                 <div className="fila">
                                   <span className="pastilla ok">Canal avisado</span>
@@ -294,11 +294,11 @@ export function Pedidos() {
                                     )}
                                   </div>
                                   {o.despacho_error && (
-                                    <div className="mini-texto error">
+                                    <div className="mini-texto error" data-guia="ped-despacho-error">
                                       Último intento falló: {o.despacho_error}
                                     </div>
                                   )}
-                                  <div className="fila apila-movil">
+                                  <div className="fila apila-movil" data-guia="ped-guia">
                                     <input className="expande" placeholder="Guía (opcional)"
                                       aria-label="Número de guía"
                                       value={guias[o.id]?.guia ?? o.guia}

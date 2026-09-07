@@ -68,7 +68,7 @@ export function Mapeos({ canalInicial }: { canalInicial?: string } = {}) {
             tabla; el texto lo dice para que nadie busque en Falabella un
             predictor que solo existe en MercadoLibre. */}
         {canal === 'mercadolibre' ? (
-          <div className="nota-previa">
+          <div className="nota-previa" data-guia="catg-nota">
             Cada categoría de Odoo necesita una equivalente en MercadoLibre para poder
             publicar. Las filas son sugerencias del predictor público de MercadoLibre
             (<code>integra sugerir-categorias</code>). <strong>Ninguna se usa para
@@ -76,7 +76,7 @@ export function Mapeos({ canalInicial }: { canalInicial?: string } = {}) {
             vocabulario con la categoría de Odoo, así que probablemente estén mal.
           </div>
         ) : (
-          <div className="nota-previa">
+          <div className="nota-previa" data-guia="catg-nota">
             Falabella también exige una categoría de su árbol por cada categoría de Odoo,
             pero <strong>Integra todavía no tiene forma de proponerla ni de asignarla</strong>:
             no hay predictor como el de MercadoLibre ni pantalla para elegirla a mano.
@@ -85,16 +85,16 @@ export function Mapeos({ canalInicial }: { canalInicial?: string } = {}) {
           </div>
         )}
         <div className="filtros">
-          <div className="grupo-badges">
+          <div className="grupo-badges" data-guia="catg-canal">
             {Object.entries(NOMBRES).map(([id, nombre]) => (
               <button key={id} type="button" className={`badge ${canal === id ? 'activo' : ''}`}
                 onClick={() => setCanal(id)}>{nombre}</button>
             ))}
           </div>
-          <span className="tenue">
+          <span className="tenue" data-guia="catg-resumen">
             {confirmados} de {filas.length} confirmadas · {money(desbloqueado)} desbloqueados
           </span>
-          <label className="casilla">
+          <label className="casilla" data-guia="catg-dudosas">
             <input type="checkbox" checked={soloDudosos}
               onChange={(e) => setSoloDudosos(e.target.checked)} />
             Solo dudosas
@@ -105,14 +105,14 @@ export function Mapeos({ canalInicial }: { canalInicial?: string } = {}) {
       {error && <div className="aviso-caja">Error: {error}</div>}
 
       <div className="tabla-envoltorio">
-        <table className="tabla-tarjetas">
+        <table className="tabla-tarjetas" data-guia="catg-tabla">
           <thead>
             <tr>
               <th>Categoría en Odoo</th>
               <th>Categoría en {NOMBRES[canal] ?? canal}</th>
               <th className="num">Productos</th>
-              <th className="num">Inventario</th>
-              <th className="oculto-movil">Atributos deducidos</th>
+              <th className="num" data-guia="catg-inventario">Inventario</th>
+              <th className="oculto-movil" data-guia="catg-atributos">Atributos deducidos</th>
               <th></th>
             </tr>
           </thead>
@@ -144,7 +144,7 @@ export function Mapeos({ canalInicial }: { canalInicial?: string } = {}) {
                   {m.confirmado
                     ? <span className="pastilla ok">Confirmada</span>
                     : (
-                      <button onClick={() => void confirmar(m)} disabled={confirmando === m.id}>
+                      <button onClick={() => void confirmar(m)} disabled={confirmando === m.id} data-guia="catg-confirmar">
                         {confirmando === m.id ? 'Confirmando…' : 'Confirmar'}
                       </button>
                     )}

@@ -138,7 +138,7 @@ export function Publicacion() {
           <div className="sub">Qué está publicado en cada canal y qué falta por enviar</div>
         </div>
         <div className="acciones-cabecera">
-          <button onClick={() => void cargar()} disabled={refrescando}>
+          <button data-guia="pub-actualizar" onClick={() => void cargar()} disabled={refrescando}>
             {refrescando ? 'Actualizando…' : 'Actualizar'}
           </button>
         </div>
@@ -169,7 +169,7 @@ export function Publicacion() {
                     {nombre}
                     {c.nombre && <span className="tenue"> · {c.nombre}</span>}
                   </div>
-                  <div className="tenue mini-texto">
+                  <div className="tenue mini-texto" data-guia="pub-cifras">
                     {r
                       ? `${num(r.activas)} publicados`
                       : 'sin publicaciones todavía'}
@@ -190,7 +190,7 @@ export function Publicacion() {
                 </div>
                 {/* Lo que falló es lo primero que se busca desde el móvil, así
                     que sale como pastilla y no enterrado en la línea de texto. */}
-                {hayPastillas && <div className="etiquetas">
+                {hayPastillas && <div className="etiquetas" data-guia="pub-pastillas">
                   {r && r.con_error > 0 && (
                     <span className="pastilla bloqueante">{num(r.con_error)} con error</span>
                   )}
@@ -201,14 +201,14 @@ export function Publicacion() {
                   {c.probada_ok === null && <span className="pastilla aviso">sin verificar</span>}
                 </div>}
                 <div className="grupo-acciones">
-                  <button onClick={() => void planificar(c)} disabled={ocupado === c.id}>
+                  <button data-guia="pub-planificar" onClick={() => void planificar(c)} disabled={ocupado === c.id}>
                     {ocupado === c.id ? 'Calculando…' : 'Planificar envíos'}
                   </button>
-                  <button onClick={() => void activar(c, true)} disabled={ocupado === c.id}
+                  <button data-guia="pub-activar" onClick={() => void activar(c, true)} disabled={ocupado === c.id}
                     title="Pone a la venta en el canal las fichas ya publicadas">
                     Poner a la venta
                   </button>
-                  <button onClick={() => void activar(c, false)} disabled={ocupado === c.id}
+                  <button data-guia="pub-retirar" onClick={() => void activar(c, false)} disabled={ocupado === c.id}
                     title="Retira de la venta las fichas publicadas, sin borrarlas">
                     Retirar
                   </button>
@@ -219,13 +219,13 @@ export function Publicacion() {
         </div>
       </section>
 
-      <section className="panel">
+      <section className="panel" data-guia="pub-producto">
         <h2>Producto a producto</h2>
         <div className="cuerpo">
           <div className="filtros">
-            <input className="crece" placeholder="Buscar por SKU o nombre…"
+            <input className="crece" data-guia="pub-buscar" placeholder="Buscar por SKU o nombre…"
               value={buscando} onChange={(e) => setBuscando(e.target.value)} />
-            <select aria-label="Filtrar por situación" value={situacion}
+            <select aria-label="Filtrar por situación" data-guia="pub-situacion" value={situacion}
               onChange={(e) => setSituacion(e.target.value as Situacion | '')}>
               <option value="">Todas las situaciones</option>
               <option value="nuevo">Sin publicar todavía</option>
@@ -243,7 +243,7 @@ export function Publicacion() {
           )}
 
           {estados.length > 0 && (
-            <div className="tabla-envoltorio">
+            <div className="tabla-envoltorio" data-guia="pub-tabla">
               <table className="tabla-tarjetas">
                 <thead>
                   <tr><th>Producto</th><th>Canal</th><th>Situación</th><th>Detalle</th></tr>
@@ -279,13 +279,13 @@ export function Publicacion() {
         </div>
       </section>
 
-      <div className="nota-previa">
+      <div className="nota-previa" data-guia="pub-nota-planificar">
         <strong>Cómo funciona:</strong> «Planificar envíos» compara el catálogo con lo ya
         publicado y encola <em>solo lo que cambió</em>, con el stock primero. Nada se envía
         desde aquí: los trabajos los procesa el worker con reintentos.
       </div>
 
-      <div className="nota-previa">
+      <div className="nota-previa" data-guia="pub-nota-borrador">
         Una ficha recién publicada queda <strong>en borrador</strong> en el canal: existe
         con su precio, su stock y sus fotos, pero el comprador todavía no la ve. Eso es a
         propósito —ponerla a la venta es una decisión, no un efecto secundario de

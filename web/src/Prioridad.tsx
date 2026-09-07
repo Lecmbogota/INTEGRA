@@ -19,7 +19,7 @@ export function Prioridad({ onVer }: { onVer: (varianteId: number) => void }) {
   }, [])
 
   return (
-    <section className="panel">
+    <section className="panel" data-guia="pan-prioridad">
       <h2>Qué publicar primero</h2>
       <div className="cuerpo">
         {error && <div className="aviso-caja">No se pudo cargar la lista: {error}</div>}
@@ -34,7 +34,7 @@ export function Prioridad({ onVer }: { onVer: (varianteId: number) => void }) {
           </div>
         )}
         {filas.map((f, i) => (
-          <div key={f.variante_id} className="fila-prioridad"
+          <div key={f.variante_id} className="fila-prioridad" data-guia="pan-prioridad-fila"
             role="button" tabIndex={0}
             onClick={() => onVer(f.variante_id)}
             // La fila es un div: sin esto no hay forma de abrirla con el teclado.

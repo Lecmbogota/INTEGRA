@@ -1,5 +1,7 @@
 import { useState } from 'react'
 import { api, money, num, type OperacionMasiva, type ResultadoMasivo } from './api'
+import { Guia } from './Guia'
+import { PASOS_EDICION_MASIVA } from './guias/edicionMasiva'
 
 // Edición masiva. Siempre simula antes de aplicar: en una operación que toca
 // cientos de productos, ver el efecto antes de causarlo no es un lujo.
@@ -19,6 +21,7 @@ export function EdicionMasiva({ ids, filtro, totalFiltro, onCerrar, onAplicado }
   const [previa, setPrevia] = useState<ResultadoMasivo | null>(null)
   const [ocupado, setOcupado] = useState<'simulando' | 'aplicando' | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [ayuda, setAyuda] = useState(false)
 
   const seleccion = alcance === 'seleccion' ? { ids } : { filtro }
   const cuantos = alcance === 'seleccion' ? ids.length : totalFiltro
@@ -102,7 +105,7 @@ export function EdicionMasiva({ ids, filtro, totalFiltro, onCerrar, onAplicado }
     // de un guardado deja al operador sin saber si se aplicó o no.
     <div className="capa" onClick={() => { if (ocupado === null) onCerrar() }}>
       <div className="hoja hoja-editor" onClick={(e) => e.stopPropagation()}>
-        <header className="hoja-cabecera">
+        <header className="hoja-cabecera" data-guia="masa-cabecera">
           <div>
             <h2>Editar en masa</h2>
             <div className="sub">
@@ -111,13 +114,17 @@ export function EdicionMasiva({ ids, filtro, totalFiltro, onCerrar, onAplicado }
                 : `${num(cuantos)} productos afectados`}
             </div>
           </div>
-          <button onClick={onCerrar} disabled={ocupado !== null}>Cerrar ✕</button>
+          <div className="grupo-acciones">
+            <button className="mini" type="button" title="Cómo funciona esta pantalla"
+              aria-label="Cómo funciona esta pantalla" onClick={() => setAyuda(true)}>?</button>
+            <button onClick={onCerrar} disabled={ocupado !== null}>Cerrar ✕</button>
+          </div>
         </header>
 
         {error && <div className="aviso-caja">No se pudo completar: {error}</div>}
 
         <div className="form-edicion">
-          <label className="ancha">
+          <label className="ancha" data-guia="masa-alcance">
             <span>A qué productos</span>
             <select value={alcance}
               onChange={(e) => ajustar(() => setAlcance(e.target.value as typeof alcance))}>
@@ -133,7 +140,7 @@ export function EdicionMasiva({ ids, filtro, totalFiltro, onCerrar, onAplicado }
             )}
           </label>
 
-          <label className="ancha">
+          <label className="ancha" data-guia="masa-tipo">
             <span>Qué hacer</span>
             <select value={tipo}
               onChange={(e) => ajustar(() => {
@@ -153,7 +160,7 @@ export function EdicionMasiva({ ids, filtro, totalFiltro, onCerrar, onAplicado }
           </label>
 
           {usaFactor && (
-            <label>
+            <label data-guia="masa-factor">
               <span>Factor</span>
               <input inputMode="decimal" value={factor}
                 onChange={(e) => ajustar(() => setFactor(e.target.value))} />
@@ -184,7 +191,7 @@ export function EdicionMasiva({ ids, filtro, totalFiltro, onCerrar, onAplicado }
           )}
 
           {esPrecio && tipo !== 'precio_borrar' && (
-            <label>
+            <label data-guia="masa-redondeo">
               <span>Redondeo</span>
               <select value={redondeo}
                 onChange={(e) => ajustar(() => setRedondeo(Number(e.target.value)))}>
@@ -246,12 +253,12 @@ export function EdicionMasiva({ ids, filtro, totalFiltro, onCerrar, onAplicado }
 
         <footer className="hoja-pie">
           <button onClick={onCerrar} disabled={ocupado !== null}>Cancelar</button>
-          <button onClick={() => void simular()}
+          <button onClick={() => void simular()} data-guia="masa-simular"
             disabled={ocupado !== null || cuantos === 0 || problemaEntrada !== null}
             title={problemaEntrada ?? ''}>
             {ocupado === 'simulando' ? 'Calculando…' : 'Ver qué cambiaría'}
           </button>
-          <button className="primario" onClick={() => void aplicar()}
+          <button className="primario" onClick={() => void aplicar()} data-guia="masa-aplicar"
             disabled={ocupado !== null || !previa || previa.afectados === 0}
             title={previa ? '' : 'Primero mira qué cambiaría'}>
             {ocupado === 'aplicando'
@@ -259,6 +266,8 @@ export function EdicionMasiva({ ids, filtro, totalFiltro, onCerrar, onAplicado }
               : `Aplicar a ${num(previa?.afectados ?? cuantos)}`}
           </button>
         </footer>
+
+        {ayuda && <Guia pasos={PASOS_EDICION_MASIVA} nombre="Editar en masa" onCerrar={() => setAyuda(false)} />}
       </div>
     </div>
   )

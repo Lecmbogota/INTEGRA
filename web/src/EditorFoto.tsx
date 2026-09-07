@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { api, num } from './api'
+import { Guia } from './Guia'
+import { PASOS_EDITOR_FOTO } from './guias/editorFoto'
 
 // Editor de fotos. Lo que hace falta para dejar una foto como la piden los
 // canales sin salir de Integra: recortar y enderezar, corregir el color,
@@ -358,6 +360,7 @@ export function EditorFoto({ foto, onCerrar, onGuardada }: {
   const [verOriginal, setVerOriginal] = useState(false)
   const [resultado, setResultado] = useState<{ ancho: number; alto: number; bytes: number; ocupacion: number } | null>(null)
   const [calculando, setCalculando] = useState(false)
+  const [ayuda, setAyuda] = useState(false)
 
   const lienzoTrabajo = useRef<HTMLCanvasElement>(null)
   const lienzoResultado = useRef<HTMLCanvasElement>(null)
@@ -375,11 +378,13 @@ export function EditorFoto({ foto, onCerrar, onGuardada }: {
     img.src = `/imagenes/${foto.sha256}`
   }, [foto.sha256])
 
+  // Escape cierra el editor, salvo que la ayuda esté abierta encima: ahí
+  // cierra la ayuda y el editor se queda con sus ajustes.
   useEffect(() => {
-    const h = (e: KeyboardEvent) => { if (e.key === 'Escape' && !guardando) onCerrar() }
+    const h = (e: KeyboardEvent) => { if (e.key === 'Escape' && !guardando && !ayuda) onCerrar() }
     window.addEventListener('keydown', h)
     return () => window.removeEventListener('keydown', h)
-  }, [onCerrar, guardando])
+  }, [onCerrar, guardando, ayuda])
 
   // Orientar es caro en fotos grandes: se hace una vez por giro y se guarda.
   useEffect(() => {
@@ -591,7 +596,7 @@ export function EditorFoto({ foto, onCerrar, onGuardada }: {
   }
 
   const grupo = (id: Grupo, titulo: string, contenido: ReactNode) => (
-    <GrupoAjustes titulo={titulo} resumen={resumen[id]} abierto={abierto === id}
+    <GrupoAjustes titulo={titulo} resumen={resumen[id]} abierto={abierto === id} guia={`ef-grupo-${id}`}
       onToggle={() => setAbierto(abierto === id ? null : id)}>
       {contenido}
     </GrupoAjustes>
@@ -606,10 +611,12 @@ export function EditorFoto({ foto, onCerrar, onGuardada }: {
             <div className="sub">Original {foto.ancho}×{foto.alto} · {foto.formato}</div>
           </div>
           <div className="grupo-acciones">
-            <button onClick={() => setA(INICIAL)} disabled={!tocado || guardando}>Deshacer todo</button>
+            <button onClick={() => setA(INICIAL)} disabled={!tocado || guardando} data-guia="ef-deshacer">Deshacer todo</button>
+            <button type="button" className="mini" title="Cómo funciona esta pantalla" onClick={() => setAyuda(true)}>?</button>
             <button onClick={onCerrar} disabled={guardando}>Cerrar ✕</button>
           </div>
         </header>
+        {ayuda && <Guia pasos={PASOS_EDITOR_FOTO} nombre="Editor de fotos" onCerrar={() => setAyuda(false)} />}
 
         {error && <div className="aviso-caja">{error}</div>}
         {!fuente && !error && <div className="vacio">Cargando la foto original…</div>}
@@ -617,7 +624,7 @@ export function EditorFoto({ foto, onCerrar, onGuardada }: {
         {fuente && (
           <div className="editor3">
             {/* 1. Lienzo de edición */}
-            <section className="editor-zona">
+            <section className="editor-zona" data-guia="ef-edicion">
               <div className="editor-zona-titulo">
                 <strong>Edición</strong>
                 <span className="tenue mini-texto">Arrastra la caja o sus esquinas para recortar · {Math.round(r.w)}×{Math.round(r.h)} px</span>
@@ -633,7 +640,7 @@ export function EditorFoto({ foto, onCerrar, onGuardada }: {
                   </div>
                 </div>
               </div>
-              <div className="filtros" style={{ marginTop: 8 }}>
+              <div className="filtros" style={{ marginTop: 8 }} data-guia="ef-herramientas">
                 <div className="grupo-badges">
                   {PROPORCIONES.map(([id, nombre]) => (
                     <button key={id} type="button" className={`badge ${a.proporcion === id ? 'activo' : ''}`}
@@ -650,7 +657,7 @@ export function EditorFoto({ foto, onCerrar, onGuardada }: {
             </section>
 
             {/* 2. Vista previa del resultado */}
-            <section className="editor-zona">
+            <section className="editor-zona" data-guia="ef-resultado">
               <div className="editor-zona-titulo">
                 <strong>Así quedará</strong>
                 <span className="tenue mini-texto">{calculando ? 'calculando…' : resultado ? `${resultado.ancho}×${resultado.alto} · ${tamano(resultado.bytes)} · ${a.formato === 'image/png' ? 'PNG' : 'JPEG'}` : ''}</span>
@@ -658,7 +665,7 @@ export function EditorFoto({ foto, onCerrar, onGuardada }: {
               <div className="editor-resultado">
                 <canvas ref={lienzoResultado} />
               </div>
-              <div className="filtros" style={{ marginTop: 8, justifyContent: 'center' }}>
+              <div className="filtros" style={{ marginTop: 8, justifyContent: 'center' }} data-guia="ef-comparar">
                 <label className="casilla mini-texto"
                   title="Tercios, área útil que deja el margen (azul) y contorno del producto detectado (verde si llena bien, naranja si no)">
                   <input type="checkbox" checked={guias} onChange={(e) => setGuias(e.target.checked)} />
@@ -671,7 +678,7 @@ export function EditorFoto({ foto, onCerrar, onGuardada }: {
                   Ver original
                 </button>
               </div>
-              <ul className="lista-faltantes editor-avisos">
+              <ul className="lista-faltantes editor-avisos" data-guia="ef-avisos">
                 {avisos.map((av, i) => <li key={i} style={{ color: av.malo ? 'var(--error)' : 'var(--ok)' }}>{av.texto}</li>)}
               </ul>
             </section>
@@ -679,11 +686,11 @@ export function EditorFoto({ foto, onCerrar, onGuardada }: {
             {/* 3. Ajustes */}
             <aside className="editor-ajustes">
               <div className="editor-zona-titulo"><strong>Ajustes</strong></div>
-              <button type="button" className="primario editor-auto" onClick={() => poner(AUTO)}
+              <button type="button" className="primario editor-auto" onClick={() => poner(AUTO)} data-guia="ef-auto"
                 title="Recorta al producto, endereza los niveles, blanquea el fondo, la centra en un cuadrado de 1200 con margen y le da nitidez. Cada cosa se puede deshacer en su grupo.">
                 ✦ Autoajustar
               </button>
-              <div className="filtros" style={{ marginBottom: 4 }}>
+              <div className="filtros" style={{ marginBottom: 4 }} data-guia="ef-rapidos">
                 <span className="tenue mini-texto">Rápidos:</span>
                 <div className="grupo-badges">
                   {RAPIDOS.map((rp) => (
@@ -789,7 +796,7 @@ export function EditorFoto({ foto, onCerrar, onGuardada }: {
                 </>
               ))}
 
-              <div className="editor-guardar">
+              <div className="editor-guardar" data-guia="ef-guardar">
                 <label className="casilla">
                   <input type="radio" name="modo" checked={modo === 'reemplazar'} onChange={() => setModo('reemplazar')} />
                   Reemplazar la original en sus productos
@@ -812,12 +819,12 @@ export function EditorFoto({ foto, onCerrar, onGuardada }: {
 
 // GrupoAjustes es una sección plegable del panel: título, resumen de lo que
 // hay puesto cuando está cerrada, y los controles cuando está abierta.
-function GrupoAjustes({ titulo, resumen, abierto, onToggle, children }: {
-  titulo: string; resumen: string; abierto: boolean; onToggle: () => void; children: ReactNode
+function GrupoAjustes({ titulo, resumen, abierto, onToggle, guia, children }: {
+  titulo: string; resumen: string; abierto: boolean; onToggle: () => void; guia?: string; children: ReactNode
 }) {
   return (
     <div className={`grupo-ajustes ${abierto ? 'abierto' : ''}`}>
-      <button type="button" className="grupo-cabecera" onClick={onToggle} aria-expanded={abierto}>
+      <button type="button" className="grupo-cabecera" onClick={onToggle} aria-expanded={abierto} data-guia={guia}>
         <span className="grupo-flecha">{abierto ? '▾' : '▸'}</span>
         <span className="grupo-titulo">{titulo}</span>
         {!abierto && <span className="grupo-resumen">{resumen}</span>}

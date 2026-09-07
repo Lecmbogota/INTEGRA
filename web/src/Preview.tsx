@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, money, type Competencia, type PreviewRespuesta, type Proyeccion } from './api'
 import { Imagenes } from './Imagenes'
 import { PanelAtributos } from './Atributos'
+import { Guia } from './Guia'
+import { PASOS_PREVIEW } from './guias/preview'
 import type { Pestana } from './Editar'
 
 const NOMBRES: Record<string, string> = {
@@ -59,6 +61,8 @@ export function Preview({ varianteId, onCerrar, onIr, onCambio }: {
   const [competencia, setCompetencia] = useState<Competencia | null>(null)
   const [compEstado, setCompEstado] = useState<'inactivo' | 'cargando' | 'error'>('inactivo')
   const [compError, setCompError] = useState('')
+  // Recorrido guiado de esta pantalla, abierto desde el «?» de la cabecera.
+  const [ayuda, setAyuda] = useState(false)
 
   function verCompetencia() {
     setCompEstado('cargando')
@@ -81,11 +85,16 @@ export function Preview({ varianteId, onCerrar, onIr, onCambio }: {
 
   // Escape cierra el panel: es lo que espera cualquiera al ver una capa encima.
   // Aquí no se pregunta nada porque esta pantalla no edita: solo enseña.
+  // Con el recorrido abierto, Escape cierra el recorrido y no la previa.
   useEffect(() => {
-    const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onCerrar() }
+    const h = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      if (ayuda) setAyuda(false)
+      else onCerrar()
+    }
     window.addEventListener('keydown', h)
     return () => window.removeEventListener('keydown', h)
-  }, [onCerrar])
+  }, [onCerrar, ayuda])
 
   // Cuántos canales están bloqueados. En escritorio se ve de un vistazo con
   // las cuatro tarjetas en fila; en el móvil van apiladas y hay que
@@ -120,8 +129,14 @@ export function Preview({ varianteId, onCerrar, onIr, onCambio }: {
               </div>
             )}
           </div>
-          <button onClick={onCerrar}>Cerrar ✕</button>
+          <div className="grupo-acciones">
+            <button className="mini" type="button" title="Cómo funciona esta pantalla"
+              aria-label="Cómo funciona esta pantalla" onClick={() => setAyuda(true)}>?</button>
+            <button onClick={onCerrar}>Cerrar ✕</button>
+          </div>
         </header>
+
+        {ayuda && <Guia pasos={PASOS_PREVIEW} nombre="Vista previa" onCerrar={() => setAyuda(false)} />}
 
         {error && <div className="aviso-caja">No se pudo proyectar el producto: {error}</div>}
         {!datos && !error && <div className="vacio">Proyectando…</div>}
@@ -131,7 +146,7 @@ export function Preview({ varianteId, onCerrar, onIr, onCambio }: {
             {/* Se dice explícitamente qué NO es esto: las maquetas se parecen
                 tanto a las tiendas reales que se leían como «así va a quedar
                 la publicación», y no lo son. */}
-            <div className="nota-previa">
+            <div className="nota-previa" data-guia="prev-nota">
               Esto es una <strong>comprobación del contenido</strong> que se va a enviar:
               título, precio, foto de portada y stock, sacados del payload real.
               <strong> No es una simulación de cómo se verá la publicación</strong>: cada
@@ -151,7 +166,7 @@ export function Preview({ varianteId, onCerrar, onIr, onCambio }: {
               <Imagenes varianteId={varianteId} onCambio={() => { recargar(); onCambio?.() }} />
             </div>
 
-            <div className="previa-rejilla">
+            <div className="previa-rejilla" data-guia="prev-rejilla">
               {datos.proyecciones.map((p) => (
                 <TarjetaCanal key={p.canal} p={p} marca={datos.producto.marca}
                   onVerJson={() => setVerJson(p.canal)}
@@ -161,7 +176,7 @@ export function Preview({ varianteId, onCerrar, onIr, onCambio }: {
 
             <PanelAtributos varianteId={varianteId} />
 
-            <div className="competencia">
+            <div className="competencia" data-guia="prev-competencia">
               <div className="competencia-cabecera fila-apilable">
                 <strong>Competencia en MercadoLibre</strong>
                 <button onClick={verCompetencia} disabled={compEstado === 'cargando'}>
@@ -249,13 +264,20 @@ function TarjetaCanal({ p, marca, onVerJson, onArreglar }: {
         </span>
       </div>
 
-      <MaquetaTienda p={p} marca={marca} />
-      <div className={`contador ${chars > p.titulo_limite ? 'excede' : ''}`}>
-        {chars}/{p.titulo_limite} caracteres del título
+      {/* Los anclajes del recorrido (data-guia) se repiten en las cuatro
+          tarjetas a propósito: el recorrido resalta el primero que encuentre,
+          y así el paso tiene foco aunque la primera tarjeta no tenga avisos. */}
+      {/* El envoltorio conserva el hueco de 10 px que la tarjeta pone entre
+          la maqueta y el contador. */}
+      <div data-guia="prev-maqueta" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <MaquetaTienda p={p} marca={marca} />
+        <div className={`contador ${chars > p.titulo_limite ? 'excede' : ''}`}>
+          {chars}/{p.titulo_limite} caracteres del título
+        </div>
       </div>
 
       {bloqueos.length > 0 && (
-        <ul className="lista-faltantes bloqueo">
+        <ul className="lista-faltantes bloqueo" data-guia="prev-faltantes">
           {bloqueos.map((f) => (
             <li key={f.campo}>
               <code>{f.campo}</code> — {f.motivo}
@@ -265,7 +287,7 @@ function TarjetaCanal({ p, marca, onVerJson, onArreglar }: {
         </ul>
       )}
       {avisos.length > 0 && (
-        <ul className="lista-faltantes aviso">
+        <ul className="lista-faltantes aviso" data-guia="prev-faltantes">
           {avisos.map((f) => (
             <li key={f.campo}>
               <code>{f.campo}</code> — {f.motivo}
@@ -280,7 +302,7 @@ function TarjetaCanal({ p, marca, onVerJson, onArreglar }: {
         </ul>
       )}
 
-      <button className="ver-json" onClick={onVerJson}>Ver payload JSON</button>
+      <button className="ver-json" data-guia="prev-payload" onClick={onVerJson}>Ver payload JSON</button>
     </div>
   )
 }

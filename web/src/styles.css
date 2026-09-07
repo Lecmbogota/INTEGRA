@@ -730,21 +730,41 @@ button.mini { padding: 3px 8px; font-size: 11px; min-height: 0; }
 .celda-mini .marca-sel { position: absolute; top: 6px; left: 6px; margin: 0; }
 .celda-mini .pie { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; font-size: 11px; padding: 4px 6px; color: var(--texto-terciario, #777); border-top: 1px solid #f0f0f0; }
 /* Recorrido guiado. */
-.guia-capa { position: fixed; inset: 0; z-index: 1000; }
+.guia-capa { position: fixed; inset: 0; z-index: 1000; overscroll-behavior: contain; }
+/* Sin elemento que resaltar —o mientras se busca— la capa oscurece ella misma: si no, entre paso y paso el fondo se vería un instante sin velo. */
+.guia-capa.sin-foco { background: rgba(15,23,42,.62); }
 .guia-foco { position: fixed; border-radius: 10px; box-shadow: 0 0 0 9999px rgba(15,23,42,.62), 0 0 0 3px var(--acento); transition: left .25s, top .25s, width .25s, height .25s; pointer-events: none; }
-.guia-globo { position: fixed; background: #fff; color: #1f2937; border-radius: 12px; padding: 16px 18px 14px; box-shadow: 0 18px 50px rgba(0,0,0,.35); z-index: 1001; transition: left .25s, top .25s, bottom .25s; }
-.guia-globo.centrado { box-shadow: 0 0 0 9999px rgba(15,23,42,.62), 0 18px 50px rgba(0,0,0,.35); }
-.guia-globo h3 { margin: 6px 0 8px; font-size: 17px; }
-.guia-texto { font-size: 13.5px; line-height: 1.5; }
+/* El globo no transiciona su posición: entre pasos se oculta y reaparece ya colocado; con transición se le vería viajar desde el paso anterior. Columna flexible para que, si no cabe en 92vh, sea solo el texto lo que se desplace. */
+.guia-globo { position: fixed; width: min(380px, calc(100vw - 24px)); max-height: 92vh; display: flex; flex-direction: column; background: #fff; color: #1f2937; border-radius: 12px; padding: 16px 18px 14px; box-shadow: 0 18px 50px rgba(0,0,0,.35); z-index: 1001; transition: opacity .18s; }
+.guia-globo.oculto { opacity: 0; pointer-events: none; transition: none; }
+.guia-globo.centrado { left: 50%; top: 50%; transform: translate(-50%, -50%); }
+/* Hoja inferior: en el móvil, cuando no hay nada que resaltar. */
+.guia-globo.hoja { left: 0; right: 0; bottom: 0; width: auto; border-radius: 16px 16px 0 0; padding-bottom: max(14px, env(safe-area-inset-bottom)); }
+/* Flecha hacia el elemento: un cuadrado girado que asoma por la arista que mira al foco; --flecha es la distancia a lo largo de esa arista. Sin flecha cuando el globo va centrado o superpuesto. */
+.guia-globo::before { content: ''; position: absolute; width: 14px; height: 14px; background: #fff; transform: rotate(45deg); display: none; }
+.guia-globo.abajo::before { display: block; top: -7px; left: calc(var(--flecha) - 7px); }
+.guia-globo.arriba::before { display: block; bottom: -7px; left: calc(var(--flecha) - 7px); }
+.guia-globo.derecha::before { display: block; left: -7px; top: calc(var(--flecha) - 7px); }
+.guia-globo.izquierda::before { display: block; right: -7px; top: calc(var(--flecha) - 7px); }
+.guia-globo h3 { margin: 6px 0 8px; font-size: 17px; flex: none; }
+/* contain: al llegar al final del texto la rueda no arrastra la página. */
+.guia-texto { font-size: 13.5px; line-height: 1.5; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .guia-texto p { margin: 0 0 8px; }
 .guia-texto code { font-family: var(--fuente-mono); font-size: 12px; background: #f3f4f6; padding: 1px 4px; border-radius: 4px; }
-.guia-progreso { display: flex; align-items: center; justify-content: space-between; font-size: 11px; color: #6b7280; }
+.guia-progreso { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 11px; color: #6b7280; flex: none; }
 .guia-puntos { display: flex; gap: 4px; }
 .guia-puntos i { width: 6px; height: 6px; border-radius: 50%; background: #e5e7eb; display: inline-block; }
 .guia-puntos i.hecho { background: #93c5fd; }
 .guia-puntos i.activo { background: var(--acento); width: 14px; border-radius: 3px; }
-.guia-acciones { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+/* Barra fina para pantallas estrechas: catorce puntos no caben al lado del «Paso 3 de 14». */
+.guia-barra { display: none; flex: 1; height: 3px; border-radius: 2px; background: #e5e7eb; overflow: hidden; }
+.guia-barra i { display: block; height: 100%; background: var(--acento); }
+.guia-acciones { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex: none; }
 .sidebar-guia { margin-top: auto; opacity: .85; }
+.boton-ayuda { position: fixed; right: 22px; bottom: 22px; z-index: 45; width: 44px; height: 44px; border-radius: 50%; border: none; background: var(--acento); color: #fff; font-size: 22px; font-weight: 700; box-shadow: 0 8px 24px rgba(37,99,235,.35); cursor: pointer; min-height: 0; padding: 0; }
+.boton-ayuda:hover { background: var(--acento-hover, #1d4ed8); transform: translateY(-1px); }
+@media (max-width: 1024px) { .boton-ayuda { right: 14px; bottom: 14px; } }
+@media (max-width: 480px) { .guia-puntos { display: none; } .guia-barra { display: block; } }
 .galeria img {
   width: 100%; aspect-ratio: 1; object-fit: contain;
   background: #fff; display: block;

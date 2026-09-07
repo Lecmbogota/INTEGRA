@@ -84,7 +84,7 @@ export function Integraciones() {
           const prueba = resultado?.id === c.id ? resultado : null
           return (
             <div key={c.id} className="fila-cuenta fila-apilable">
-              <div className="expande-recorta">
+              <div className="expande-recorta" data-guia="odoo-datos">
                 <div>{c.nombre}</div>
                 {/* Una URL es una sola palabra sin espacios: sin recortarla,
                     en el móvil empuja la fila y desplaza la página entera. */}
@@ -105,20 +105,20 @@ export function Integraciones() {
               </div>
               <div className="grupo-acciones">
                 {c.activa
-                  ? <span className="pastilla ok">Activa</span>
-                  : <span className="pastilla">Inactiva</span>}
-                <button onClick={() => void probar(c.id)} disabled={operando?.id === c.id}>
+                  ? <span className="pastilla ok" data-guia="odoo-estado">Activa</span>
+                  : <span className="pastilla" data-guia="odoo-estado">Inactiva</span>}
+                <button onClick={() => void probar(c.id)} disabled={operando?.id === c.id} data-guia="odoo-probar">
                   Probar
                 </button>
                 {!c.activa && (
-                  <button onClick={() => void activar(c)} disabled={operando?.id === c.id}
+                  <button onClick={() => void activar(c)} disabled={operando?.id === c.id} data-guia="odoo-activar"
                     title="La credencial se comprueba antes de activar; si falla, no se cambia nada.">
                     Activar
                   </button>
                 )}
-                <button onClick={() => setEditando(c)} disabled={operando?.id === c.id}>Editar</button>
+                <button onClick={() => setEditando(c)} disabled={operando?.id === c.id} data-guia="odoo-editar">Editar</button>
                 {!c.activa && (
-                  <button onClick={() => borrar(c)} disabled={operando?.id === c.id}>Borrar</button>
+                  <button onClick={() => borrar(c)} disabled={operando?.id === c.id} data-guia="odoo-borrar">Borrar</button>
                 )}
               </div>
             </div>
@@ -129,9 +129,9 @@ export function Integraciones() {
       <div className="cuerpo" style={{ paddingTop: 0 }}>
         <div className="pila apretada">
           <div className="grupo-acciones">
-            <button className="primario" onClick={() => setEditando('nueva')}>Conectar otra instancia</button>
+            <button className="primario" onClick={() => setEditando('nueva')} data-guia="odoo-conectar">Conectar otra instancia</button>
           </div>
-          <div className="tenue mini-texto">
+          <div className="tenue mini-texto" data-guia="odoo-nota">
             De Odoo solo se leen SKU, nombre y stock por almacén. Precios, marcas, descripciones e
             imágenes son propiedad de Integra y el sync nunca los toca. La conexión nueva pasa a ser la activa.
           </div>

@@ -275,7 +275,7 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = nul
           <div className="filtros">
             <input className="crece" placeholder="Buscar por nombre o referencia…" data-guia="buscar"
               value={busqueda} onChange={(e) => setBusqueda(e.target.value)} />
-            <select value={marca} onChange={(e) => setMarca(e.target.value)}>
+            <select value={marca} onChange={(e) => setMarca(e.target.value)} data-guia="cat-marca">
               <option value="">Todas las marcas</option>
               {marcas.filter((m) => m.cantidad > 0).map((m) => (
                 <option key={m.codigo} value={m.codigo}>{m.nombre} ({m.cantidad})</option>
@@ -288,7 +288,7 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = nul
               ))}
             </select>
             <label className="casilla">
-              <input type="checkbox" checked={soloProblemas}
+              <input type="checkbox" checked={soloProblemas} data-guia="cat-problemas"
                 onChange={(e) => setSoloProblemas(e.target.checked)} />
               Solo con problemas
             </label>
@@ -303,7 +303,7 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = nul
               Pendientes por publicar
             </label>
             <label className="casilla">
-              <input type="checkbox" checked={verExcluidos}
+              <input type="checkbox" checked={verExcluidos} data-guia="cat-excluidos"
                 onChange={(e) => setVerExcluidos(e.target.checked)} />
               Ver excluidos
             </label>
@@ -311,7 +311,7 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = nul
         </div>
 
         {(marcados.size > 0 || (pagina?.total ?? 0) > 0) && (
-          <div className="barra-masiva">
+          <div className="barra-masiva" data-guia="cat-barra">
             <span className="crece">
               {marcados.size > 0
                 ? `${num(marcados.size)} seleccionados`
@@ -342,11 +342,11 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = nul
                 Despublicar
               </button>
             )}
-            <button onClick={() => setPlantilla(true)}
+            <button onClick={() => setPlantilla(true)} data-guia="plantilla"
               title="Descarga el catálogo como hoja de Excel, edítalo y súbelo para actualizar precios y promociones de muchos productos a la vez.">
               Actualizar por plantilla
             </button>
-            <button className="primario" onClick={() => setMasiva(true)}>
+            <button className="primario" onClick={() => setMasiva(true)} data-guia="cat-editar-masa">
               Editar en masa
             </button>
           </div>
@@ -355,9 +355,9 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = nul
         <div className="tabla-envoltorio">
           <table className="tabla-tarjetas">
             <thead>
-              <tr>
+              <tr data-guia="cat-cabecera">
                 <th className="col-check">
-                  <input type="checkbox" checked={paginaEntera}
+                  <input type="checkbox" checked={paginaEntera} data-guia="cat-seleccionar"
                     title="Seleccionar los de esta página"
                     onChange={alternarPagina} />
                 </th>
@@ -366,8 +366,8 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = nul
                 <th className="oculto-movil ordenable" onClick={() => ordenarPor('marca')}>Marca{flecha('marca')}</th>
                 <th className="num ordenable" onClick={() => ordenarPor('precio')}>Precio{flecha('precio')}</th>
                 <th className="num ordenable" onClick={() => ordenarPor('stock')}>Stock{flecha('stock')}</th>
-                <th>Publicación</th>
-                <th>Estado</th><th></th>
+                <th data-guia="cat-publicacion">Publicación</th>
+                <th data-guia="estado">Estado</th><th></th>
               </tr>
             </thead>
             <tbody>
@@ -464,7 +464,7 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = nul
         </div>
 
         {pagina && pagina.total > 0 && (
-          <div className="paginacion">
+          <div className="paginacion" data-guia="cat-paginacion">
             <button disabled={offset === 0 || cargando}
               onClick={() => setOffset(Math.max(0, offset - POR_PAGINA))}>
               ← Anterior

@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api, num, type FiltroMediateca, type ImagenBanco, type PaginaImagenes } from './api'
+import { Guia } from './Guia'
+import { PASOS_SELECTOR } from './guias/selectorMediateca'
 
 // SelectorMediateca: elegir fotos que ya están en el banco para un producto.
 //
@@ -24,6 +26,7 @@ export function SelectorMediateca({ varianteId, onCerrar, onElegidas }: {
   const [error, setError] = useState<string | null>(null)
   const [marcadas, setMarcadas] = useState<Set<number>>(new Set())
   const [ocupado, setOcupado] = useState(false)
+  const [ayuda, setAyuda] = useState(false)
 
   useEffect(() => {
     let vigente = true
@@ -37,11 +40,13 @@ export function SelectorMediateca({ varianteId, onCerrar, onElegidas }: {
     return () => { vigente = false; clearTimeout(t) }
   }, [filtro, q])
 
+  // Escape cierra el selector, salvo que la ayuda esté abierta encima: ahí
+  // cierra la ayuda y lo marcado se conserva.
   useEffect(() => {
-    const h = (e: KeyboardEvent) => { if (e.key === 'Escape' && !ocupado) onCerrar() }
+    const h = (e: KeyboardEvent) => { if (e.key === 'Escape' && !ocupado && !ayuda) onCerrar() }
     window.addEventListener('keydown', h)
     return () => window.removeEventListener('keydown', h)
-  }, [onCerrar, ocupado])
+  }, [onCerrar, ocupado, ayuda])
 
   const yaEsta = (i: ImagenBanco) => i.productos.some((p) => p.variante_id === varianteId)
 
@@ -77,18 +82,22 @@ export function SelectorMediateca({ varianteId, onCerrar, onElegidas }: {
             <h2>Elegir fotos de la mediateca</h2>
             <div className="sub">Las que ya están en el banco de Integra: no hace falta volver a subirlas.</div>
           </div>
-          <button onClick={onCerrar} disabled={ocupado}>Cerrar ✕</button>
+          <div className="grupo-acciones">
+            <button type="button" className="mini" title="Cómo funciona esta pantalla" onClick={() => setAyuda(true)}>?</button>
+            <button onClick={onCerrar} disabled={ocupado}>Cerrar ✕</button>
+          </div>
         </header>
+        {ayuda && <Guia pasos={PASOS_SELECTOR} nombre="Elegir de la mediateca" onCerrar={() => setAyuda(false)} />}
 
         <div className="selector-mediateca">
           <div className="filtros">
-            <div className="grupo-badges">
+            <div className="grupo-badges" data-guia="sel-filtros">
               {FILTROS.map(([id, nombre]) => (
                 <button key={id} type="button" className={`badge ${filtro === id ? 'activo' : ''}`}
                   onClick={() => setFiltro(id)}>{nombre}</button>
               ))}
             </div>
-            <input type="search" className="crece" autoFocus placeholder="Buscar por SKU o nombre del producto que las usa"
+            <input type="search" className="crece" autoFocus placeholder="Buscar por SKU o nombre del producto que las usa" data-guia="sel-buscar"
               value={q} onChange={(e) => setQ(e.target.value)} />
           </div>
 
@@ -103,7 +112,7 @@ export function SelectorMediateca({ varianteId, onCerrar, onElegidas }: {
                 const marcada = marcadas.has(i.id)
                 const pequena = Math.min(i.ancho, i.alto) < 600
                 return (
-                  <div key={i.id} className={`celda-mini ${marcada ? 'marcada' : ''} ${bloqueada ? 'bloqueada' : ''}`}
+                  <div key={i.id} className={`celda-mini ${marcada ? 'marcada' : ''} ${bloqueada ? 'bloqueada' : ''}`} data-guia="sel-celda"
                     title={bloqueada ? 'Este producto ya la tiene' : i.productos.map((p) => p.sku || p.nombre).join(', ') || 'Sin producto'}
                     onClick={() => { if (!bloqueada) alternar(i.id) }}>
                     <img src={`/imagenes/${i.sha256}/miniatura_300`} alt="" loading="lazy" />
@@ -130,7 +139,7 @@ export function SelectorMediateca({ varianteId, onCerrar, onElegidas }: {
         <div className="hoja-pie">
           <span className="tenue crece">{marcadas.size === 0 ? 'Marca las fotos que quieras añadir' : `${num(marcadas.size)} marcadas`}</span>
           <button onClick={onCerrar} disabled={ocupado}>Cancelar</button>
-          <button className="primario" disabled={marcadas.size === 0 || ocupado} onClick={() => void anadir()}>
+          <button className="primario" disabled={marcadas.size === 0 || ocupado} onClick={() => void anadir()} data-guia="sel-anadir">
             {ocupado ? 'Añadiendo…' : `Añadir ${marcadas.size > 0 ? num(marcadas.size) : ''} al producto`}
           </button>
         </div>

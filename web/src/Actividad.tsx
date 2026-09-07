@@ -77,7 +77,7 @@ export function Actividad() {
           <h1 className="titulo-seccion">Actividad</h1>
           <div className="sub">Qué está haciendo Integra ahora y qué se hizo antes</div>
         </div>
-        <button onClick={cargar} disabled={cargando}>Actualizar</button>
+        <button onClick={cargar} disabled={cargando} data-guia="act-actualizar">Actualizar</button>
       </header>
 
       {error && <div className="aviso-caja">No se pudo leer la actividad: {error}</div>}
@@ -105,14 +105,14 @@ export function Actividad() {
         </div>
       </section>
 
-      <div className="nota-previa">
+      <div className="nota-previa" data-guia="act-nota-proceso">
         Los trabajos los procesa el <strong>worker</strong>. Si ves cosas encoladas que
         no avanzan, ese proceso está caído: arráncalo con <code>integra worker</code>.
         Integra lo vigila y abre un aviso cuando lleva más de tres minutos sin dar
         señales.
       </div>
 
-      <section className="panel">
+      <section className="panel" data-guia="act-historia">
         <h2>Lo que ha pasado</h2>
         <div className="cuerpo">
           {datos && datos.historia.length === 0 && <div className="vacio">Todavía no hay nada anotado.</div>}
@@ -120,7 +120,7 @@ export function Actividad() {
         </div>
       </section>
 
-      <div className="nota-previa">
+      <div className="nota-previa" data-guia="act-nota-historia">
         La línea de tiempo recoge lo que hizo una persona, lo que falló y los avisos que
         se abrieron. Los envíos que salieron bien <strong>no</strong> se listan uno a uno:
         una publicación de catálogo son cientos de líneas idénticas que enterrarían lo
@@ -141,7 +141,7 @@ function FilaTarea({ t, onGobernar }: {
   const pct = total > 0 ? Math.round((t.hechos / total) * 100) : 0
 
   return (
-    <div className="fila-cuenta fila-apilable">
+    <div className="fila-cuenta fila-apilable" data-guia="act-tarea">
       <div className="expande-recorta">
         <div className="fila">
           <strong className="expande">{TAREAS[t.tipo] ?? t.tipo}</strong>
@@ -168,7 +168,7 @@ function FilaTarea({ t, onGobernar }: {
         )}
       </div>
 
-      <div className="grupo-acciones">
+      <div className="grupo-acciones" data-guia="act-acciones">
         {t.pendientes > 0 && (
           <button onClick={() => onGobernar('cancelar', t)}
             title="Retira de la cola lo que aún no ha empezado">
@@ -188,7 +188,7 @@ function FilaTarea({ t, onGobernar }: {
 
 function FilaEvento({ e }: { e: Evento }) {
   return (
-    <div className="fila-evento">
+    <div className="fila-evento" data-guia="act-evento">
       <span className={`pastilla ${e.malo ? 'bloqueante' : e.clase === 'persona' ? 'dudosa' : 'aviso'}`}>
         {CLASES[e.clase] ?? e.clase}
       </span>

@@ -22,6 +22,8 @@ import { Mediateca } from './Mediateca'
 import { Avisos } from './Avisos'
 import { Sidebar, type Seccion } from './Sidebar'
 import { Guia } from './Guia'
+import { PASOS } from './GuiaPasos'
+import { GUIAS_POR_SECCION, type Recorrido } from './guias'
 
 export default function App() {
   const [sesion, setSesion] = useState<Sesion | null>(leerSesion)
@@ -107,6 +109,28 @@ function Aplicacion({ sesion, onSalir }: { sesion: Sesion; onSalir: () => void }
     setGuia(false)
     try { localStorage.setItem(claveGuia, 'vista') } catch { /* sin almacenamiento: se repetirá */ }
   }, [claveGuia])
+
+  // La ayuda de la pantalla en la que se está: un recorrido detallado por
+  // sección, distinto del general. Se abre con el botón flotante o con la
+  // tecla «?» cuando no se está escribiendo en ningún campo.
+  const [ayuda, setAyuda] = useState<Recorrido | null>(null)
+  const abrirAyuda = useCallback(() => {
+    const g = GUIAS_POR_SECCION[seccion]
+    if (g) setAyuda(g)
+  }, [seccion])
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      if (e.key !== '?' || guia || ayuda) return
+      const t = e.target as HTMLElement | null
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return
+      // Con un diálogo abierto la ayuda es la del diálogo, no la de la sección.
+      if (document.querySelector('.capa')) return
+      e.preventDefault()
+      abrirAyuda()
+    }
+    window.addEventListener('keydown', h)
+    return () => window.removeEventListener('keydown', h)
+  }, [abrirAyuda, guia, ayuda])
 
   const irAArreglar = useCallback((d: DestinoFaltante) => {
     setPreview(null)
@@ -211,7 +235,7 @@ function Aplicacion({ sesion, onSalir }: { sesion: Sesion; onSalir: () => void }
 
         {seccion === 'panel' && (
           <>
-            <header className="principal">
+            <header className="principal" data-guia="pan-cabecera">
               <div>
                 <h1 className="titulo-seccion">Panel</h1>
                 <div className="sub">
@@ -219,7 +243,7 @@ function Aplicacion({ sesion, onSalir }: { sesion: Sesion; onSalir: () => void }
                   {resumen && <> · última sincronización: {fecha(resumen.ultima_sincronizacion)}</>}
                 </div>
               </div>
-              <button className="primario" onClick={sincronizar} disabled={sincronizando}>
+              <button className="primario" onClick={sincronizar} disabled={sincronizando} data-guia="pan-sincronizar">
                 {sincronizando ? 'Sincronizando…' : 'Sincronizar ahora'}
               </button>
             </header>
@@ -244,7 +268,7 @@ function Aplicacion({ sesion, onSalir }: { sesion: Sesion; onSalir: () => void }
             )}
 
             <div className="rejilla">
-              <section className="panel">
+              <section className="panel" data-guia="bloqueos">
                 <h2>Qué bloquea la publicación</h2>
                 <div className="cuerpo">
                   {atencion.length === 0 && <div className="vacio">Nada pendiente.</div>}
@@ -261,7 +285,7 @@ function Aplicacion({ sesion, onSalir }: { sesion: Sesion; onSalir: () => void }
                 </div>
               </section>
 
-              <section className="panel">
+              <section className="panel" data-guia="pan-bodegas">
                 <h2>Existencias por bodega</h2>
                 <div className="cuerpo">
                   {stock.length === 0 && <div className="vacio">Sin datos de stock.</div>}
@@ -377,7 +401,16 @@ function Aplicacion({ sesion, onSalir }: { sesion: Sesion; onSalir: () => void }
         )}
       </main>
 
-      {guia && <Guia seccion={seccion} irA={irA} onCerrar={cerrarGuia} />}
+      {guia && <Guia pasos={PASOS} nombre="Cómo funciona Integra" seccion={seccion} irA={irA} onCerrar={cerrarGuia} />}
+      {ayuda && !guia && (
+        <Guia pasos={ayuda.pasos} nombre={ayuda.nombre} seccion={seccion} irA={irA} onCerrar={() => setAyuda(null)} />
+      )}
+      {GUIAS_POR_SECCION[seccion] && !guia && !ayuda && preview === null && (
+        <button type="button" className="boton-ayuda" onClick={abrirAyuda}
+          title={`Cómo funciona ${GUIAS_POR_SECCION[seccion]?.nombre} (tecla ?)`} aria-label="Ayuda de esta pantalla">
+          ?
+        </button>
+      )}
 
       {preview !== null && (
         <Preview varianteId={preview} onCerrar={() => setPreview(null)} onIr={irAArreglar}

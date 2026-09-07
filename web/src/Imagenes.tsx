@@ -137,16 +137,19 @@ export function Imagenes({ varianteId, onCambio }: { varianteId: number; onCambi
         </span>
         {/* Las tres formas de darle fotos al producto, una al lado de la
             otra: subirlas del PC, elegirlas del banco o buscarlas fuera. */}
-        <div className="grupo-acciones">
-          <button onClick={abrirSelector} disabled={subiendo} title="Elegir archivos de este equipo">
+        <div className="grupo-acciones" data-guia="img-acciones">
+          <button onClick={abrirSelector} disabled={subiendo} title="Elegir archivos de este equipo"
+            data-guia="img-subir">
             Subir desde el PC
           </button>
           <button onClick={() => setEligiendo(true)} disabled={subiendo}
-            title="Fotos que ya están en el banco de Integra: de otras variantes o huérfanas">
+            title="Fotos que ya están en el banco de Integra: de otras variantes o huérfanas"
+            data-guia="img-mediateca">
             Elegir de la mediateca
           </button>
           <button onClick={() => void buscarEnInternet()} disabled={buscando}
-            title="Busca por referencia y marca y descarga varias fotos de al menos 500 px">
+            title="Busca por referencia y marca y descarga varias fotos de al menos 500 px"
+            data-guia="img-internet">
             {buscando ? 'Buscando en internet…' : 'Buscar en internet'}
           </button>
         </div>
@@ -167,6 +170,7 @@ export function Imagenes({ varianteId, onCambio }: { varianteId: number; onCambi
 
       <div
         className={`soltar ${arrastrando ? 'activo' : ''}`}
+        data-guia="img-soltar"
         onDragOver={(e) => { e.preventDefault(); setArrastrando(true) }}
         onDragLeave={() => setArrastrando(false)}
         onDrop={(e) => {
@@ -209,13 +213,15 @@ export function Imagenes({ varianteId, onCambio }: { varianteId: number; onCambi
       )}
 
       {imgs.length > 0 && (
-        <div className="galeria">
+        <div className="galeria" data-guia="img-galeria">
+          {/* Los anclajes del recorrido (data-guia) van en cada foto: el
+              recorrido resalta el primero que encuentre, o sea, la portada. */}
           {imgs.map((i) => (
             <figure key={i.id} className={i.principal ? 'principal' : ''}>
               <img src={i.url} alt="" loading="lazy" />
               <figcaption>
                 <div className="dim">{i.ancho}×{i.alto} · {Math.round(i.bytes / 1024)} KB</div>
-                <div className="etiquetas">
+                <div className="etiquetas" data-guia="img-etiquetas">
                   {CANALES.map((c) => (
                     <span key={c}
                       className={`pastilla ${i.publicable?.[c] ? 'ok' : 'bloqueante'}`}
@@ -224,7 +230,7 @@ export function Imagenes({ varianteId, onCambio }: { varianteId: number; onCambi
                     </span>
                   ))}
                 </div>
-                <div className="acciones">
+                <div className="acciones" data-guia="img-foto-acciones">
                   {i.principal
                     ? <span className="pastilla ok">Portada</span>
                     : <button onClick={() => void principal(i.id)} disabled={ocupada === i.id}>

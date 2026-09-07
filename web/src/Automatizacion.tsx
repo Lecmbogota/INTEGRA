@@ -85,18 +85,18 @@ export function Automatizacion() {
           <h1 className="titulo-seccion">Automatización</h1>
           <div className="sub">Horarios que corren solos y avisos de lo que se rompió</div>
         </div>
-        <button className="primario" onClick={() => setNuevo(true)}>Nuevo horario</button>
+        <button className="primario" onClick={() => setNuevo(true)} data-guia="aut-nuevo">Nuevo horario</button>
       </header>
 
       {error && <div className="aviso-caja">Error: {error}</div>}
 
-      <section className="panel">
+      <section className="panel" data-guia="avisos">
         <h2>Avisos abiertos</h2>
         <div className="cuerpo">
           {cargando && <div className="vacio">Cargando…</div>}
           {!cargando && alertas.length === 0 && <div className="vacio">Nada roto. Todo en orden.</div>}
           {alertas.map((a) => (
-            <div key={a.id} className="fila-cuenta fila-apilable">
+            <div key={a.id} className="fila-cuenta fila-apilable" data-guia="aut-aviso">
               {/* La pastilla va dentro del bloque de texto: suelta, al apilarse
                   la fila en el móvil se estiraría a todo el ancho. */}
               <div className="expande-recorta">
@@ -111,7 +111,7 @@ export function Automatizacion() {
                 </div>
               </div>
               <div className="grupo-acciones">
-                <button onClick={() => void reconocer(a.id)} disabled={ocupadaAlerta === a.id}
+                <button onClick={() => void reconocer(a.id)} disabled={ocupadaAlerta === a.id} data-guia="aut-visto"
                   title="Marcar como visto; volverá a avisar si reaparece">
                   {ocupadaAlerta === a.id ? 'Guardando…' : 'Visto'}
                 </button>
@@ -121,7 +121,7 @@ export function Automatizacion() {
         </div>
       </section>
 
-      <section className="panel">
+      <section className="panel" data-guia="aut-horarios">
         <h2>Tareas programadas</h2>
         <div className="cuerpo">
           {cargando && <div className="vacio">Cargando…</div>}
@@ -132,7 +132,7 @@ export function Automatizacion() {
             </div>
           )}
           {horarios.map((h) => (
-            <div key={h.id} className="fila-cuenta fila-apilable">
+            <div key={h.id} className="fila-cuenta fila-apilable" data-guia="aut-horario">
               <div className="expande-recorta">
                 <div className="fila">
                   {/* La hora se queda en fila con el nombre en cualquier ancho:
@@ -148,7 +148,7 @@ export function Automatizacion() {
                   {h.proxima_ejecucion && ` · próxima: ${fecha(h.proxima_ejecucion)}`}
                 </div>
               </div>
-              <div className="grupo-acciones">
+              <div className="grupo-acciones" data-guia="aut-horario-acciones">
                 {h.activo
                   ? <span className="pastilla ok">Activo</span>
                   : <span className="pastilla dudosa">Pausado</span>}
@@ -162,7 +162,7 @@ export function Automatizacion() {
         </div>
       </section>
 
-      <div className="nota-previa">
+      <div className="nota-previa" data-guia="aut-nota-proceso">
         El planificador corre dentro del <strong>worker</strong>: para que las tareas se
         disparen, ese proceso tiene que estar arriba
         (<code>integra worker</code>). Si estuvo caído a la hora de una tarea, la ejecuta

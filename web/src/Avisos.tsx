@@ -77,13 +77,13 @@ export function Avisos() {
           <h1 className="titulo-seccion">Avisos</h1>
           <div className="sub">A dónde sale lo que Integra tiene que contar</div>
         </div>
-        <button className="primario" onClick={() => setEditando('nuevo')}>Nuevo destino</button>
+        <button className="primario" onClick={() => setEditando('nuevo')} data-guia="avi-nuevo">Nuevo destino</button>
       </header>
 
       {error && <div className="aviso-caja">Error: {error}</div>}
 
       {ningunoActivo && (
-        <div className="aviso-caja">
+        <div className="aviso-caja" data-guia="avi-alerta">
           <strong>Ahora mismo los avisos no le llegan a nadie.</strong> Integra detecta
           canales caídos, credenciales vencidas y pedidos que no se pudieron montar en
           Odoo, y los guarda para que alguien entre a mirarlos. Con un destino
@@ -91,7 +91,7 @@ export function Avisos() {
         </div>
       )}
 
-      <section className="panel">
+      <section className="panel" data-guia="avi-destinos">
         <h2>Destinos por correo</h2>
         <div className="cuerpo">
           {cargando && <div className="vacio">Cargando…</div>}
@@ -106,10 +106,10 @@ export function Avisos() {
                   <div className="fila">
                     <strong className="expande">{d.nombre}</strong>
                     {d.activo
-                      ? <span className="pastilla ok">Activo</span>
-                      : <span className="pastilla dudosa">Pausado</span>}
+                      ? <span className="pastilla ok" data-guia="avi-estado">Activo</span>
+                      : <span className="pastilla dudosa" data-guia="avi-estado">Pausado</span>}
                   </div>
-                  <div className="tenue mini-texto">
+                  <div className="tenue mini-texto" data-guia="avi-resumen">
                     {d.destinatarios.length > 0 ? d.destinatarios.join(', ') : 'sin destinatarios'}
                     {' · '}{NOMBRE_SEVERIDAD[d.min_severidad] ?? d.min_severidad}
                     {d.ultimo_envio && ` · último envío: ${fecha(d.ultimo_envio)}`}
@@ -125,12 +125,12 @@ export function Avisos() {
                   )}
                 </div>
                 <div className="grupo-acciones">
-                  <button onClick={() => void probar(d)} disabled={probando === d.id}
+                  <button onClick={() => void probar(d)} disabled={probando === d.id} data-guia="avi-probar"
                     title="Manda un correo de prueba ahora mismo">
                     {probando === d.id ? 'Enviando…' : 'Probar'}
                   </button>
-                  <button onClick={() => setEditando(d)}>Editar</button>
-                  <button onClick={() => void borrar(d)}>Borrar</button>
+                  <button onClick={() => setEditando(d)} data-guia="avi-editar">Editar</button>
+                  <button onClick={() => void borrar(d)} data-guia="avi-borrar">Borrar</button>
                 </div>
               </div>
             )
@@ -144,7 +144,7 @@ export function Avisos() {
         estaba; solo se cambia si escribes una nueva.
       </div>
 
-      <div className="nota-previa">
+      <div className="nota-previa" data-guia="avi-nota-envio">
         Los avisos los despacha el <strong>worker</strong>: para que salgan, ese proceso
         tiene que estar arriba (<code>integra worker</code>). Cada aviso se manda una
         sola vez.
