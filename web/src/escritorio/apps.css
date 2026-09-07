@@ -65,3 +65,27 @@
 }
 .ventana-cuerpo .filtros .casilla:has(input:checked)::before { background: var(--acento); }
 .ventana-cuerpo .filtros .grupo-badges .badge { min-height: 30px; }
+
+/* A sangre: dentro de una ventana la pantalla no es una tarjeta sobre un
+   fondo, es el contenido de la ventana. Los paneles pierden el marco y los
+   márgenes; lo que separa una zona de otra es una línea. */
+.ventana-cuerpo > .app-seccion { padding: 0; }
+.ventana-cuerpo .app-seccion > .panel,
+.ventana-cuerpo .app-seccion > .rejilla-1 > .panel { border-left: 0; border-right: 0; border-top: 0; border-radius: 0; }
+.ventana-cuerpo .app-seccion > .panel:last-child { border-bottom: 0; }
+.ventana-cuerpo .app-seccion > .panel > .cuerpo { padding: 0 0 12px; }
+.ventana-cuerpo header.principal { margin: 0; padding: 8px 12px; border-bottom: 1px solid var(--borde); background: var(--surface-3); }
+.ventana-cuerpo .app-seccion > .aviso-caja,
+.ventana-cuerpo .app-seccion > .nota-previa { margin: 10px 12px; }
+
+/* Barra de herramientas en dos filas: arriba búsqueda, filtros y vista;
+   debajo, pegada, el contador y las acciones en lote. Sin huecos entre
+   ellas ni con el contenido. */
+.ventana-cuerpo .panel > .cuerpo > .filtros:first-child {
+  margin: 0; padding: 8px 12px; border-radius: 0; border-bottom: 1px solid var(--borde);
+}
+.ventana-cuerpo .barra-masiva { border-top: 0; padding: 6px 12px; background: var(--surface-1); }
+.ventana-cuerpo .barra-masiva button { min-height: 30px; padding: 3px 10px; font-size: 13px; }
+.ventana-cuerpo .tabla-envoltorio, .ventana-cuerpo table { border-radius: 0; }
+.ventana-cuerpo .vista-mosaico, .ventana-cuerpo .vista-iconos, .ventana-cuerpo .vista-lista { padding: 12px; }
+.ventana-cuerpo .paginacion { border-top: 1px solid var(--borde); padding: 8px 12px; background: var(--surface-3); position: sticky; bottom: 0; }
