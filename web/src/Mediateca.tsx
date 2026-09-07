@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api, fecha, num, type FiltroMediateca, type ImagenBanco, type OrdenMediateca, type PaginaImagenes, type Producto } from './api'
 
 // El banco de imágenes visto entero, no producto a producto.
@@ -65,6 +65,53 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
   const [visor, setVisor] = useState<ImagenBanco | null>(null)
   // Lo que se va a asignar: una foto desde su botón, o todas las marcadas.
   const [asignando, setAsignando] = useState<ImagenBanco[] | null>(null)
+
+  // Subida masiva. Cada fichero sale en su propia petición: así el informe
+  // avanza línea a línea y un fichero corrupto no tumba la tanda entera.
+  const input = useRef<HTMLInputElement>(null)
+  const [porNombre, setPorNombre] = useState(true)
+  const [encima, setEncima] = useState(false)
+  const [subiendo, setSubiendo] = useState<{ hechos: number; total: number } | null>(null)
+  const [informe, setInforme] = useState<{ nombre: string; texto: string; mal: boolean }[]>([])
+
+  async function subir(lista: FileList | File[]) {
+    const archivos = Array.from(lista).filter((a) => a.type.startsWith('image/') || /\.(jpe?g|png|webp|gif|bmp|tiff?)$/i.test(a.name))
+    if (archivos.length === 0) { setError('Ninguno de los archivos es una imagen.'); return }
+    setSubiendo({ hechos: 0, total: archivos.length })
+    setInforme([])
+    setError(null)
+    setAviso(null)
+    let asignadas = 0, huerfanas = 0, fallidas = 0
+    // Tres a la vez: suficiente para no esperar una a una y sin abrir
+    // cincuenta conexiones contra el mismo servidor.
+    let indice = 0
+    const trabajador = async () => {
+      while (indice < archivos.length) {
+        const a = archivos[indice++]
+        try {
+          const r = await api.subirAlBanco(a, { porNombre })
+          if (r.asignada_a) {
+            asignadas++
+            setInforme((l) => [...l, { nombre: a.name, texto: `→ ${r.asignada_a!.sku} · ${r.asignada_a!.nombre}`, mal: false }])
+          } else {
+            huerfanas++
+            const probado = porNombre && r.candidatos?.length ? ` (se probó ${r.candidatos.join(', ')})` : ''
+            setInforme((l) => [...l, { nombre: a.name, texto: `en el banco, sin producto${probado}`, mal: false }])
+          }
+        } catch (e) {
+          fallidas++
+          setInforme((l) => [...l, { nombre: a.name, texto: e instanceof Error ? e.message : String(e), mal: true }])
+        } finally {
+          setSubiendo((s) => s ? { ...s, hechos: s.hechos + 1 } : s)
+        }
+      }
+    }
+    await Promise.all([trabajador(), trabajador(), trabajador()])
+    setSubiendo(null)
+    setAviso(`${num(archivos.length)} archivos: ${num(asignadas)} asignadas a su producto, ${num(huerfanas)} en el banco sin producto` +
+      `${fallidas > 0 ? `, ${num(fallidas)} con error` : ''}.`)
+    recargar()
+  }
 
   // La búsqueda se retrasa 300 ms para no consultar por tecla, y `vigente`
   // descarta la respuesta de una consulta que ya quedó atrás.
@@ -162,6 +209,38 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
 
   return (
     <>
+      <section className="panel">
+        <h2>Subir fotos</h2>
+        <div className="cuerpo">
+          <input ref={input} type="file" accept="image/*" multiple hidden
+            onChange={(e) => { if (e.target.files?.length) void subir(e.target.files); e.target.value = '' }} />
+          <div className={`zona-soltar ${encima ? 'encima' : ''}`}
+            onClick={() => { if (!subiendo) input.current?.click() }}
+            onDragOver={(e) => { e.preventDefault(); setEncima(true) }}
+            onDragLeave={() => setEncima(false)}
+            onDrop={(e) => { e.preventDefault(); setEncima(false); if (!subiendo && e.dataTransfer.files.length) void subir(e.dataTransfer.files) }}>
+            {subiendo
+              ? <strong>Subiendo {num(subiendo.hechos)} de {num(subiendo.total)}…</strong>
+              : <><strong>Arrastra aquí las fotos</strong> o pulsa para elegirlas. Cuantas quieras.</>}
+          </div>
+          {/* La regla que hace útil subir en masa: la carpeta del fabricante
+              viene como «SKU-1.jpg», «SKU-2.jpg», y así cada foto cae sola en
+              su producto. Lo que no case con ningún SKU queda en huérfanas. */}
+          <label className="casilla" style={{ marginTop: 10 }}>
+            <input type="checkbox" checked={porNombre} onChange={(e) => setPorNombre(e.target.checked)} />
+            Asignar cada foto al producto cuyo SKU lleve en el nombre del archivo
+            <span className="tenue"> (HDWT860UZSVA-2.jpg → HDWT860UZSVA)</span>
+          </label>
+          {informe.length > 0 && (
+            <ul className="informe-subida">
+              {informe.map((l, i) => (
+                <li key={i} className={l.mal ? 'mal' : ''}><code>{l.nombre}</code> — {l.texto}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </section>
+
       {pagina && (
         <div className="tarjetas">
           <Cifra etiqueta="Productos sin foto" valor={num(pagina.productos_sin_foto)}

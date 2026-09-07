@@ -471,6 +471,21 @@ export interface PaginaImagenes {
 export type FiltroMediateca = 'todas' | 'aptas' | 'pequenas' | 'huerfanas' | 'duplicadas'
 export type OrdenMediateca = 'recientes' | 'pesadas' | 'pequenas' | 'grandes'
 
+export interface SubidaAlBanco {
+  id: number
+  sha256: string
+  ancho: number
+  alto: number
+  formato: string
+  bytes: number
+  publicable: Record<string, boolean> | null
+  problemas: Record<string, { canal: string; motivo: string; bloquea: boolean }[]> | null
+  // Producto al que quedó enlazada, o null si quedó huérfana.
+  asignada_a: { variante_id: number; sku: string; nombre: string } | null
+  // Los SKU que se probaron a partir del nombre del fichero.
+  candidatos: string[] | null
+}
+
 // ----------------------------------------------------- destinos de avisos
 
 export interface DestinoAviso {
@@ -744,6 +759,16 @@ export const api = {
     pedir<{ estado: string }>(`/api/imagenes/${id}/asociar`, {
       method: 'POST', body: JSON.stringify({ variante_id: varianteId, principal }),
     }),
+
+  // Sube una foto al banco sin producto fijo. Con porNombre, el servidor saca
+  // el SKU del nombre del fichero («SKU-2.jpg») y la enlaza si existe.
+  subirAlBanco: (archivo: File, opciones?: { sku?: string; porNombre?: boolean }) => {
+    const fd = new FormData()
+    fd.append('archivo', archivo)
+    if (opciones?.sku) fd.append('sku', opciones.sku)
+    if (opciones?.porNombre) fd.append('por_nombre', '1')
+    return pedir<SubidaAlBanco>('/api/imagenes', { method: 'POST', body: fd })
+  },
 
   // Varias de golpe al mismo producto; la primera puede quedar como portada.
   asociarVariasDelBanco: (ids: number[], varianteId: number, principal: boolean) =>

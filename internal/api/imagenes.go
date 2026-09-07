@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -23,6 +24,7 @@ func (s *Server) registrarImagenes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/productos/{id}/imagenes/{imagenID}/principal", s.principalImagen)
 	// El banco entero, para la mediateca: lo que no se ve producto a producto.
 	mux.HandleFunc("GET /api/imagenes", s.banco)
+	mux.HandleFunc("POST /api/imagenes", s.subirAlBanco)
 	mux.HandleFunc("DELETE /api/imagenes/{id}", s.borrarDelBanco)
 	mux.HandleFunc("POST /api/imagenes/borrar", s.borrarVariasDelBanco)
 	mux.HandleFunc("POST /api/imagenes/{id}/asociar", s.asociarDelBanco)
@@ -194,6 +196,129 @@ func (s *Server) asociarVariasDelBanco(w http.ResponseWriter, r *http.Request) {
 		map[string]any{"imagenes": cuerpo.IDs, "asociadas": asociadas, "rechazadas": rechazadas, "principal": cuerpo.Principal},
 		r.RemoteAddr)
 	escribir(w, http.StatusOK, map[string]int{"asociadas": asociadas, "rechazadas": rechazadas})
+}
+
+// sufijoDeSerie es lo que se le pega a un SKU para numerar sus fotos:
+// «HDWT860UZSVA-2.jpg», «HDWT860UZSVA_2», «HDWT860UZSVA (2)». Hace falta el
+// separador y como mucho dos dígitos: un SKU que termina en «-1000» no es
+// una serie, y quitarle el «00» lo dejaría sin dueño.
+var sufijoDeSerie = regexp.MustCompile(`(?:[-_ ]+\d{1,2}|[-_ ]*\(\d{1,2}\))$`)
+
+// candidatosSKU saca del nombre de un fichero los SKU que podría ser: el
+// nombre sin extensión tal cual, y sin el número de serie. Se prueban en
+// ese orden porque el exacto siempre gana.
+func candidatosSKU(nombre string) []string {
+	stem := nombre
+	if i := strings.LastIndex(stem, "."); i >= 0 {
+		stem = stem[:i]
+	}
+	stem = strings.TrimSpace(stem)
+	if stem == "" {
+		return nil
+	}
+	out := []string{stem}
+	if sin := strings.TrimSpace(sufijoDeSerie.ReplaceAllString(stem, "")); sin != "" && sin != stem {
+		out = append(out, sin)
+	}
+	return out
+}
+
+// subirAlBanco recibe un fichero para el banco, sin producto fijo. Con
+// «sku» se enlaza al producto cuya referencia sea esa; con «por_nombre» se
+// intenta sacar la referencia del nombre del fichero, que es como llegan las
+// fotos del fabricante: una carpeta con «SKU-1.jpg», «SKU-2.jpg». Lo que no
+// case con nada queda como huérfana, y la respuesta lo dice.
+func (s *Server) subirAlBanco(w http.ResponseWriter, r *http.Request) {
+	if s.almacen == nil {
+		escribir(w, http.StatusServiceUnavailable,
+			map[string]string{"error": "el banco de imágenes no está configurado"})
+		return
+	}
+	if err := r.ParseMultipartForm(imagen.MaxBytesEntrada); err != nil {
+		escribir(w, http.StatusBadRequest,
+			map[string]string{"error": "no se pudo leer el formulario: " + err.Error()})
+		return
+	}
+	fichero, cabecera, err := r.FormFile("archivo")
+	if err != nil {
+		escribir(w, http.StatusBadRequest, map[string]string{"error": "falta el campo 'archivo'"})
+		return
+	}
+	defer fichero.Close()
+	datos, err := io.ReadAll(io.LimitReader(fichero, imagen.MaxBytesEntrada+1))
+	if err != nil {
+		s.fallo(w, err)
+		return
+	}
+
+	res, err := s.almacen.Ingerir(datos, imagen.VariantesPorDefecto)
+	if err != nil {
+		escribir(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+		return
+	}
+	derivadas := make([]struct {
+		Variante, Ruta, Formato string
+		Ancho, Alto, Bytes      int
+	}, 0, len(res.Derivadas))
+	for _, d := range res.Derivadas {
+		derivadas = append(derivadas, struct {
+			Variante, Ruta, Formato string
+			Ancho, Alto, Bytes      int
+		}{d.Variante, d.Ruta, d.Info.Formato, d.Info.Ancho, d.Info.Alto, d.Info.Bytes})
+	}
+	imgID, err := s.st.RegistrarImagen(r.Context(),
+		res.Original.SHA256, res.RutaOrig, res.Original.Formato,
+		res.Original.Ancho, res.Original.Alto, res.Original.Bytes,
+		"subida", cabecera.Filename, derivadas)
+	if err != nil {
+		s.fallo(w, err)
+		return
+	}
+
+	// A qué producto: el SKU explícito manda; si no, el nombre del fichero.
+	var candidatos []string
+	if sku := strings.TrimSpace(r.FormValue("sku")); sku != "" {
+		candidatos = []string{sku}
+	} else if r.FormValue("por_nombre") != "" {
+		candidatos = candidatosSKU(cabecera.Filename)
+	}
+	var asignada map[string]any
+	if len(candidatos) > 0 {
+		resueltos, err := s.st.ResolverSKUs(r.Context(), candidatos)
+		if err != nil {
+			s.fallo(w, err)
+			return
+		}
+		for _, c := range candidatos {
+			v, ok := resueltos[store.ClaveSKU(c)]
+			if !ok {
+				continue
+			}
+			prodID, err := s.st.ProductoDeVariante(r.Context(), v.ID)
+			if err != nil {
+				break
+			}
+			if err := s.st.AsociarImagen(r.Context(), prodID, imgID); err != nil {
+				s.fallo(w, err)
+				return
+			}
+			asignada = map[string]any{"variante_id": v.ID, "sku": store.ClaveSKU(c), "nombre": v.Nombre}
+			break
+		}
+	}
+	if asignada != nil {
+		_ = s.st.RecalcularAtencion(r.Context())
+	}
+
+	escribir(w, http.StatusCreated, map[string]any{
+		"id": imgID, "sha256": res.Original.SHA256,
+		"ancho": res.Original.Ancho, "alto": res.Original.Alto,
+		"formato": res.Original.Formato, "bytes": res.Original.Bytes,
+		"publicable": imagen.Publicable(res.Original),
+		"problemas":  imagen.ValidarTodos(res.Original),
+		"asignada_a": asignada,
+		"candidatos": candidatos,
+	})
 }
 
 // productoDesdeRuta acepta el identificador de variante que usa el resto de la

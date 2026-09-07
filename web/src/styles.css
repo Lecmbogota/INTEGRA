@@ -655,6 +655,11 @@ button.enlace:hover:not(:disabled) { background: none; color: var(--acento-hover
 .lista-eleccion label:hover { background: rgba(0,0,0,.04); }
 .tira-miniaturas { display: flex; gap: 6px; flex-wrap: wrap; padding: 0 16px 12px; }
 .tira-miniaturas img { width: 56px; height: 56px; object-fit: cover; border-radius: 6px; border: 1px solid var(--borde, #ddd); background: #fff; }
+.zona-soltar { border: 2px dashed var(--borde, #cfd4dc); border-radius: 10px; padding: 18px; text-align: center; color: var(--texto-secundario, #555); cursor: pointer; transition: background .15s, border-color .15s; }
+.zona-soltar:hover, .zona-soltar.encima { background: rgba(37,99,235,.06); border-color: var(--acento); }
+.informe-subida { margin: 10px 0 0; padding-left: 18px; font-size: 12px; max-height: 30vh; overflow: auto; }
+.informe-subida li { margin-bottom: 2px; }
+.informe-subida .mal { color: var(--error); }
 .galeria img {
   width: 100%; aspect-ratio: 1; object-fit: contain;
   background: #fff; display: block;
