@@ -51,7 +51,8 @@ export type PropsVentana = {
   ventanaId: string
   // Props con las que se abrió (vacío en las apps de sección).
   props: Record<string, unknown>
-  // Cierra esta ventana.
+  // Termina esta página: si es la base de la ventana la cierra; si se llegó
+  // navegando (Productos → Editar), vuelve a la anterior y la olvida.
   cerrar: () => void
 }
 
@@ -81,10 +82,23 @@ export type AppDef = {
 
 export type EstadoVentana = 'normal' | 'minimizada' | 'maximizada' | 'izquierda' | 'derecha'
 
+// Una página del historial de una ventana: la app que se ve y con qué se
+// abrió. Seleccionar un producto en Productos no abre otra ventana: navega a
+// la previa dentro de la misma, y ← vuelve a la lista tal como estaba.
+// `clave` es única por página y sirve de key de React: dos ediciones seguidas
+// del mismo producto son páginas distintas, con su estado cada una.
+export type Pagina = { clave: string; app: AppId; props: Record<string, unknown>; titulo: string }
+
 export type Ventana = {
   id: string
+  // Página actual (siempre `historial[indice]`, copiada aquí para que todo lo
+  // que ya lee `v.app`, `v.props` o `v.titulo` siga funcionando sin saber
+  // que hay historial).
   app: AppId
   titulo: string
+  props: Record<string, unknown>
+  historial: Pagina[]
+  indice: number
   x: number
   y: number
   w: number
@@ -92,29 +106,41 @@ export type Ventana = {
   estado: EstadoVentana
   // Orden de apilado: mayor = delante.
   z: number
-  props: Record<string, unknown>
   // Geometría a la que volver al restaurar desde maximizada/ajustada.
   anterior?: { x: number; y: number; w: number; h: number }
 }
 
 // Eventos entre ventanas. Quien cambia algo lo emite; quien lo muestra se
 // suscribe y recarga. Es lo que sustituye a los callbacks onCambio/onGuardado
-// que antes atravesaban App.
+// que antes atravesaban App. («Ir a arreglar» desde la previa ya no es un
+// evento: la previa navega dentro de su propia ventana con useIr.)
 export type Evento =
   | { nombre: 'producto-cambiado'; varianteId?: number }
   | { nombre: 'fotos-cambiadas'; varianteId?: number }
   | { nombre: 'publicaciones-cambiadas' }
   | { nombre: 'pedidos-cambiados' }
-  | { nombre: 'ir-a-arreglar'; destino: { tipo: 'editar'; varianteId: number; sku: string; pestana: Pestana } | { tipo: 'categorias'; canal: string } }
 
 export type Sistema = {
   ventanas: Ventana[]
   // Ventana con el foco (la de mayor z que no esté minimizada), o null.
   activa: string | null
-  // Abre una app. Si es única y ya está abierta, la enfoca (y restaura si
-  // estaba minimizada). Devuelve el id de la ventana.
+  // Abre una app en una ventana nueva. Si es única y ya está abierta (como
+  // página actual o como base de una ventana), la enfoca y va a esa página
+  // (y restaura si estaba minimizada). Devuelve el id de la ventana.
   abrir: (app: AppId, props?: Record<string, unknown>, opciones?: { titulo?: string }) => string
   cerrar: (id: string) => void
+  // Historial de la ventana. `navegar` añade una página tras la actual —
+  // descartando lo que hubiera «adelante», como un navegador— y la hace
+  // actual; `atras`/`adelante` se mueven por él sin perder nada. Si se puede
+  // ir atrás o adelante se deduce de `indice` y `historial.length`.
+  navegar: (id: string, app: AppId, props?: Record<string, unknown>, titulo?: string) => void
+  atras: (id: string) => void
+  adelante: (id: string) => void
+  // Una página terminó (el diálogo guardó o se canceló): se quita del
+  // historial con las que hubiera después y se vuelve a la anterior. No es
+  // `atras`: un editor que ya guardó no debe seguir «adelante» con datos
+  // viejos. Con la página 0 no hace nada: esa se cierra con `cerrar`.
+  cerrarPagina: (id: string, clave: string) => void
   enfocar: (id: string) => void
   minimizar: (id: string) => void
   maximizar: (id: string) => void
@@ -123,6 +149,7 @@ export type Sistema = {
   ajustar: (id: string, lado: 'izquierda' | 'derecha') => void
   mover: (id: string, x: number, y: number) => void
   redimensionar: (id: string, geometria: { x: number; y: number; w: number; h: number }) => void
+  // Cambia el título de la página actual de la ventana (queda en el historial).
   retitular: (id: string, titulo: string) => void
   minimizarTodas: () => void
   // Bus de eventos.

@@ -3,8 +3,9 @@ import { confirmar } from './escritorio/Dialogos'
 import { api, fecha, num, type FiltroMediateca, type ImagenBanco, type OrdenMediateca, type PaginaImagenes, type Producto } from './api'
 import { EditorFoto } from './EditorFoto'
 import { Guia } from './Guia'
+import { Hoja } from './Hoja'
 import { PASOS_ASIGNAR } from './guias/mediateca'
-import { useEvento, useSistemaOpcional } from './escritorio/sistema'
+import { useEvento, useIr, useSistemaOpcional } from './escritorio/sistema'
 import { Imagen, SelectorVista, useVista } from './Vista'
 
 // El banco de imágenes visto entero, no producto a producto.
@@ -77,25 +78,26 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
   // medidas y pesos, que en una cuadrícula de fotos no se leen.
   const [vista, setVista] = useVista('mediateca', 'mosaico')
 
-  // Dentro del escritorio, editar y asignar se abren en su propia ventana y
-  // el resultado vuelve por el bus. Fuera (sistema null) siguen siendo
-  // modales de esta pantalla, sin cambios.
+  // Dentro del escritorio, editar y asignar son páginas de esta misma
+  // ventana (← vuelve aquí) y el resultado vuelve por el bus. Fuera (sistema
+  // null) siguen siendo modales de esta pantalla, sin cambios.
   const sistema = useSistemaOpcional()
+  const ir = useIr()
   useEvento('fotos-cambiadas', () => setVersion((v) => v + 1))
   function editarFoto(i: ImagenBanco) {
     if (sistema) {
-      // Solo lo que el editor necesita: las props de una ventana viajan
+      // Solo lo que el editor necesita: las props de una página viajan
       // sueltas, sin la lista de productos ni el origen.
       const foto = { id: i.id, sha256: i.sha256, ancho: i.ancho, alto: i.alto, formato: i.formato }
-      sistema.abrir('editor-foto', { foto }, { titulo: `Editar foto · ${i.ancho}×${i.alto}` })
+      ir('editor-foto', { foto }, `Editar foto · ${i.ancho}×${i.alto}`)
     } else {
       setEditando(i)
     }
   }
   function asignarFotos(lista: ImagenBanco[]) {
     if (sistema) {
-      sistema.abrir('asignar-foto', { imagenIds: lista.map((i) => i.id) },
-        { titulo: lista.length === 1 ? 'Asignar la foto' : `Asignar ${num(lista.length)} fotos` })
+      ir('asignar-foto', { imagenIds: lista.map((i) => i.id) },
+        lista.length === 1 ? 'Asignar la foto' : `Asignar ${num(lista.length)} fotos`)
     } else {
       setAsignando(lista)
     }
@@ -617,11 +619,14 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
 // pasa a ser la cara del producto en los cuatro canales. Se maneja entero
 // con el teclado: escribir, flechas para elegir, Enter para asignar.
 // Exportado porque en el escritorio se abre como ventana propia (apps.tsx).
-export function DialogoAsignar({ imagenes, ocupada, onCerrar, onConfirmar }: {
+export function DialogoAsignar({ imagenes, ocupada, onCerrar, onConfirmar, enVentana }: {
   imagenes: ImagenBanco[]
   ocupada: boolean
   onCerrar: () => void
   onConfirmar: (producto: Producto, principal: boolean) => void
+  // Como página de una ventana del escritorio: sin velo, sin tarjeta y sin
+  // Escape (la ventana ya encuadra y ← ya vuelve). Ver Hoja.tsx.
+  enVentana?: boolean
 }) {
   const [q, setQ] = useState('')
   const [candidatos, setCandidatos] = useState<Producto[]>([])
@@ -634,10 +639,11 @@ export function DialogoAsignar({ imagenes, ocupada, onCerrar, onConfirmar }: {
   // Escape cierra el diálogo, salvo que la ayuda esté abierta encima: ahí
   // cierra la ayuda y el diálogo se queda.
   useEffect(() => {
+    if (enVentana) return
     const h = (e: KeyboardEvent) => { if (e.key === 'Escape' && !ayuda && !ocupada) onCerrar() }
     window.addEventListener('keydown', h)
     return () => window.removeEventListener('keydown', h)
-  }, [onCerrar, ayuda, ocupada])
+  }, [onCerrar, ayuda, ocupada, enVentana])
 
   useEffect(() => {
     if (q.trim().length < 2) { setCandidatos([]); setTotal(0); return }
@@ -667,8 +673,7 @@ export function DialogoAsignar({ imagenes, ocupada, onCerrar, onConfirmar }: {
   }
 
   return (
-    <div className="capa" onClick={onCerrar}>
-      <div className="hoja hoja-media" onClick={(e) => e.stopPropagation()} onKeyDown={teclado}>
+    <Hoja enVentana={enVentana} clase="hoja-media" alFondo={onCerrar} onKeyDown={teclado}>
         <header className="hoja-cabecera">
           <div>
             <h2>{varias ? `Asignar ${num(imagenes.length)} fotos a un producto` : 'Asignar la foto a un producto'}</h2>
@@ -743,8 +748,7 @@ export function DialogoAsignar({ imagenes, ocupada, onCerrar, onConfirmar }: {
             {ocupada ? 'Asignando…' : elegido ? `Asignar a ${elegido.sku || elegido.nombre}` : 'Asignar'}
           </button>
         </div>
-      </div>
-    </div>
+    </Hoja>
   )
 }
 

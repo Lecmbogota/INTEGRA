@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { api, num } from './api'
 import { Guia } from './Guia'
+import { Hoja } from './Hoja'
 import { PASOS_EDITOR_FOTO } from './guias/editorFoto'
 
 // Editor de fotos. Lo que hace falta para dejar una foto como la piden los
@@ -345,10 +346,13 @@ function limitar(r: Rect, W: number, H: number, min = 16): Rect {
 
 // ------------------------------------------------------------- componente
 
-export function EditorFoto({ foto, onCerrar, onGuardada }: {
+export function EditorFoto({ foto, onCerrar, onGuardada, enVentana }: {
   foto: FotoEditable
   onCerrar: () => void
   onGuardada: (modo: 'reemplazar' | 'nueva') => void
+  // Como página de una ventana del escritorio: sin velo, sin tarjeta y sin
+  // Escape (la ventana ya encuadra y ← ya vuelve). Ver Hoja.tsx.
+  enVentana?: boolean
 }) {
   const [fuente, setFuente] = useState<HTMLImageElement | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -381,10 +385,11 @@ export function EditorFoto({ foto, onCerrar, onGuardada }: {
   // Escape cierra el editor, salvo que la ayuda esté abierta encima: ahí
   // cierra la ayuda y el editor se queda con sus ajustes.
   useEffect(() => {
+    if (enVentana) return
     const h = (e: KeyboardEvent) => { if (e.key === 'Escape' && !guardando && !ayuda) onCerrar() }
     window.addEventListener('keydown', h)
     return () => window.removeEventListener('keydown', h)
-  }, [onCerrar, guardando, ayuda])
+  }, [onCerrar, guardando, ayuda, enVentana])
 
   // Orientar es caro en fotos grandes: se hace una vez por giro y se guarda.
   useEffect(() => {
@@ -603,8 +608,7 @@ export function EditorFoto({ foto, onCerrar, onGuardada }: {
   )
 
   return (
-    <div className="capa" onClick={() => { if (!guardando) onCerrar() }}>
-      <div className="hoja hoja-editor hoja-editor-foto" onClick={(e) => e.stopPropagation()}>
+    <Hoja enVentana={enVentana} clase="hoja-editor hoja-editor-foto" alFondo={() => { if (!guardando) onCerrar() }}>
         <header className="hoja-cabecera">
           <div>
             <h2>Editar foto</h2>
@@ -812,8 +816,7 @@ export function EditorFoto({ foto, onCerrar, onGuardada }: {
             </aside>
           </div>
         )}
-      </div>
-    </div>
+    </Hoja>
   )
 }
 

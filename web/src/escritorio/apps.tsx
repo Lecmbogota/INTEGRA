@@ -7,7 +7,7 @@ import type {
   PropsPreview, PropsSelectorMediateca, PropsVentana,
 } from './tipos'
 import { useDatos } from './datos'
-import { useSistema } from './sistema'
+import { useIr, useSistema } from './sistema'
 import { Panel } from '../Panel'
 import { Catalogo } from '../Catalogo'
 import { Mediateca, DialogoAsignar } from '../Mediateca'
@@ -39,6 +39,8 @@ import './apps.css'
 // ventanas) y con el `render` que los envuelve. Las pantallas son las mismas
 // de siempre; lo que cambia es que los datos globales vienen de useDatos y
 // que los resultados de un diálogo salen por el bus en vez de por callbacks.
+// Un diálogo casi nunca es una ventana propia: es una página en la ventana
+// de quien lo abrió (useIr), y su `cerrar` vuelve atrás.
 
 // Progreso de los recorridos e «iniciar uno»: los guarda App, que es quien
 // pinta la guía por encima de todo; el centro de ayuda los lee de aquí.
@@ -120,17 +122,19 @@ async function cargarProducto(varianteId: number, sku?: string): Promise<Product
 
 function CatalogoApp() {
   const { marcas, categorias, recargar } = useDatos()
-  const sis = useSistema()
+  // La previa se abre en esta misma ventana: ← devuelve a la lista con sus
+  // filtros y su selección.
+  const ir = useIr()
   return (
     <Catalogo marcas={marcas} categorias={categorias}
-      onVer={(id) => sis.abrir('preview', { varianteId: id })}
+      onVer={(id) => ir('preview', { varianteId: id })}
       onCambio={() => void recargar()} />
   )
 }
 
 function MediatecaApp() {
   const { masivo, lanzarMasivo } = useDatos()
-  const sis = useSistema()
+  const ir = useIr()
   return (
     <>
       <header className="principal">
@@ -162,7 +166,7 @@ function MediatecaApp() {
         </div>
       )}
 
-      <Mediateca onVer={(id) => sis.abrir('preview', { varianteId: id })} />
+      <Mediateca onVer={(id) => ir('preview', { varianteId: id })} />
     </>
   )
 }
@@ -231,7 +235,7 @@ function CentroAyuda({ cerrar }: PropsVentana) {
   }, [sis.ventanas])
   return (
     <div className="app-dialogo">
-      <Ayuda seccion={seccion} progreso={ayuda?.progreso ?? {}} onCerrar={cerrar}
+      <Ayuda seccion={seccion} progreso={ayuda?.progreso ?? {}} onCerrar={cerrar} enVentana
         onIniciar={(rec, paso) => { ayuda?.iniciar(rec, paso); cerrar() }} />
     </div>
   )
@@ -264,8 +268,10 @@ function EditarApp({ ventanaId, props, cerrar }: PropsVentana) {
       {error && <div className="aviso-caja">Error: {error}</div>}
       {!error && !producto && <div className="nota-carga">Cargando el producto…</div>}
       {producto && (
-        <Editar producto={producto} marcas={marcas} pestanaInicial={pestana}
+        <Editar producto={producto} marcas={marcas} pestanaInicial={pestana} enVentana
           onCerrar={cerrar}
+          // Guardar avisa por el bus y termina la página: se vuelve a la
+          // lista (o se cierra la ventana si el editor era su base).
           onGuardado={() => {
             sis.current.emitir({ nombre: 'producto-cambiado', varianteId })
             cerrar()
@@ -278,12 +284,17 @@ function EditarApp({ ventanaId, props, cerrar }: PropsVentana) {
 function PreviewApp({ props, cerrar }: PropsVentana) {
   const { varianteId } = props as PropsPreview
   const sis = useSistema()
+  // «Ir a arreglar» navega dentro de esta misma ventana: al editor en la
+  // pestaña que toca, o al mapeo de categorías del canal. La previa se
+  // queda atrás en el historial y ← vuelve a ella.
+  const ir = useIr()
   return (
     <div className="app-dialogo">
-      <Preview varianteId={varianteId} onCerrar={cerrar}
-        // Quien atiende «ir a arreglar» (App) abre el editor o las
-        // categorías; esta ventana ya cumplió y se cierra, como antes.
-        onIr={(d) => { sis.emitir({ nombre: 'ir-a-arreglar', destino: d }); cerrar() }}
+      <Preview varianteId={varianteId} onCerrar={cerrar} enVentana
+        onIr={(d) => {
+          if (d.tipo === 'editar') ir('editar', { varianteId: d.varianteId, sku: d.sku, pestana: d.pestana }, `Editar · ${d.sku}`)
+          else ir('categorias', { canal: d.canal })
+        }}
         onCambio={() => sis.emitir({ nombre: 'fotos-cambiadas', varianteId })} />
     </div>
   )
@@ -294,7 +305,7 @@ function EditorFotoApp({ props, cerrar }: PropsVentana) {
   const sis = useSistema()
   return (
     <div className="app-dialogo">
-      <EditorFoto foto={foto} onCerrar={cerrar}
+      <EditorFoto foto={foto} onCerrar={cerrar} enVentana
         onGuardada={() => { sis.emitir({ nombre: 'fotos-cambiadas' }); cerrar() }} />
     </div>
   )
@@ -317,7 +328,7 @@ function PlantillaApp({ cerrar }: PropsVentana) {
   }, [filtro])
   return (
     <div className="app-dialogo">
-      <PlantillaMasiva filtro={filtro} total={total} marcas={marcas} categorias={categorias}
+      <PlantillaMasiva filtro={filtro} total={total} marcas={marcas} categorias={categorias} enVentana
         onFiltrar={(c) => setFiltro((f) => ({ ...f, ...c }))}
         onCerrar={cerrar}
         // No se cierra al aplicar: el resumen de lo que cambió es lo que el
@@ -332,7 +343,7 @@ function EdicionMasivaApp({ props, cerrar }: PropsVentana) {
   const sis = useSistema()
   return (
     <div className="app-dialogo">
-      <EdicionMasiva ids={seleccion.ids ?? []} filtro={seleccion.filtro ?? {}} totalFiltro={cuantos}
+      <EdicionMasiva ids={seleccion.ids ?? []} filtro={seleccion.filtro ?? {}} totalFiltro={cuantos} enVentana
         onCerrar={cerrar}
         onAplicado={() => { sis.emitir({ nombre: 'producto-cambiado' }); cerrar() }} />
     </div>
@@ -344,7 +355,7 @@ function SelectorMediatecaApp({ props, cerrar }: PropsVentana) {
   const sis = useSistema()
   return (
     <div className="app-dialogo">
-      <SelectorMediateca varianteId={varianteId} onCerrar={cerrar}
+      <SelectorMediateca varianteId={varianteId} onCerrar={cerrar} enVentana
         onElegidas={() => { sis.emitir({ nombre: 'fotos-cambiadas', varianteId }); cerrar() }} />
     </div>
   )
@@ -398,7 +409,7 @@ function AsignarFotoApp({ ventanaId, props, cerrar }: PropsVentana) {
       {error && <div className="aviso-caja">Error: {error}</div>}
       {!error && !imagenes && <div className="nota-carga">Cargando las imágenes…</div>}
       {imagenes && (
-        <DialogoAsignar imagenes={imagenes} ocupada={ocupada} onCerrar={cerrar}
+        <DialogoAsignar imagenes={imagenes} ocupada={ocupada} onCerrar={cerrar} enVentana
           onConfirmar={(p, principal) => void confirmar(p, principal)} />
       )}
     </div>

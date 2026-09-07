@@ -2,6 +2,7 @@ import { useRef, useState } from 'react'
 import { confirmar } from './escritorio/Dialogos'
 import { api, money, num, type Categoria, type FiltroCatalogo, type Marca, type ResultadoPlantilla } from './api'
 import { Guia } from './Guia'
+import { Hoja } from './Hoja'
 import { PASOS_PLANTILLA } from './guias/plantilla'
 
 // Actualización masiva de precios y promociones por hoja de cálculo.
@@ -23,7 +24,7 @@ const CONDICIONES: { clave: keyof FiltroCatalogo; texto: string; ayuda: string }
   { clave: 'problemas', texto: 'con problemas', ayuda: 'Algo les impide publicarse' },
 ]
 
-export function PlantillaMasiva({ filtro, total, marcas, categorias, onFiltrar, onCerrar, onAplicado }: {
+export function PlantillaMasiva({ filtro, total, marcas, categorias, onFiltrar, onCerrar, onAplicado, enVentana }: {
   filtro: FiltroCatalogo
   total: number
   marcas: Marca[]
@@ -35,6 +36,9 @@ export function PlantillaMasiva({ filtro, total, marcas, categorias, onFiltrar, 
   onFiltrar: (cambio: Partial<FiltroCatalogo>) => void
   onCerrar: () => void
   onAplicado: () => void
+  // Como página de una ventana del escritorio: sin velo ni tarjeta (la
+  // ventana ya encuadra y ← ya vuelve). Ver Hoja.tsx.
+  enVentana?: boolean
 }) {
   const [archivo, setArchivo] = useState<File | null>(null)
   const [previa, setPrevia] = useState<ResultadoPlantilla | null>(null)
@@ -131,8 +135,7 @@ export function PlantillaMasiva({ filtro, total, marcas, categorias, onFiltrar, 
     (previa.precios > 0 || previa.promociones > 0) && !previa.aplicado
 
   return (
-    <div className="capa" onClick={cerrar}>
-      <div className="hoja hoja-plantilla" onClick={(e) => e.stopPropagation()}>
+    <Hoja enVentana={enVentana} clase="hoja-plantilla" alFondo={() => void cerrar()}>
         <header className="hoja-cabecera" data-guia="plan-cabecera">
           <div>
             <h2>Actualización masiva por plantilla</h2>
@@ -377,8 +380,7 @@ export function PlantillaMasiva({ filtro, total, marcas, categorias, onFiltrar, 
         </footer>
 
         {ayuda && <Guia pasos={PASOS_PLANTILLA} nombre="Actualización por plantilla" onCerrar={() => setAyuda(false)} />}
-      </div>
-    </div>
+    </Hoja>
   )
 }
 

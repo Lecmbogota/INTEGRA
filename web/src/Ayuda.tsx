@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { RECORRIDOS, TOTAL_PASOS, type Recorrido } from './guias'
+import { Hoja } from './Hoja'
 import type { Seccion } from './Sidebar'
 
 // Centro de ayuda: la puerta a todos los recorridos.
@@ -41,20 +42,24 @@ function fragmento(texto: string, consulta: string, ancho = 140): string {
   return (ini > 0 ? '…' : '') + texto.slice(ini, fin) + (fin < texto.length ? '…' : '')
 }
 
-export function Ayuda({ seccion, progreso, onCerrar, onIniciar }: {
+export function Ayuda({ seccion, progreso, onCerrar, onIniciar, enVentana }: {
   seccion: Seccion
   progreso: Progreso
   onCerrar: () => void
   onIniciar: (rec: Recorrido, paso: number) => void
+  // Como contenido de una ventana del escritorio: sin velo, sin tarjeta y
+  // sin Escape (la ventana ya encuadra). Ver Hoja.tsx.
+  enVentana?: boolean
 }) {
   const [pestana, setPestana] = useState<Pestana>('recorridos')
   const [consulta, setConsulta] = useState('')
 
   useEffect(() => {
+    if (enVentana) return
     const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onCerrar() }
     window.addEventListener('keydown', h)
     return () => window.removeEventListener('keydown', h)
-  }, [onCerrar])
+  }, [onCerrar, enVentana])
 
   // Índice de búsqueda: se construye una vez por apertura.
   const indice = useMemo(() => RECORRIDOS.flatMap((rec) =>
@@ -79,8 +84,7 @@ export function Ayuda({ seccion, progreso, onCerrar, onIniciar }: {
   const actual = RECORRIDOS.find((r) => r.seccion === seccion)
 
   return (
-    <div className="capa ayuda-capa" onClick={onCerrar}>
-      <div className="hoja hoja-ancha ayuda-hoja" onClick={(e) => e.stopPropagation()}>
+    <Hoja enVentana={enVentana} clase="hoja-ancha ayuda-hoja" claseCapa="ayuda-capa" alFondo={onCerrar}>
         <header className="hoja-cabecera">
           <div>
             <h2>Ayuda de Integra</h2>
@@ -186,7 +190,6 @@ export function Ayuda({ seccion, progreso, onCerrar, onIniciar }: {
             ))}
           </div>
         )}
-      </div>
-    </div>
+    </Hoja>
   )
 }

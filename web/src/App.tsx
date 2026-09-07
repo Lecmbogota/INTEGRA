@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { alCaducarSesion, api } from './api'
 import { Login, borrarSesion, leerSesion, type Sesion } from './Login'
 import { ProveedorSesion } from './escritorio/sesion'
 import { sonidoCierre } from './escritorio/sonido'
 import { Dialogos } from './escritorio/Dialogos'
-import { ALTO_BARRA, ProveedorSistema, useEvento, useSistema } from './escritorio/sistema'
+import { ALTO_BARRA, ContextoVentana, ProveedorSistema, useSistema } from './escritorio/sistema'
 import { ProveedorDatos } from './escritorio/datos'
 import { ProveedorPreferencias } from './escritorio/preferencias'
 import { Emergentes, ProveedorNotificaciones } from './escritorio/Notificaciones'
@@ -155,15 +155,6 @@ function Pantalla({ sesion, entrando }: { sesion: Sesion; entrando: boolean }) {
     }
   }, [activo, ayudaDeAqui])
 
-  // La vista previa pide corregir algo: se abre el editor del producto en la
-  // pestaña que toca, o el mapeo de categorías del canal.
-  useEvento('ir-a-arreglar', (e) => {
-    if (e.nombre !== 'ir-a-arreglar') return
-    const d = e.destino
-    if (d.tipo === 'editar') sis.abrir('editar', { varianteId: d.varianteId, sku: d.sku, pestana: d.pestana })
-    else sis.abrir('categorias', { canal: d.canal })
-  })
-
   // Al entrar por primera vez no hay ventanas: se abre el panel para que el
   // escritorio no esté vacío. Después, se restaura lo que había.
   useEffect(() => {
@@ -180,11 +171,26 @@ function Pantalla({ sesion, entrando }: { sesion: Sesion; entrando: boolean }) {
         <Escritorio />
         <div className="ventanas">
           {sis.ventanas.map((v) => {
-            const app = APPS[v.app]
-            if (!app) return null
+            // Todas las páginas del historial de la ventana, montadas; solo
+            // la actual se ve. Así ← vuelve a Productos con sus filtros, su
+            // selección y su scroll, en vez de recargarlo.
             return (
               <Ventana key={v.id} ventana={v}>
-                {app.render({ ventanaId: v.id, props: v.props, cerrar: () => sis.cerrar(v.id) })}
+                {v.historial.map((p, i) => {
+                  const app = APPS[p.app]
+                  if (!app) return null
+                  // Cerrar la página base cierra la ventana; cerrar una
+                  // página navegada la termina (vuelve atrás y la olvida):
+                  // un editor que ya guardó no tiene sentido «adelante».
+                  const cerrar = i === 0 ? () => sis.cerrar(v.id) : () => sis.cerrarPagina(v.id, p.clave)
+                  return (
+                    <Pagina key={p.clave} visible={i === v.indice}>
+                      <ContextoVentana.Provider value={v.id}>
+                        {app.render({ ventanaId: v.id, props: p.props, cerrar })}
+                      </ContextoVentana.Provider>
+                    </Pagina>
+                  )
+                })}
               </Ventana>
             )
           })}
@@ -200,5 +206,23 @@ function Pantalla({ sesion, entrando }: { sesion: Sesion; entrando: boolean }) {
         )}
       </div>
     </ContextoAyuda.Provider>
+  )
+}
+
+// Una página del historial de una ventana. Es su propio contenedor de
+// desplazamiento (ventanas.css) y recuerda por dónde iba: al ocultarse con
+// `hidden` el navegador pone el scroll a cero, así que se apunta antes y se
+// repone al volver a enseñarla.
+function Pagina({ visible, children }: { visible: boolean; children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const scroll = useRef(0)
+  useLayoutEffect(() => {
+    if (visible && ref.current) ref.current.scrollTop = scroll.current
+  }, [visible])
+  return (
+    <div ref={ref} className="pagina" hidden={!visible}
+      onScroll={(e) => { if (visible) scroll.current = e.currentTarget.scrollTop }}>
+      {children}
+    </div>
   )
 }

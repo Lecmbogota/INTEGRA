@@ -142,6 +142,9 @@ export function SelectorVista({ modo, onCambiar, admitidos = TODOS }: {
       // Solo si el foco está en esta pantalla. Fuera del escritorio la
       // pantalla es `.contenido`; dentro, su `.ventana`, y vale también
       // que la ventana sea la activa aunque el foco esté en el cuerpo.
+      // Una página que quedó atrás en el historial de la ventana (Productos
+      // con un editor delante) sigue montada pero oculta: no responde.
+      if (raiz.current?.closest('.pagina[hidden]')) return
       const ambito = raiz.current?.closest('.ventana, .contenido')
       const activo = document.activeElement
       const dentro = ambito

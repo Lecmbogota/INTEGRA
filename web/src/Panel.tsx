@@ -2,14 +2,15 @@ import { fecha, motivo, num } from './api'
 import { Prioridad } from './Prioridad'
 import { Canales } from './Canales'
 import { useDatos } from './escritorio/datos'
-import { useSistema } from './escritorio/sistema'
+import { useIr } from './escritorio/sistema'
 
 // El panel: la primera pantalla. Antes era la sección `panel` de App; ahora
-// es una app del escritorio que lee los datos globales y abre la vista
-// previa en su propia ventana. Los `data-guia` son los que sigue la guía.
+// es una app del escritorio que lee los datos globales y navega a la vista
+// previa dentro de su propia ventana (← vuelve al panel). Los `data-guia`
+// son los que sigue la guía.
 export function Panel() {
   const { resumen, atencion, stock, sincronizar, sincronizando } = useDatos()
-  const sis = useSistema()
+  const ir = useIr()
 
   const maxAtencion = Math.max(1, ...atencion.map((a) => a.cantidad))
   const maxStock = Math.max(1, ...stock.map((s) => s.unidades))
@@ -85,7 +86,7 @@ export function Panel() {
       </div>
 
       <div className="rejilla">
-        <Prioridad onVer={(id) => sis.abrir('preview', { varianteId: id })} />
+        <Prioridad onVer={(id) => ir('preview', { varianteId: id })} />
         <Canales />
       </div>
     </>

@@ -2,8 +2,9 @@
    ventana. Los componentes no cambian: es el marco el que los adapta. */
 
 /* Una pantalla de sección dentro de su ventana: el relleno que antes ponía
-   .contenido, más corto porque el espacio es de la ventana, no de la página. */
-.ventana-cuerpo > .app-seccion { padding: 14px 18px 18px; }
+   .contenido, más corto porque el espacio es de la ventana, no de la página.
+   (Entre el cuerpo y la app está la .pagina del historial, ventanas.css.) */
+.ventana-cuerpo .pagina > .app-seccion { padding: 14px 18px 18px; }
 .ventana-cuerpo header.principal { margin-bottom: 14px; }
 .ventana-cuerpo header.principal h1 { font-size: 22px; }
 
@@ -13,18 +14,32 @@
    contenedor posicionado (ventanas.css). */
 .ventana-cuerpo .capa { position: absolute; inset: 0; padding: 16px; }
 
-/* Un diálogo que ahora ES la ventana: su .capa deja de ser un velo sobre la
-   página y su .hoja deja de ser una tarjeta flotante. Se pintan como
-   contenido corriente, a todo el ancho, y el desplazamiento lo pone la
-   ventana. Más específico que la regla anterior para ganarle. */
-.ventana-cuerpo .app-dialogo > .capa {
-  position: static; background: none; padding: 0; display: block;
-  overflow: visible; z-index: auto; inset: auto;
+/* Un diálogo que es una página de la ventana (Hoja.tsx con `enVentana`): no
+   pinta velo ni tarjeta, solo su contenido a todo el ancho, sin sombra ni
+   borde, y se desplaza con la página. Conserva la clase modificadora de su
+   hoja (hoja-editor-foto, ayuda-hoja…) por la disposición interna que
+   esta trae; lo que esa clase dice de tamaño de tarjeta se anula aquí. */
+.ventana-cuerpo .pagina-dialogo {
+  width: auto; max-width: none; max-height: none;
+  padding: 0 16px 16px; box-shadow: none; border: none; border-radius: 0;
 }
-.ventana-cuerpo .app-dialogo > .capa > .hoja {
-  width: 100%; max-width: none; max-height: none; box-shadow: none;
-  border-radius: 0; border: none; margin: 0;
+/* La cabecera de la hoja se vuelve una barra fina pegada arriba, con el
+   título del diálogo y sus acciones; el título grande ya está en la barra
+   de la ventana. */
+.ventana-cuerpo .pagina-dialogo > .hoja-cabecera {
+  flex: none; align-items: center; margin: 0 -16px 12px; padding: 8px 16px;
+  background: var(--surface-3); border-bottom: 1px solid var(--borde);
+  position: sticky; top: 0; z-index: 3;
 }
+.ventana-cuerpo .pagina-dialogo > .hoja-cabecera h2 { font-size: 15px; }
+.ventana-cuerpo .pagina-dialogo > .hoja-pie {
+  margin: 18px -16px 0; padding: 10px 16px; background: var(--surface-3);
+  position: sticky; bottom: 0; z-index: 3;
+}
+/* El editor de fotos reparte la altura entre sus tres zonas y cada una se
+   desplaza por su cuenta: como página se le da la altura de la ventana,
+   igual que la tarjeta tenía la de la pantalla. */
+.ventana-cuerpo .pagina-dialogo.hoja-editor-foto { height: 100%; min-height: 0; overflow: hidden; }
 .app-dialogo .nota-carga { padding: 24px; color: var(--texto-tenue); }
 
 /* Dentro de una ventana el título ya está en la barra de título: la
@@ -69,7 +84,7 @@
 /* A sangre: dentro de una ventana la pantalla no es una tarjeta sobre un
    fondo, es el contenido de la ventana. Los paneles pierden el marco y los
    márgenes; lo que separa una zona de otra es una línea. */
-.ventana-cuerpo > .app-seccion { padding: 0; }
+.ventana-cuerpo .pagina > .app-seccion { padding: 0; }
 .ventana-cuerpo .app-seccion > .panel,
 .ventana-cuerpo .app-seccion > .rejilla-1 > .panel { border-left: 0; border-right: 0; border-top: 0; border-radius: 0; }
 .ventana-cuerpo .app-seccion > .panel:last-child { border-bottom: 0; }

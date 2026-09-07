@@ -3,6 +3,7 @@ import { confirmar } from './escritorio/Dialogos'
 import { api, money, type EdicionProducto, type Marca, type Producto } from './api'
 import { Promocion } from './Promocion'
 import { Guia } from './Guia'
+import { Hoja } from './Hoja'
 import { PASOS_EDITAR } from './guias/editar'
 
 // Límite de caracteres del título en cada canal. MercadoLibre es el que
@@ -26,7 +27,7 @@ type Recolectado =
 
 // Editor de los campos propiedad de Integra. De Odoo solo llegan la
 // referencia, el nombre y el stock; todo lo demás vive aquí.
-export function Editar({ producto, marcas, onCerrar, onGuardado, pestanaInicial }: {
+export function Editar({ producto, marcas, onCerrar, onGuardado, pestanaInicial, enVentana }: {
   producto: Producto
   marcas: Marca[]
   onCerrar: () => void
@@ -34,6 +35,9 @@ export function Editar({ producto, marcas, onCerrar, onGuardado, pestanaInicial 
   // Quien llega desde «falta el peso» tiene que caer en la casilla del peso,
   // no en la primera pestaña a buscarla.
   pestanaInicial?: Pestana
+  // Como página de una ventana del escritorio: sin velo, sin tarjeta y sin
+  // Escape (la ventana ya encuadra y ← ya vuelve). Ver Hoja.tsx.
+  enVentana?: boolean
 }) {
   const [pestana, setPestana] = useState<Pestana>(pestanaInicial ?? 'venta')
 
@@ -155,10 +159,11 @@ export function Editar({ producto, marcas, onCerrar, onGuardado, pestanaInicial 
   }, [guardando, sucio, onCerrar])
 
   useEffect(() => {
+    if (enVentana) return
     const h = (e: KeyboardEvent) => { if (e.key === 'Escape') intentarCerrar() }
     window.addEventListener('keydown', h)
     return () => window.removeEventListener('keydown', h)
-  }, [intentarCerrar])
+  }, [intentarCerrar, enVentana])
 
   async function guardar() {
     const r = recolectar()
@@ -177,8 +182,7 @@ export function Editar({ producto, marcas, onCerrar, onGuardado, pestanaInicial 
   }
 
   return (
-    <div className="capa" onClick={intentarCerrar}>
-      <div className="hoja hoja-editor" onClick={(e) => e.stopPropagation()}>
+    <Hoja enVentana={enVentana} clase="hoja-editor" alFondo={() => void intentarCerrar()}>
         <header className="hoja-cabecera" data-guia="edit-cabecera">
           <div>
             <h2>Editar producto</h2>
@@ -378,7 +382,6 @@ export function Editar({ producto, marcas, onCerrar, onGuardado, pestanaInicial 
         </footer>
 
         {ayuda && <Guia pasos={PASOS_EDITAR} nombre="Editar producto" onCerrar={() => setAyuda(false)} />}
-      </div>
-    </div>
+    </Hoja>
   )
 }

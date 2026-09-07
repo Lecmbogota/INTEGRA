@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api, num, type FiltroMediateca, type ImagenBanco, type PaginaImagenes } from './api'
 import { Guia } from './Guia'
+import { Hoja } from './Hoja'
 import { PASOS_SELECTOR } from './guias/selectorMediateca'
 
 // SelectorMediateca: elegir fotos que ya están en el banco para un producto.
@@ -14,10 +15,13 @@ const FILTROS: [FiltroMediateca, string][] = [
   ['todas', 'Todas'], ['aptas', 'Aptas'], ['huerfanas', 'Huérfanas'], ['duplicadas', 'Duplicadas'],
 ]
 
-export function SelectorMediateca({ varianteId, onCerrar, onElegidas }: {
+export function SelectorMediateca({ varianteId, onCerrar, onElegidas, enVentana }: {
   varianteId: number
   onCerrar: () => void
   onElegidas: (cuantas: number) => void
+  // Como página de una ventana del escritorio: sin velo, sin tarjeta y sin
+  // Escape (la ventana ya encuadra y ← ya vuelve). Ver Hoja.tsx.
+  enVentana?: boolean
 }) {
   const [filtro, setFiltro] = useState<FiltroMediateca>('todas')
   const [q, setQ] = useState('')
@@ -43,10 +47,11 @@ export function SelectorMediateca({ varianteId, onCerrar, onElegidas }: {
   // Escape cierra el selector, salvo que la ayuda esté abierta encima: ahí
   // cierra la ayuda y lo marcado se conserva.
   useEffect(() => {
+    if (enVentana) return
     const h = (e: KeyboardEvent) => { if (e.key === 'Escape' && !ocupado && !ayuda) onCerrar() }
     window.addEventListener('keydown', h)
     return () => window.removeEventListener('keydown', h)
-  }, [onCerrar, ocupado, ayuda])
+  }, [onCerrar, ocupado, ayuda, enVentana])
 
   const yaEsta = (i: ImagenBanco) => i.productos.some((p) => p.variante_id === varianteId)
 
@@ -75,8 +80,7 @@ export function SelectorMediateca({ varianteId, onCerrar, onElegidas }: {
   const items = pagina?.items ?? []
 
   return (
-    <div className="capa" onClick={() => { if (!ocupado) onCerrar() }}>
-      <div className="hoja hoja-ancha" onClick={(e) => e.stopPropagation()}>
+    <Hoja enVentana={enVentana} clase="hoja-ancha" alFondo={() => { if (!ocupado) onCerrar() }}>
         <header className="hoja-cabecera">
           <div>
             <h2>Elegir fotos de la mediateca</h2>
@@ -143,7 +147,6 @@ export function SelectorMediateca({ varianteId, onCerrar, onElegidas }: {
             {ocupado ? 'Añadiendo…' : `Añadir ${marcadas.size > 0 ? num(marcadas.size) : ''} al producto`}
           </button>
         </div>
-      </div>
-    </div>
+    </Hoja>
   )
 }

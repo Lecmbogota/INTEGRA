@@ -3,6 +3,7 @@ import { api, money, type Competencia, type PreviewRespuesta, type Proyeccion } 
 import { Imagenes } from './Imagenes'
 import { PanelAtributos } from './Atributos'
 import { Guia } from './Guia'
+import { Hoja } from './Hoja'
 import { PASOS_PREVIEW } from './guias/preview'
 import type { Pestana } from './Editar'
 
@@ -46,13 +47,16 @@ export type DestinoFaltante =
   | { tipo: 'editar'; pestana: Pestana; varianteId: number; sku: string }
   | { tipo: 'categorias'; canal: string }
 
-export function Preview({ varianteId, onCerrar, onIr, onCambio }: {
+export function Preview({ varianteId, onCerrar, onIr, onCambio, enVentana }: {
   varianteId: number
   onCerrar: () => void
   onIr?: (destino: DestinoFaltante) => void
   // Algo del producto cambió desde aquí (una foto menos, una portada nueva):
   // la lista de detrás tiene que enterarse sin recargar la página.
   onCambio?: () => void
+  // Como página de una ventana del escritorio: sin velo, sin tarjeta y sin
+  // Escape (la ventana ya encuadra y ← ya vuelve). Ver Hoja.tsx.
+  enVentana?: boolean
 }) {
   const refImagenes = useRef<HTMLDivElement>(null)
   const [datos, setDatos] = useState<PreviewRespuesta | null>(null)
@@ -86,7 +90,10 @@ export function Preview({ varianteId, onCerrar, onIr, onCambio }: {
   // Escape cierra el panel: es lo que espera cualquiera al ver una capa encima.
   // Aquí no se pregunta nada porque esta pantalla no edita: solo enseña.
   // Con el recorrido abierto, Escape cierra el recorrido y no la previa.
+  // Como página de una ventana no hay capa que cerrar (el recorrido cierra
+  // con su propio Escape).
   useEffect(() => {
+    if (enVentana) return
     const h = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
       if (ayuda) setAyuda(false)
@@ -94,7 +101,7 @@ export function Preview({ varianteId, onCerrar, onIr, onCambio }: {
     }
     window.addEventListener('keydown', h)
     return () => window.removeEventListener('keydown', h)
-  }, [onCerrar, ayuda])
+  }, [onCerrar, ayuda, enVentana])
 
   // Cuántos canales están bloqueados. En escritorio se ve de un vistazo con
   // las cuatro tarjetas en fila; en el móvil van apiladas y hay que
@@ -118,8 +125,7 @@ export function Preview({ varianteId, onCerrar, onIr, onCambio }: {
   }
 
   return (
-    <div className="capa" onClick={onCerrar}>
-      <div className="hoja" onClick={(e) => e.stopPropagation()}>
+    <Hoja enVentana={enVentana} alFondo={onCerrar}>
         <header className="hoja-cabecera">
           <div>
             <h2>Qué se enviará a cada canal</h2>
@@ -239,8 +245,7 @@ export function Preview({ varianteId, onCerrar, onIr, onCambio }: {
             )}
           </>
         )}
-      </div>
-    </div>
+    </Hoja>
   )
 }
 

@@ -1,13 +1,17 @@
 import {
   createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode,
 } from 'react'
-import type { AppId, EstadoVentana, Evento, Sistema, Ventana } from './tipos'
+import type { AppId, EstadoVentana, Evento, Pagina, Sistema, Ventana } from './tipos'
 import { APPS } from './apps'
 import { useSesion } from './sesion'
 
 // Gestor de ventanas del escritorio: quién está abierta, dónde, en qué estado
 // y delante de quién. Es el único sitio que toca la lista de ventanas; el
 // marco (Ventana.tsx), la barra y el menú de inicio solo piden cambios.
+//
+// Cada ventana lleva un historial de páginas (ver Pagina en tipos.ts): abrir
+// un producto desde Productos no abre otra ventana, navega dentro de la
+// misma, y ← / → se mueven por lo visitado como en un navegador.
 //
 // Toda acción pasa por `actualizar`, que trabaja sobre un espejo en ref de la
 // lista y no sobre el estado de React: así dos acciones seguidas en el mismo
@@ -91,6 +95,34 @@ function claveDe(usuarioId: number): string {
   return `integra.escritorio.ventanas.${usuarioId}`
 }
 
+// La ventana con `historial` e `indice` puestos y la página actual copiada a
+// `app`, `props` y `titulo`. Toda mutación del historial pasa por aquí para
+// que la copia nunca se desincronice.
+function conPagina(v: Ventana, historial: Pagina[], indice: number): Ventana {
+  const p = historial[indice]
+  return { ...v, historial, indice, app: p.app, props: p.props, titulo: p.titulo }
+}
+
+// Índice de la última página del historial que enseña `app`, o -1.
+function indiceDe(v: Ventana, app: AppId): number {
+  for (let i = v.historial.length - 1; i >= 0; i--) if (v.historial[i].app === app) return i
+  return -1
+}
+
+// Lo que va a localStorage: solo la página base de cada ventana (la app de
+// sección con la que se abrió). Lo navegado desde ahí (un editor, una
+// previa) apunta a cosas que pueden haber cambiado y no se restaura; el
+// historial vuelve a empezar con una sola página.
+function paraGuardar(lista: Ventana[]): Record<string, unknown>[] {
+  return lista
+    .filter(v => APPS[v.historial[0]?.app]?.unica)
+    .map(v => {
+      const base = v.historial[0]
+      const { historial: _h, indice: _i, ...resto } = v
+      return { ...resto, app: base.app, props: base.props, titulo: base.titulo }
+    })
+}
+
 // Lee las ventanas guardadas y descarta lo que ya no tenga sentido: apps que
 // no existen, diálogos (sus props apuntan a cosas que pueden haber cambiado),
 // entradas malformadas y duplicados. La geometría se acota al área actual,
@@ -140,14 +172,23 @@ function cargar(clave: string, area: Area): Ventana[] {
       : undefined
     const fija = geometriaEstado(estado, area)
 
-    salida.push({
-      id: v.id,
+    // Se restaura con una sola página: la base (ver paraGuardar).
+    const pagina: Pagina = {
+      clave: `${v.id}/0`,
       app,
       titulo: typeof v.titulo === 'string' && v.titulo ? v.titulo : def.nombre,
+      props: v.props && typeof v.props === 'object' ? (v.props as Record<string, unknown>) : {},
+    }
+    salida.push({
+      id: v.id,
+      app: pagina.app,
+      titulo: pagina.titulo,
+      props: pagina.props,
+      historial: [pagina],
+      indice: 0,
       ...(fija ?? libre),
       estado,
       z: numero(v.z, 0),
-      props: v.props && typeof v.props === 'object' ? (v.props as Record<string, unknown>) : {},
       // Una ventana que se guardó fuera de `normal` sin geometría a la que
       // volver la recupera del tamaño por defecto para que restaurar funcione.
       anterior: anterior ?? (estado === 'normal' ? undefined : libre),
@@ -176,6 +217,10 @@ export function ProveedorSistema({ children }: { children: ReactNode }) {
   // enfocada), número de ventana para los ids y posición en la cascada.
   const zRef = useRef(ventanas.reduce((m, v) => Math.max(m, v.z), 0))
   const contadorRef = useRef(ventanas.reduce((m, v) => Math.max(m, numeroDeId(v.id)), 0))
+  // Claves de las páginas navegadas: `${ventana}/${n}`. La base es `/0`
+  // (única por ventana); las demás llevan un número que solo crece, para que
+  // volver a abrir el mismo editor sea otra página con su estado a cero.
+  const paginasRef = useRef(0)
   const cascadaRef = useRef(ventanas.length)
   const oyentesRef = useRef(new Map<Evento['nombre'], Set<(e: Evento) => void>>())
 
@@ -230,9 +275,14 @@ export function ProveedorSistema({ children }: { children: ReactNode }) {
     if (!def) throw new Error(`App desconocida: ${app}`)
 
     if (def.unica) {
-      const existente = ventanasRef.current.find(v => v.app === app)
+      // Cuenta tanto si es la página que se ve como si es la base de una
+      // ventana que ahora enseña otra cosa (Productos con un editor delante):
+      // se vuelve a esa página en vez de abrir un segundo Productos.
+      const existente = ventanasRef.current.find(v => v.app === app || v.historial[0].app === app)
       if (existente) {
         if (existente.estado === 'minimizada') restaurar(existente.id)
+        const i = indiceDe(existente, app)
+        if (i >= 0 && i !== existente.indice) cambiar(existente.id, v => conPagina(v, v.historial, i))
         enfocar(existente.id)
         return existente.id
       }
@@ -253,22 +303,63 @@ export function ProveedorSistema({ children }: { children: ReactNode }) {
     cascadaRef.current = n + 1
 
     const id = `${app}-${++contadorRef.current}`
+    const pagina: Pagina = { clave: `${id}/0`, app, props: props ?? {}, titulo: opciones?.titulo ?? def.nombre }
     const nueva: Ventana = {
       id,
-      app,
-      titulo: opciones?.titulo ?? def.nombre,
+      app: pagina.app,
+      titulo: pagina.titulo,
+      props: pagina.props,
+      historial: [pagina],
+      indice: 0,
       ...encajar({ x, y, ...tamano }, area),
       estado: 'normal',
       z: ++zRef.current,
-      props: props ?? {},
     }
     actualizar(lista => [...lista, nueva])
     return id
-  }, [actualizar, enfocar, restaurar])
+  }, [actualizar, cambiar, enfocar, restaurar])
 
   const cerrar = useCallback((id: string) => {
     actualizar(lista => (lista.some(v => v.id === id) ? lista.filter(v => v.id !== id) : lista))
   }, [actualizar])
+
+  // ---- historial de la ventana
+
+  const navegar = useCallback((id: string, app: AppId, props?: Record<string, unknown>, titulo?: string) => {
+    const def = APPS[app]
+    if (!def) throw new Error(`App desconocida: ${app}`)
+    cambiar(id, v => {
+      const pagina: Pagina = { clave: `${id}/${++paginasRef.current}`, app, props: props ?? {}, titulo: titulo ?? def.nombre }
+      const historial = [...v.historial.slice(0, v.indice + 1), pagina]
+      const nueva = conPagina(v, historial, historial.length - 1)
+      // La ventana se queda con su tamaño (es del usuario, no de la app),
+      // salvo que no llegue al mínimo de la página nueva: entonces crece lo
+      // justo. Maximizada o ajustada ya ocupa lo que hay.
+      if (nueva.estado !== 'normal') return nueva
+      const area = areaRef.current
+      const t = acotarTamano(nueva, def.minimo, area)
+      return t.w === nueva.w && t.h === nueva.h ? nueva : { ...nueva, ...encajar({ x: nueva.x, y: nueva.y, ...t }, area) }
+    })
+  }, [cambiar])
+
+  const atras = useCallback((id: string) => {
+    cambiar(id, v => (v.indice > 0 ? conPagina(v, v.historial, v.indice - 1) : v))
+  }, [cambiar])
+
+  const adelante = useCallback((id: string) => {
+    cambiar(id, v => (v.indice < v.historial.length - 1 ? conPagina(v, v.historial, v.indice + 1) : v))
+  }, [cambiar])
+
+  // Se identifica la página por su clave y no por «la actual»: quien llama
+  // es la propia página, que puede haber quedado detrás (el usuario pulsó ←
+  // mientras guardaba) y aun así tiene que desaparecer ella, no otra.
+  const cerrarPagina = useCallback((id: string, clave: string) => {
+    cambiar(id, v => {
+      const i = v.historial.findIndex(p => p.clave === clave)
+      if (i <= 0) return v
+      return conPagina(v, v.historial.slice(0, i), Math.min(v.indice, i - 1))
+    })
+  }, [cambiar])
 
   const minimizar = useCallback((id: string) => {
     cambiar(id, v => (v.estado === 'minimizada' ? v : { ...v, estado: 'minimizada', anterior: conAnterior(v) }))
@@ -311,7 +402,13 @@ export function ProveedorSistema({ children }: { children: ReactNode }) {
   }, [cambiar])
 
   const retitular = useCallback((id: string, titulo: string) => {
-    cambiar(id, v => (v.titulo === titulo ? v : { ...v, titulo }))
+    cambiar(id, v => {
+      if (v.titulo === titulo) return v
+      // También en el historial: al volver a esta página tiene que reaparecer.
+      const historial = v.historial.slice()
+      historial[v.indice] = { ...historial[v.indice], titulo }
+      return conPagina(v, historial, v.indice)
+    })
   }, [cambiar])
 
   const minimizarTodas = useCallback(() => {
@@ -368,12 +465,13 @@ export function ProveedorSistema({ children }: { children: ReactNode }) {
 
   // Persistencia con retraso: cada cambio reprograma el guardado, así un
   // arrastre no escribe en localStorage sesenta veces por segundo. Solo se
-  // guardan las apps únicas: los diálogos no se restauran (ver `cargar`), y
-  // sus props pueden ser voluminosas (una foto en edición).
+  // guardan las ventanas cuya base es una app única, y solo esa página: los
+  // diálogos no se restauran (ver `cargar`), y sus props pueden ser
+  // voluminosas (una foto en edición).
   useEffect(() => {
     const temporizador = window.setTimeout(() => {
       try {
-        localStorage.setItem(clave, JSON.stringify(ventanas.filter(v => APPS[v.app]?.unica)))
+        localStorage.setItem(clave, JSON.stringify(paraGuardar(ventanas)))
       } catch {
         // Sin almacenamiento (modo privado, cuota): se pierde la sesión, no el trabajo.
       }
@@ -384,7 +482,7 @@ export function ProveedorSistema({ children }: { children: ReactNode }) {
   // Al desmontar (cierre de sesión) se guarda lo pendiente sin esperar.
   useEffect(() => () => {
     try {
-      localStorage.setItem(clave, JSON.stringify(ventanasRef.current.filter(v => APPS[v.app]?.unica)))
+      localStorage.setItem(clave, JSON.stringify(paraGuardar(ventanasRef.current)))
     } catch {
       // Igual que arriba.
     }
@@ -443,15 +541,48 @@ export function ProveedorSistema({ children }: { children: ReactNode }) {
     ventanas,
     activa,
     abrir, cerrar, enfocar, minimizar, maximizar, restaurar, ajustar, mover, redimensionar, retitular, minimizarTodas,
+    navegar, atras, adelante, cerrarPagina,
     emitir, suscribir,
     area: pantalla.area,
     movil: pantalla.movil,
   }), [
     ventanas, activa, abrir, cerrar, enfocar, minimizar, maximizar, restaurar, ajustar, mover, redimensionar,
-    retitular, minimizarTodas, emitir, suscribir, pantalla,
+    retitular, minimizarTodas, navegar, atras, adelante, cerrarPagina, emitir, suscribir, pantalla,
   ])
 
   return <Contexto.Provider value={valor}>{children}</Contexto.Provider>
+}
+
+// Si una ventana puede ir atrás o adelante en su historial. Lo usan el marco
+// (para los botones ← →) y quien quiera saberlo sin repetir la aritmética.
+export function puedeAtras(v: Ventana): boolean {
+  return v.indice > 0
+}
+export function puedeAdelante(v: Ventana): boolean {
+  return v.indice < v.historial.length - 1
+}
+
+// Id de la ventana en la que se está pintando una página. Lo provee App
+// alrededor de cada página; fuera del escritorio (login, guía) es null.
+export const ContextoVentana = createContext<string | null>(null)
+
+export function useVentanaActual(): string | null {
+  return useContext(ContextoVentana)
+}
+
+// Lo que usan las pantallas para «ir a» otra cosa: dentro de una ventana
+// navega en ella (y ← vuelve); si no hay ventana actual abre una nueva. Así
+// Productos, la mediateca o el panel no deciden si abren ventanas: lo decide
+// dónde están. Fuera del escritorio (sin sistema) no hace nada: las
+// pantallas conservan sus modales para ese caso.
+export function useIr(): (app: AppId, props?: Record<string, unknown>, titulo?: string) => void {
+  const sistema = useSistemaOpcional()
+  const ventanaId = useVentanaActual()
+  return useCallback((app: AppId, props?: Record<string, unknown>, titulo?: string) => {
+    if (!sistema) return
+    if (ventanaId) sistema.navegar(ventanaId, app, props, titulo)
+    else sistema.abrir(app, props, titulo ? { titulo } : undefined)
+  }, [sistema, ventanaId])
 }
 
 export function useSistema(): Sistema {

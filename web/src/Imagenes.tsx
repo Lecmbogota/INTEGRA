@@ -3,7 +3,7 @@ import { confirmar } from './escritorio/Dialogos'
 import { EditorFoto, type FotoEditable } from './EditorFoto'
 import { SelectorMediateca } from './SelectorMediateca'
 import { api, type ImagenProducto } from './api'
-import { useEvento, useSistemaOpcional } from './escritorio/sistema'
+import { useEvento, useIr, useSistemaOpcional } from './escritorio/sistema'
 
 const CANALES = ['woocommerce', 'shopify', 'mercadolibre', 'falabella'] as const
 const NOMBRE_CORTO: Record<string, string> = {
@@ -45,15 +45,18 @@ export function Imagenes({ varianteId, onCambio }: { varianteId: number; onCambi
   // la galería (no se llama a onCambio: quien emitió ya avisó a todos).
   // Fuera (sistema null) siguen siendo modales de este bloque, sin cambios.
   const sistema = useSistemaOpcional()
+  // Dentro del escritorio son páginas de la ventana en la que está este
+  // bloque (la previa, normalmente): ← vuelve a ella.
+  const ir = useIr()
   useEvento('fotos-cambiadas', () => cargar())
   function elegirDeMediateca() {
-    if (sistema) sistema.abrir('selector-mediateca', { varianteId })
+    if (sistema) ir('selector-mediateca', { varianteId })
     else setEligiendo(true)
   }
   function editarFoto(i: FotoEditable) {
     if (sistema) {
       const foto = { id: i.id, sha256: i.sha256, ancho: i.ancho, alto: i.alto, formato: i.formato }
-      sistema.abrir('editor-foto', { foto }, { titulo: `Editar foto · ${i.ancho}×${i.alto}` })
+      ir('editor-foto', { foto }, `Editar foto · ${i.ancho}×${i.alto}`)
     } else {
       setEditando(i)
     }

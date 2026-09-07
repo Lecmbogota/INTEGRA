@@ -2,16 +2,20 @@ import { useState } from 'react'
 import { confirmar } from './escritorio/Dialogos'
 import { api, money, num, type OperacionMasiva, type ResultadoMasivo } from './api'
 import { Guia } from './Guia'
+import { Hoja } from './Hoja'
 import { PASOS_EDICION_MASIVA } from './guias/edicionMasiva'
 
 // Edición masiva. Siempre simula antes de aplicar: en una operación que toca
 // cientos de productos, ver el efecto antes de causarlo no es un lujo.
-export function EdicionMasiva({ ids, filtro, totalFiltro, onCerrar, onAplicado }: {
+export function EdicionMasiva({ ids, filtro, totalFiltro, onCerrar, onAplicado, enVentana }: {
   ids: number[]
   filtro: Record<string, unknown>
   totalFiltro: number
   onCerrar: () => void
   onAplicado: () => void
+  // Como página de una ventana del escritorio: sin velo ni tarjeta (la
+  // ventana ya encuadra y ← ya vuelve). Ver Hoja.tsx.
+  enVentana?: boolean
 }) {
   const [alcance, setAlcance] = useState<'seleccion' | 'filtro'>(
     ids.length > 0 ? 'seleccion' : 'filtro')
@@ -104,8 +108,7 @@ export function EdicionMasiva({ ids, filtro, totalFiltro, onCerrar, onAplicado }
   return (
     // Con una operación en curso el fondo no cierra: perder el diálogo a mitad
     // de un guardado deja al operador sin saber si se aplicó o no.
-    <div className="capa" onClick={() => { if (ocupado === null) onCerrar() }}>
-      <div className="hoja hoja-editor" onClick={(e) => e.stopPropagation()}>
+    <Hoja enVentana={enVentana} clase="hoja-editor" alFondo={() => { if (ocupado === null) onCerrar() }}>
         <header className="hoja-cabecera" data-guia="masa-cabecera">
           <div>
             <h2>Editar en masa</h2>
@@ -269,7 +272,6 @@ export function EdicionMasiva({ ids, filtro, totalFiltro, onCerrar, onAplicado }
         </footer>
 
         {ayuda && <Guia pasos={PASOS_EDICION_MASIVA} nombre="Editar en masa" onCerrar={() => setAyuda(false)} />}
-      </div>
-    </div>
+    </Hoja>
   )
 }

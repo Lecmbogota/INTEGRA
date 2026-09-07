@@ -3,7 +3,7 @@ import { api, money, motivo, num, type Categoria, type Marca, type PaginaProduct
 import { Editar, type Pestana } from './Editar'
 import { EdicionMasiva } from './EdicionMasiva'
 import { PlantillaMasiva } from './PlantillaMasiva'
-import { useEvento, useSistemaOpcional } from './escritorio/sistema'
+import { useEvento, useIr, useSistemaOpcional } from './escritorio/sistema'
 import { Imagen, SelectorVista, useVista } from './Vista'
 
 const POR_PAGINA = 50
@@ -84,29 +84,31 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = nul
   // portada, que es lo que permite reconocer un producto de un vistazo.
   const [vista, setVista] = useVista('catalogo', 'detalles')
 
-  // Dentro del escritorio, los diálogos se abren en su propia ventana y el
-  // resultado vuelve por el bus (la ventana no sabe quién la abrió). Fuera
-  // (sistema null) siguen siendo modales de esta pantalla, sin cambios.
+  // Dentro del escritorio, los diálogos son páginas de esta misma ventana:
+  // se navega a ellos, ← vuelve a la lista tal como estaba, y el resultado
+  // vuelve por el bus (la página no sabe quién la abrió). Fuera (sistema
+  // null) siguen siendo modales de esta pantalla, sin cambios.
   const sistema = useSistemaOpcional()
+  const ir = useIr()
   useEvento('producto-cambiado', () => setVersion((v) => v + 1))
   useEvento('fotos-cambiadas', () => setVersion((v) => v + 1))
   function abrirEditor(p: Producto, pestana: Pestana) {
     if (sistema) {
-      sistema.abrir('editar', { varianteId: p.id, sku: p.sku, pestana }, { titulo: `Editar · ${p.sku || p.nombre}` })
+      ir('editar', { varianteId: p.id, sku: p.sku, pestana }, `Editar · ${p.sku || p.nombre}`)
     } else {
       setPestanaEditor(pestana)
       setEditando(p)
     }
   }
   function abrirPlantilla() {
-    if (sistema) sistema.abrir('plantilla', {})
+    if (sistema) ir('plantilla', {})
     else setPlantilla(true)
   }
   function abrirMasiva() {
     if (sistema) {
       const cuantos = pagina?.total ?? 0
-      sistema.abrir('edicion-masiva', { seleccion: { ids: [...marcados], filtro: filtroActual }, cuantos },
-        { titulo: marcados.size > 0 ? `Editar en masa · ${num(marcados.size)} marcados` : `Editar en masa · ${num(cuantos)} del filtro` })
+      ir('edicion-masiva', { seleccion: { ids: [...marcados], filtro: filtroActual }, cuantos },
+        marcados.size > 0 ? `Editar en masa · ${num(marcados.size)} marcados` : `Editar en masa · ${num(cuantos)} del filtro`)
     } else {
       setMasiva(true)
     }

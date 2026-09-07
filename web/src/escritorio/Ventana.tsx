@@ -1,15 +1,18 @@
 import {
-  useEffect, useRef, useState, type MouseEvent as MouseEventReact, type PointerEvent as PointerEventReact, type ReactNode,
+  useEffect, useRef, useState, type KeyboardEvent as KeyboardEventReact, type MouseEvent as MouseEventReact,
+  type PointerEvent as PointerEventReact, type ReactNode,
 } from 'react'
 import type { Ventana as VentanaTipo } from './tipos'
 import { APPS } from './apps'
-import { useSistema } from './sistema'
+import { puedeAdelante, puedeAtras, useSistema } from './sistema'
 import './ventanas.css'
 
 // Marco de una ventana: barra de título, mover, redimensionar, botones. No
 // sabe nada de la app que contiene; solo pide cambios al gestor (useSistema)
 // y pinta la geometría que este le da. La geometría de la ventana (x, y, w, h)
 // es siempre la real, también maximizada o ajustada: el gestor la recalcula.
+// El icono y el título son los de la página actual del historial: al
+// navegar de Productos a un editor, la barra lo dice.
 
 // Píxeles que hay que mover el puntero antes de considerar que se arrastra:
 // evita que un clic en la barra de título desplace la ventana un píxel.
@@ -95,6 +98,17 @@ export function Ventana({ ventana, children }: { ventana: VentanaTipo; children:
   const alternarMaximizada = () => {
     if (estado === 'maximizada') sistema.restaurar(id)
     else sistema.maximizar(id)
+  }
+
+  // Alt+← / Alt+→ con el foco dentro de la ventana recorren su historial,
+  // como en un navegador (y se le quita al navegador, que con Alt+← se iría
+  // de Integra). Los eventos de las páginas suben hasta el marco.
+  const atrasAdelante = (e: KeyboardEventReact<HTMLDivElement>) => {
+    if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return
+    if (e.key === 'ArrowLeft' && puedeAtras(ventana)) sistema.atras(id)
+    else if (e.key === 'ArrowRight' && puedeAdelante(ventana)) sistema.adelante(id)
+    else return
+    e.preventDefault()
   }
 
   const fijarPrevia = (p: Previa) => {
@@ -251,6 +265,7 @@ export function Ventana({ ventana, children }: { ventana: VentanaTipo; children:
         hidden={estado === 'minimizada'}
         style={{ left: g.x, top: g.y, width: g.w, height: g.h, zIndex: ventana.z }}
         onPointerDown={() => { if (!activa) sistema.enfocar(id) }}
+        onKeyDown={atrasAdelante}
       >
         <div
           className="ventana-titulo"
@@ -260,6 +275,18 @@ export function Ventana({ ventana, children }: { ventana: VentanaTipo; children:
           onPointerCancel={e => terminarArrastre(e, false)}
           onDoubleClick={dobleClicTitulo}
         >
+          {/* Historial de la ventana: lo que se abrió desde aquí (una previa,
+              un editor) se ve en esta misma ventana, y estos vuelven. */}
+          <div className="ventana-historial">
+            <button type="button" aria-label="Atrás" title="Atrás (Alt+←)"
+              disabled={!puedeAtras(ventana)} onClick={() => sistema.atras(id)}>
+              <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M7.5 2 3.5 6l4 4" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+            </button>
+            <button type="button" aria-label="Adelante" title="Adelante (Alt+→)"
+              disabled={!puedeAdelante(ventana)} onClick={() => sistema.adelante(id)}>
+              <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="m4.5 2 4 4-4 4" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+            </button>
+          </div>
           <span className="ventana-icono" style={{ background: def.color }} aria-hidden="true">{def.icono}</span>
           <span className="ventana-nombre">{ventana.titulo}</span>
           <div className="ventana-botones">

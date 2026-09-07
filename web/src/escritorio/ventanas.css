@@ -55,6 +55,21 @@
 .ventana:not(.activa) .ventana-icono { opacity: .55; }
 .ventana.maximizada .ventana-titulo, .ventana.movil .ventana-titulo { cursor: default; }
 
+/* Atrás / adelante por el historial de la ventana, a la izquierda del icono
+   como en un navegador. Deshabilitados se quedan, atenuados, para que la
+   barra no baile al navegar. */
+.ventana-historial { display: flex; align-items: center; gap: 0; flex: 0 0 auto; margin-left: -6px; }
+.ventana-historial button {
+  width: 26px; height: 26px; min-height: 0; padding: 0;
+  border: none; border-radius: 6px; background: none;
+  color: var(--texto-tenue);
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: background .12s, color .12s;
+}
+.ventana-historial button:hover:not(:disabled) { background: var(--surface-4); color: var(--texto); }
+.ventana-historial button:disabled { opacity: .35; cursor: default; }
+.ventana.movil .ventana-historial button { width: 40px; height: 40px; }
+
 .ventana-icono {
   flex: 0 0 22px; width: 22px; height: 22px; border-radius: 6px;
   display: inline-flex; align-items: center; justify-content: center;
@@ -90,6 +105,16 @@
   overflow: auto;
   background: var(--surface-1);
 }
+
+/* Cada página del historial va en su .pagina; solo la actual se ve. Las
+   demás siguen montadas (hidden) para que al volver atrás Productos tenga
+   sus filtros, su selección y su scroll. Cada página se desplaza por su
+   cuenta —si lo hiciera el cuerpo, el scroll del editor se quedaría puesto
+   en la lista al volver— y App repone el scroll al reaparecer. El [hidden]
+   va explícito por si alguna regla le pone display a .pagina. */
+.pagina { height: 100%; min-width: 0; overflow: auto; }
+.pagina[hidden] { display: none; }
+.pagina > * { min-width: 0; }
 
 /* ---- asas de redimensionado (8 px, dentro del marco por el overflow) */
 
