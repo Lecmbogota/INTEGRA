@@ -645,6 +645,14 @@ button.enlace:hover:not(:disabled) { background: none; color: var(--acento-hover
 }
 .galeria figure.principal { border-color: var(--acento); }
 .galeria figure.huerfana { border-style: dashed; opacity: .85; }
+.galeria figure.seleccionada { border-color: var(--acento); box-shadow: 0 0 0 2px var(--acento); }
+.galeria img.abrible { cursor: zoom-in; }
+.galeria .origen { font-size: 11px; color: var(--texto-terciario); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.visor { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.visor img { max-width: min(90vw, 1200px); max-height: 75vh; object-fit: contain; background: #fff; }
+.lista-eleccion { display: flex; flex-direction: column; gap: 4px; max-height: 40vh; overflow: auto; }
+.lista-eleccion label { display: flex; gap: 8px; align-items: center; padding: 6px 8px; border-radius: 6px; cursor: pointer; }
+.lista-eleccion label:hover { background: rgba(0,0,0,.04); }
 .galeria img {
   width: 100%; aspect-ratio: 1; object-fit: contain;
   background: #fff; display: block;

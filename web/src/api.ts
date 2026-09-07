@@ -447,6 +447,11 @@ export interface ImagenBanco {
   // Productos a los que está vinculada. Vacío = huérfana: ocupa disco y no
   // la publica nadie.
   productos: { variante_id: number; sku: string; nombre: string; principal: boolean }[]
+  // De dónde salió: 'subida', 'url' (búsqueda en internet, con la fuente en
+  // origen_ref) o 'banco_fabricante'.
+  origen: string
+  origen_ref: string
+  creada: string
 }
 
 export interface PaginaImagenes {
@@ -464,6 +469,7 @@ export interface PaginaImagenes {
 }
 
 export type FiltroMediateca = 'todas' | 'aptas' | 'pequenas' | 'huerfanas' | 'duplicadas'
+export type OrdenMediateca = 'recientes' | 'pesadas' | 'pequenas' | 'grandes'
 
 // ----------------------------------------------------- destinos de avisos
 
@@ -714,10 +720,11 @@ export const api = {
   },
 
   // ---- mediateca ----
-  banco: (p?: { filtro?: FiltroMediateca; q?: string; limite?: number; offset?: number }) => {
+  banco: (p?: { filtro?: FiltroMediateca; q?: string; orden?: OrdenMediateca; limite?: number; offset?: number }) => {
     const q = new URLSearchParams()
     if (p?.filtro && p.filtro !== 'todas') q.set('filtro', p.filtro)
     if (p?.q) q.set('q', p.q)
+    if (p?.orden) q.set('orden', p.orden)
     q.set('limite', String(p?.limite ?? 60))
     q.set('offset', String(p?.offset ?? 0))
     return pedir<PaginaImagenes>(`/api/imagenes?${q}`)
@@ -725,6 +732,18 @@ export const api = {
 
   borrarDelBanco: (id: number) =>
     pedir<{ estado: string }>(`/api/imagenes/${id}`, { method: 'DELETE' }),
+
+  // Borrado en lote: las que use algún producto se rechazan una a una.
+  borrarVariasDelBanco: (ids: number[]) =>
+    pedir<{ borradas: number; rechazadas: number }>('/api/imagenes/borrar', {
+      method: 'POST', body: JSON.stringify({ ids }),
+    }),
+
+  // Enlaza una imagen del banco a un producto, opcionalmente como portada.
+  asociarDelBanco: (id: number, varianteId: number, principal: boolean) =>
+    pedir<{ estado: string }>(`/api/imagenes/${id}/asociar`, {
+      method: 'POST', body: JSON.stringify({ variante_id: varianteId, principal }),
+    }),
 
   // ---- destinos de avisos ----
   destinosAviso: () => pedir<DestinoAviso[]>('/api/avisos/destinos'),

@@ -24,6 +24,8 @@ func (s *Server) registrarImagenes(mux *http.ServeMux) {
 	// El banco entero, para la mediateca: lo que no se ve producto a producto.
 	mux.HandleFunc("GET /api/imagenes", s.banco)
 	mux.HandleFunc("DELETE /api/imagenes/{id}", s.borrarDelBanco)
+	mux.HandleFunc("POST /api/imagenes/borrar", s.borrarVariasDelBanco)
+	mux.HandleFunc("POST /api/imagenes/{id}/asociar", s.asociarDelBanco)
 	// El fichero se sirve por hash, no por identificador: así la URL es
 	// inmutable y se puede cachear para siempre.
 	mux.HandleFunc("GET /imagenes/{sha}", s.servirImagen)
@@ -35,7 +37,7 @@ func (s *Server) banco(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	limite, _ := strconv.Atoi(q.Get("limite"))
 	offset, _ := strconv.Atoi(q.Get("offset"))
-	pg, err := s.st.Banco(r.Context(), q.Get("filtro"), q.Get("q"), limite, offset)
+	pg, err := s.st.Banco(r.Context(), q.Get("filtro"), q.Get("q"), q.Get("orden"), limite, offset)
 	if err != nil {
 		escribir(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -69,6 +71,86 @@ func (s *Server) borrarDelBanco(w http.ResponseWriter, r *http.Request) {
 	_ = s.st.RegistrarAuditoria(r.Context(), usuario, "delete", "imagenes",
 		strconv.FormatInt(id, 10), nil, map[string]any{"ficheros": len(rutas)}, r.RemoteAddr)
 	escribir(w, http.StatusOK, map[string]string{"estado": "borrada"})
+}
+
+// borrarVariasDelBanco borra en lote. Cada imagen se decide por separado:
+// las que usa algún producto se rechazan y se cuentan, sin tumbar el resto.
+// Cincuenta huérfanas de una búsqueda fallida no se limpian de una en una.
+func (s *Server) borrarVariasDelBanco(w http.ResponseWriter, r *http.Request) {
+	var cuerpo struct {
+		IDs []int64 `json:"ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&cuerpo); err != nil || len(cuerpo.IDs) == 0 {
+		escribir(w, http.StatusBadRequest, map[string]string{"error": "hace falta la lista de imágenes"})
+		return
+	}
+	borradas, rechazadas, ficheros := 0, 0, 0
+	for _, id := range cuerpo.IDs {
+		rutas, err := s.st.BorrarDelBanco(r.Context(), id)
+		if err != nil {
+			rechazadas++
+			continue
+		}
+		borradas++
+		if s.almacen != nil {
+			for _, ruta := range rutas {
+				_ = s.almacen.Borrar(ruta)
+				ficheros++
+			}
+		}
+	}
+	var usuario *int64
+	if c := ClaimsDeContext(r.Context()); c != nil {
+		usuario = &c.UserID
+	}
+	_ = s.st.RegistrarAuditoria(r.Context(), usuario, "delete", "imagenes", "lote", nil,
+		map[string]any{"pedidas": len(cuerpo.IDs), "borradas": borradas, "rechazadas": rechazadas, "ficheros": ficheros},
+		r.RemoteAddr)
+	escribir(w, http.StatusOK, map[string]int{"borradas": borradas, "rechazadas": rechazadas})
+}
+
+// asociarDelBanco enlaza una imagen que ya está en el banco a un producto,
+// opcionalmente como portada. Es lo que convierte una huérfana útil —la foto
+// buena que la búsqueda dejó sin producto— en una foto que publica alguien,
+// sin volver a subirla.
+func (s *Server) asociarDelBanco(w http.ResponseWriter, r *http.Request) {
+	imgID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		escribir(w, http.StatusBadRequest, map[string]string{"error": "identificador inválido"})
+		return
+	}
+	var cuerpo struct {
+		VarianteID int64 `json:"variante_id"`
+		Principal  bool  `json:"principal"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&cuerpo); err != nil || cuerpo.VarianteID == 0 {
+		escribir(w, http.StatusBadRequest, map[string]string{"error": "hace falta el producto"})
+		return
+	}
+	prodID, err := s.st.ProductoDeVariante(r.Context(), cuerpo.VarianteID)
+	if err != nil {
+		escribir(w, http.StatusNotFound, map[string]string{"error": "ese producto no existe"})
+		return
+	}
+	if err := s.st.AsociarImagen(r.Context(), prodID, imgID); err != nil {
+		escribir(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	if cuerpo.Principal {
+		if err := s.st.MarcarPrincipal(r.Context(), prodID, imgID); err != nil {
+			escribir(w, http.StatusConflict, map[string]string{"error": err.Error()})
+			return
+		}
+	}
+	// Un producto que estaba «sin fotos» deja de estarlo en el acto.
+	_ = s.st.RecalcularAtencion(r.Context())
+	var usuario *int64
+	if c := ClaimsDeContext(r.Context()); c != nil {
+		usuario = &c.UserID
+	}
+	_ = s.st.RegistrarAuditoria(r.Context(), usuario, "link", "producto_imagenes",
+		fmt.Sprintf("%d:%d", prodID, imgID), nil, map[string]any{"principal": cuerpo.Principal}, r.RemoteAddr)
+	escribir(w, http.StatusOK, map[string]string{"estado": "asociada"})
 }
 
 // productoDesdeRuta acepta el identificador de variante que usa el resto de la

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api, num, type FiltroMediateca, type PaginaImagenes } from './api'
+import { api, fecha, num, type FiltroMediateca, type ImagenBanco, type OrdenMediateca, type PaginaImagenes, type Producto } from './api'
 
 // El banco de imágenes visto entero, no producto a producto.
 //
@@ -9,6 +9,10 @@ import { api, num, type FiltroMediateca, type PaginaImagenes } from './api'
 // con las preguntas que importan sobre el conjunto: qué productos no pueden
 // publicarse por falta de foto, qué fotos no sirven en ningún canal, y cuánto
 // disco ocupa lo que ya no usa nadie.
+//
+// Lo que se puede hacer aquí y no desde el producto: limpiar en lote lo que
+// dejó una búsqueda en internet, y rescatar de entre esas huérfanas la foto
+// buena asignándola a su producto sin volver a subirla.
 
 const FILTROS: [FiltroMediateca, string, string][] = [
   ['todas', 'Todas', ''],
@@ -18,6 +22,19 @@ const FILTROS: [FiltroMediateca, string, string][] = [
   ['duplicadas', 'Duplicadas', 'Mismo tamaño y dimensiones que otra: casi siempre la misma foto dos veces'],
 ]
 
+const ORDENES: [OrdenMediateca, string][] = [
+  ['recientes', 'Recientes'],
+  ['pesadas', 'Más pesadas'],
+  ['pequenas', 'Más pequeñas'],
+  ['grandes', 'Más grandes'],
+]
+
+const ORIGEN: Record<string, string> = {
+  subida: 'Subida a mano',
+  url: 'Descargada de internet',
+  banco_fabricante: 'Banco del fabricante',
+}
+
 const POR_PAGINA = 60
 
 function tamano(bytes: number): string {
@@ -25,15 +42,27 @@ function tamano(bytes: number): string {
   return `${Math.round(bytes / 1024)} KB`
 }
 
+// La fuente de una descarga es una URL larga; se enseña el dominio y el
+// resto va en el título, que es lo que hace falta para saber si la foto
+// vino de la web del fabricante o de un blog cualquiera.
+function dominio(ref: string): string {
+  try { return new URL(ref).hostname.replace(/^www\./, '') } catch { return ref }
+}
+
 export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
   const [filtro, setFiltro] = useState<FiltroMediateca>('todas')
+  const [orden, setOrden] = useState<OrdenMediateca>('recientes')
   const [busqueda, setBusqueda] = useState('')
   const [offset, setOffset] = useState(0)
   const [pagina, setPagina] = useState<PaginaImagenes | null>(null)
   const [cargando, setCargando] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [borrando, setBorrando] = useState<number | null>(null)
+  const [aviso, setAviso] = useState<string | null>(null)
+  const [ocupada, setOcupada] = useState(false)
   const [version, setVersion] = useState(0)
+  const [seleccion, setSeleccion] = useState<Set<number>>(new Set())
+  const [visor, setVisor] = useState<ImagenBanco | null>(null)
+  const [asignando, setAsignando] = useState<ImagenBanco | null>(null)
 
   // La búsqueda se retrasa 300 ms para no consultar por tecla, y `vigente`
   // descarta la respuesta de una consulta que ya quedó atrás.
@@ -41,27 +70,77 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
     let vigente = true
     setCargando(true)
     const t = setTimeout(() => {
-      api.banco({ filtro, q: busqueda, limite: POR_PAGINA, offset })
+      api.banco({ filtro, q: busqueda, orden, limite: POR_PAGINA, offset })
         .then((p) => { if (vigente) { setPagina(p); setError(null) } })
         .catch((e) => { if (vigente) setError(e instanceof Error ? e.message : String(e)) })
         .finally(() => { if (vigente) setCargando(false) })
     }, 300)
     return () => { vigente = false; clearTimeout(t) }
-  }, [filtro, busqueda, offset, version])
+  }, [filtro, orden, busqueda, offset, version])
 
-  function cambiarFiltro(f: FiltroMediateca) { setFiltro(f); setOffset(0) }
+  // Cambiar de filtro o de página vacía la selección: borrar «lo marcado»
+  // cuando lo marcado ya no está a la vista es la forma de borrar lo que no
+  // se quería.
+  useEffect(() => { setSeleccion(new Set()) }, [filtro, orden, busqueda, offset])
 
-  async function borrar(id: number) {
-    if (!window.confirm('Se borra del disco. No la usa ningún producto, así que ninguna ficha se queda sin foto. ¿Continuar?')) return
-    setBorrando(id)
+  // Escape cierra lo que esté abierto encima.
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => { if (e.key === 'Escape') { setVisor(null); setAsignando(null) } }
+    window.addEventListener('keydown', h)
+    return () => window.removeEventListener('keydown', h)
+  }, [])
+
+  function recargar() { setVersion((v) => v + 1) }
+
+  function alternar(id: number) {
+    setSeleccion((s) => {
+      const n = new Set(s)
+      if (n.has(id)) n.delete(id); else n.add(id)
+      return n
+    })
+  }
+
+  const items = pagina?.items ?? []
+  const huerfanasEnPagina = items.filter((i) => i.productos.length === 0)
+  const seleccionadasHuerfanas = huerfanasEnPagina.filter((i) => seleccion.has(i.id))
+  const todasMarcadas = huerfanasEnPagina.length > 0 && seleccionadasHuerfanas.length === huerfanasEnPagina.length
+
+  function marcarTodasLasHuerfanas() {
+    setSeleccion(todasMarcadas ? new Set() : new Set(huerfanasEnPagina.map((i) => i.id)))
+  }
+
+  async function borrar(ids: number[]) {
+    if (ids.length === 0) return
+    const cuantas = ids.length === 1 ? 'esta imagen' : `${num(ids.length)} imágenes`
+    if (!window.confirm(`Se borra del disco ${cuantas}. No las usa ningún producto, así que ninguna ficha se queda sin foto. ¿Continuar?`)) return
+    setOcupada(true)
     setError(null)
     try {
-      await api.borrarDelBanco(id)
-      setVersion((v) => v + 1)
+      const r = ids.length === 1
+        ? (await api.borrarDelBanco(ids[0]), { borradas: 1, rechazadas: 0 })
+        : await api.borrarVariasDelBanco(ids)
+      setAviso(`${num(r.borradas)} borradas${r.rechazadas > 0 ? ` · ${num(r.rechazadas)} no se borraron porque las usa algún producto` : ''}.`)
+      setSeleccion(new Set())
+      recargar()
     } catch (e) {
       setError(`No se pudo borrar: ${e instanceof Error ? e.message : String(e)}`)
     } finally {
-      setBorrando(null)
+      setOcupada(false)
+    }
+  }
+
+  async function asignar(imagen: ImagenBanco, producto: Producto, principal: boolean) {
+    setOcupada(true)
+    setError(null)
+    try {
+      await api.asociarDelBanco(imagen.id, producto.id, principal)
+      setAviso(`Foto asignada a ${producto.sku || producto.nombre}${principal ? ' como portada' : ''}.`)
+      setAsignando(null)
+      recargar()
+    } catch (e) {
+      setError(`No se pudo asignar: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setOcupada(false)
     }
   }
 
@@ -89,16 +168,41 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
             <div className="grupo-badges">
               {FILTROS.map(([id, nombre, pista]) => (
                 <button key={id} type="button" className={`badge ${filtro === id ? 'activo' : ''}`}
-                  title={pista} onClick={() => cambiarFiltro(id)}>{nombre}</button>
+                  title={pista} onClick={() => { setFiltro(id); setOffset(0) }}>{nombre}</button>
               ))}
             </div>
             <input type="search" className="crece" placeholder="Buscar por SKU o nombre del producto"
               value={busqueda} onChange={(e) => { setBusqueda(e.target.value); setOffset(0) }} />
           </div>
+          <div className="filtros">
+            <span className="tenue">Orden:</span>
+            <div className="grupo-badges">
+              {ORDENES.map(([id, nombre]) => (
+                <button key={id} type="button" className={`badge ${orden === id ? 'activo' : ''}`}
+                  onClick={() => { setOrden(id); setOffset(0) }}>{nombre}</button>
+              ))}
+            </div>
+            {/* Las acciones en lote solo tienen sentido sobre huérfanas: el
+                servidor rechaza borrar lo que usa un producto, así que aquí
+                ni se ofrece. */}
+            {huerfanasEnPagina.length > 0 && (
+              <>
+                <label className="casilla">
+                  <input type="checkbox" checked={todasMarcadas} onChange={marcarTodasLasHuerfanas} />
+                  Marcar las {num(huerfanasEnPagina.length)} huérfanas de esta página
+                </label>
+                <button disabled={seleccionadasHuerfanas.length === 0 || ocupada}
+                  onClick={() => void borrar(seleccionadasHuerfanas.map((i) => i.id))}>
+                  Borrar {seleccionadasHuerfanas.length > 0 ? num(seleccionadasHuerfanas.length) : ''} marcadas
+                </button>
+              </>
+            )}
+          </div>
 
           {error && <div className="aviso-caja">{error}</div>}
+          {aviso && !error && <div className="nota-previa">{aviso}</div>}
           {cargando && !pagina && <div className="vacio">Cargando el banco…</div>}
-          {pagina && pagina.items.length === 0 && !cargando && (
+          {pagina && items.length === 0 && !cargando && (
             <div className="vacio">
               {filtro === 'todas' && !busqueda
                 ? 'El banco está vacío: sube fotos desde cualquier producto o usa «Buscar imágenes faltantes».'
@@ -106,18 +210,27 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
             </div>
           )}
 
-          {pagina && pagina.items.length > 0 && (
+          {items.length > 0 && (
             <div className="galeria">
-              {pagina.items.map((i) => {
+              {items.map((i) => {
                 const huerfana = i.productos.length === 0
                 const pequena = Math.min(i.ancho, i.alto) < 600
+                const marcada = seleccion.has(i.id)
                 return (
-                  <figure key={i.id} className={huerfana ? 'huerfana' : ''}>
-                    <img src={`/imagenes/${i.sha256}/miniatura_300`} alt="" loading="lazy" />
+                  <figure key={i.id} className={`${huerfana ? 'huerfana' : ''} ${marcada ? 'seleccionada' : ''}`}>
+                    <img className="abrible" src={`/imagenes/${i.sha256}/miniatura_300`} alt="" loading="lazy"
+                      title="Ver en grande" onClick={() => setVisor(i)} />
                     <figcaption>
                       <span className="dim">
+                        {huerfana && (
+                          <input type="checkbox" checked={marcada} onChange={() => alternar(i.id)}
+                            title="Marcar para borrar en lote" style={{ marginRight: 6 }} />
+                        )}
                         {i.ancho}×{i.alto} · {tamano(i.bytes)} · {i.formato}
                         {pequena && <span className="pastilla bloqueante" style={{ marginLeft: 6 }}>pequeña</span>}
+                      </span>
+                      <span className="origen" title={`${ORIGEN[i.origen] ?? i.origen}${i.origen_ref ? ` · ${i.origen_ref}` : ''} · ${fecha(i.creada)}`}>
+                        {ORIGEN[i.origen] ?? i.origen}{i.origen_ref ? ` · ${dominio(i.origen_ref)}` : ''} · {fecha(i.creada)}
                       </span>
                       {/* Cada producto que la usa es un enlace a su vista previa,
                           que es donde se sube, se quita o se elige portada. */}
@@ -132,13 +245,17 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
                             </button>
                           ))}
                       </div>
-                      {huerfana && (
-                        <div className="acciones">
-                          <button onClick={() => void borrar(i.id)} disabled={borrando === i.id}>
-                            {borrando === i.id ? 'Borrando…' : 'Borrar del disco'}
+                      <div className="acciones">
+                        <button onClick={() => setAsignando(i)} disabled={ocupada}
+                          title="Enlazarla a un producto sin volver a subirla">
+                          Asignar a producto
+                        </button>
+                        {huerfana && (
+                          <button onClick={() => void borrar([i.id])} disabled={ocupada}>
+                            Borrar del disco
                           </button>
-                        </div>
-                      )}
+                        )}
+                      </div>
                     </figcaption>
                   </figure>
                 )
@@ -149,11 +266,11 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
           {pagina && total > POR_PAGINA && (
             <div className="paginacion">
               <button onClick={() => setOffset(Math.max(0, offset - POR_PAGINA))} disabled={offset === 0 || cargando}>
-                Anterior
+                ← Anterior
               </button>
               <span className="tenue">{num(desde)}–{num(hasta)} de {num(total)}</span>
               <button onClick={() => setOffset(offset + POR_PAGINA)} disabled={hasta >= total || cargando}>
-                Siguiente
+                Siguiente →
               </button>
             </div>
           )}
@@ -162,11 +279,119 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
 
       <div className="nota-previa">
         Las fotos se suben, se quitan y se eligen como portada desde cada producto:
-        pulsa su referencia aquí o ábrelo desde <strong>Productos</strong>. Aquí solo
-        se borran las que no usa nadie. «Buscar imágenes faltantes» recorre el
-        catálogo entero buscando en internet por SKU.
+        pulsa su referencia aquí o ábrelo desde <strong>Productos</strong>. Aquí se
+        asignan a un producto las que ya están en el banco y se borran las que no usa
+        nadie. «Buscar imágenes faltantes» recorre el catálogo entero buscando en
+        internet por SKU; lo que descarga y no convence acaba en «Huérfanas».
       </div>
+
+      {visor && (
+        <div className="capa" onClick={() => setVisor(null)}>
+          <div className="hoja visor" onClick={(e) => e.stopPropagation()}>
+            <img src={`/imagenes/${visor.sha256}/web_800`} alt="" />
+            <div className="tenue mini-texto">
+              {visor.ancho}×{visor.alto} · {tamano(visor.bytes)} · {visor.formato}
+              {visor.origen_ref && <> · <a href={visor.origen_ref} target="_blank" rel="noreferrer">{dominio(visor.origen_ref)}</a></>}
+            </div>
+            <div className="grupo-acciones">
+              <button onClick={() => { setAsignando(visor); setVisor(null) }}>Asignar a producto</button>
+              <button onClick={() => setVisor(null)}>Cerrar ✕</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {asignando && (
+        <DialogoAsignar imagen={asignando} ocupada={ocupada}
+          onCerrar={() => setAsignando(null)}
+          onConfirmar={(p, principal) => void asignar(asignando, p, principal)} />
+      )}
     </>
+  )
+}
+
+// DialogoAsignar busca el producto por lo que el operador tiene a mano —la
+// referencia o el nombre— y enlaza la foto. Con «como portada» pasa a ser
+// la cara del producto en los cuatro canales.
+function DialogoAsignar({ imagen, ocupada, onCerrar, onConfirmar }: {
+  imagen: ImagenBanco
+  ocupada: boolean
+  onCerrar: () => void
+  onConfirmar: (producto: Producto, principal: boolean) => void
+}) {
+  const [q, setQ] = useState('')
+  const [candidatos, setCandidatos] = useState<Producto[]>([])
+  const [buscando, setBuscando] = useState(false)
+  const [elegido, setElegido] = useState<Producto | null>(null)
+  const [principal, setPrincipal] = useState(false)
+
+  useEffect(() => {
+    if (q.trim().length < 2) { setCandidatos([]); return }
+    let vigente = true
+    setBuscando(true)
+    const t = setTimeout(() => {
+      api.productos({ q: q.trim(), limite: 8 })
+        .then((p) => { if (vigente) setCandidatos(p.items) })
+        .catch(() => { if (vigente) setCandidatos([]) })
+        .finally(() => { if (vigente) setBuscando(false) })
+    }, 300)
+    return () => { vigente = false; clearTimeout(t) }
+  }, [q])
+
+  const yaLaTiene = (p: Producto) => imagen.productos.some((x) => x.variante_id === p.id)
+
+  return (
+    <div className="capa" onClick={onCerrar}>
+      <div className="hoja" onClick={(e) => e.stopPropagation()}>
+        <header className="hoja-cabecera">
+          <div>
+            <h2>Asignar la foto a un producto</h2>
+            <div className="sub">{imagen.ancho}×{imagen.alto} · {tamano(imagen.bytes)}</div>
+          </div>
+          <button onClick={onCerrar} disabled={ocupada}>Cerrar ✕</button>
+        </header>
+
+        <div className="form-edicion">
+          <label>
+            <span>Producto</span>
+            <input type="search" autoFocus placeholder="Escribe la referencia o parte del nombre"
+              value={q} onChange={(e) => { setQ(e.target.value); setElegido(null) }} />
+          </label>
+
+          {buscando && <div className="vacio">Buscando…</div>}
+          {!buscando && q.trim().length >= 2 && candidatos.length === 0 && (
+            <div className="vacio">Ningún producto coincide.</div>
+          )}
+          {candidatos.length > 0 && (
+            <div className="lista-eleccion">
+              {candidatos.map((p) => (
+                <label key={p.id}>
+                  <input type="radio" name="producto" checked={elegido?.id === p.id}
+                    disabled={yaLaTiene(p)} onChange={() => setElegido(p)} />
+                  <code>{p.sku || '—'}</code>
+                  <span className="expande-recorta">{p.nombre}</span>
+                  {yaLaTiene(p) && <span className="pastilla ok">ya la tiene</span>}
+                  {p.problemas?.includes('missing_image') && <span className="pastilla aviso">sin fotos</span>}
+                </label>
+              ))}
+            </div>
+          )}
+
+          <label className="casilla">
+            <input type="checkbox" checked={principal} onChange={(e) => setPrincipal(e.target.checked)} />
+            Ponerla como portada
+          </label>
+        </div>
+
+        <div className="hoja-pie">
+          <button onClick={onCerrar} disabled={ocupada}>Cancelar</button>
+          <button className="primario" disabled={!elegido || ocupada}
+            onClick={() => elegido && onConfirmar(elegido, principal)}>
+            {ocupada ? 'Asignando…' : 'Asignar'}
+          </button>
+        </div>
+      </div>
+    </div>
   )
 }
 

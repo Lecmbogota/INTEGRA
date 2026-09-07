@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // Mediateca: el banco de imágenes visto entero, no producto a producto.
@@ -28,6 +29,12 @@ type ImagenBanco struct {
 	Bytes     int64              `json:"bytes"`
 	Formato   string             `json:"formato"`
 	Productos []ProductoDeImagen `json:"productos"`
+	// De dónde salió: subida a mano, descargada de una búsqueda en internet
+	// (con la fuente), o del banco del fabricante. Sin esto, una foto de una
+	// moto entre las huérfanas no dice cómo llegó ahí.
+	Origen    string    `json:"origen"`
+	OrigenRef string    `json:"origen_ref"`
+	Creada    time.Time `json:"creada"`
 }
 
 type ProductoDeImagen struct {
@@ -56,7 +63,21 @@ type PaginaImagenes struct {
 // verdad: «¿qué puedo publicar?», «¿qué está demasiado pequeño?», «¿qué ocupa
 // disco sin usarse?», «¿qué subí dos veces?». Un listado sin ellos son mil
 // miniaturas iguales.
-func (s *Store) Banco(ctx context.Context, filtro, busca string, limite, offset int) (*PaginaImagenes, error) {
+// ordenesBanco son los órdenes que responden a una pregunta: qué llegó
+// último, qué pesa más (para vaciar disco) y qué es más pequeño (lo que
+// primero rechaza un canal).
+var ordenesBanco = map[string]string{
+	"recientes": "i.created_at DESC, i.id DESC",
+	"pesadas":   "i.bytes DESC, i.id DESC",
+	"pequenas":  "LEAST(i.ancho, i.alto) ASC, i.id DESC",
+	"grandes":   "LEAST(i.ancho, i.alto) DESC, i.id DESC",
+}
+
+func (s *Store) Banco(ctx context.Context, filtro, busca, orden string, limite, offset int) (*PaginaImagenes, error) {
+	ordenSQL, ok := ordenesBanco[orden]
+	if !ok {
+		ordenSQL = ordenesBanco["recientes"]
+	}
 	if limite <= 0 || limite > 200 {
 		limite = 60
 	}
@@ -111,9 +132,10 @@ func (s *Store) Banco(ctx context.Context, filtro, busca string, limite, offset 
 	}
 
 	filas, err := s.pool.Query(ctx, `
-		SELECT i.id, i.sha256, i.ancho, i.alto, i.bytes, i.formato
+		SELECT i.id, i.sha256, i.ancho, i.alto, i.bytes, i.formato,
+		       i.origen, COALESCE(i.origen_ref, ''), i.created_at
 		FROM imagenes i `+donde+`
-		ORDER BY i.created_at DESC, i.id DESC
+		ORDER BY `+ordenSQL+`
 		LIMIT $1 OFFSET $2`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("listando el banco de imágenes: %w", err)
@@ -125,7 +147,7 @@ func (s *Store) Banco(ctx context.Context, filtro, busca string, limite, offset 
 	for filas.Next() {
 		var im ImagenBanco
 		if err := filas.Scan(&im.ID, &im.SHA256, &im.Ancho, &im.Alto, &im.Bytes,
-			&im.Formato); err != nil {
+			&im.Formato, &im.Origen, &im.OrigenRef, &im.Creada); err != nil {
 			return nil, err
 		}
 		im.Productos = []ProductoDeImagen{}
