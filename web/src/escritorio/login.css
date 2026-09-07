@@ -6,9 +6,11 @@
   font-family: var(--fuente-cuerpo);
   animation: bloqueo-entrar .5s ease-out both;
 }
-.bloqueo-fondo { position: absolute; inset: -24px; background-size: cover; background-position: center; filter: blur(14px) saturate(1.15); transform: scale(1.04); }
-.bloqueo-velo { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(10,14,24,.35), rgba(10,14,24,.55)); }
-.bloqueo > * { position: relative; }
+.bloqueo-fondo { position: absolute; inset: -24px; z-index: 0; background-size: cover; background-position: center; filter: blur(14px) saturate(1.15); transform: scale(1.04); }
+.bloqueo-velo { position: absolute; inset: 0; z-index: 0; background: linear-gradient(180deg, rgba(10,14,24,.35), rgba(10,14,24,.55)); }
+/* Solo el contenido se apila sobre el fondo; la foto y el velo siguen
+   absolutos, detrás. */
+.bloqueo > :not(.bloqueo-fondo):not(.bloqueo-velo) { position: relative; z-index: 1; }
 
 .bloqueo-reloj { margin-top: 8vh; text-align: center; text-shadow: 0 2px 18px rgba(0,0,0,.45); }
 .bloqueo-hora { font-family: var(--fuente-titular); font-size: clamp(56px, 9vw, 96px); font-weight: 600; line-height: 1; letter-spacing: -.02em; }

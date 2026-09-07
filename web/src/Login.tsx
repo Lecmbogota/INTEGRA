@@ -143,7 +143,7 @@ export function Login({ onEntrar }: { onEntrar: (s: Sesion) => void }) {
     }
   }
 
-  const hora = ahora.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })
+  const hora = ahora.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit', hour12: false })
   const fecha = ahora.toLocaleDateString('es-CO', { weekday: 'long', day: 'numeric', month: 'long' })
 
   return (
