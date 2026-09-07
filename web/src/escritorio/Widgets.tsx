@@ -510,6 +510,10 @@ export function GaleriaWidgets({ abierta, onCerrar }: { abierta: boolean; onCerr
     setTimeout(() => setAnadido((a) => (a === tipo ? null : a)), 1200)
   }
   const cuantos = (tipo: WidgetTipo) => prefs.disposicion.widgets.filter((w) => w.tipo === tipo).length
+  // Lo que ya está en el escritorio no se vuelve a ofrecer: la galería es
+  // «qué me falta por poner», no un catálogo. Cada widget se ajusta desde
+  // su propio menú «…» una vez colocado.
+  const disponibles = TIPOS_WIDGET.filter((tipo) => cuantos(tipo) === 0)
 
   return createPortal(
     <div className="galeria-fondo" onPointerDown={(e) => { if (e.target === e.currentTarget) onCerrar() }}>
@@ -519,14 +523,16 @@ export function GaleriaWidgets({ abierta, onCerrar }: { abierta: boolean; onCerr
           <button type="button" className="galeria-cerrar" aria-label="Cerrar" onClick={onCerrar}>×</button>
         </div>
         <div className="galeria-lista">
-          {TIPOS_WIDGET.map((tipo) => {
+          {disponibles.length === 0 && (
+            <div className="galeria-vacia">Todos los widgets están ya en el escritorio. Para volver a colocar uno, quítalo desde su menú «…».</div>
+          )}
+          {disponibles.map((tipo) => {
             const def = WIDGETS[tipo]
-            const n = cuantos(tipo)
             return (
               <div key={tipo} className="galeria-item">
                 <Miniatura tipo={tipo} />
                 <div className="galeria-texto">
-                  <div className="galeria-nombre">{def.nombre}{n > 0 && <span className="galeria-cuantos">{n}</span>}</div>
+                  <div className="galeria-nombre">{def.nombre}</div>
                   <div className="galeria-desc">{def.descripcion}</div>
                 </div>
                 <button type="button" className="galeria-anadir" onClick={() => anadir(tipo)}>

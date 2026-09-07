@@ -532,8 +532,6 @@ export function Escritorio() {
         </div>
       )}
 
-      <button type="button" className="boton-anadir-widget" title="Añadir widget" aria-label="Añadir widget"
-        onClick={() => setGaleria(true)}>+</button>
       <GaleriaWidgets abierta={galeria} onCerrar={() => setGaleria(false)} />
 
       {menu && (
