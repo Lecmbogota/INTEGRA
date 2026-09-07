@@ -64,11 +64,26 @@ export function Mapeos({ canalInicial }: { canalInicial?: string } = {}) {
     <section className="panel">
       <h2>Mapeo de categorías — {NOMBRES[canal] ?? canal}</h2>
       <div className="cuerpo">
-        <div className="nota-previa">
-          Sugerencias del predictor público de MercadoLibre. <strong>Ninguna se usa
-          para publicar hasta que la confirmes.</strong> Las marcadas con ⚠ no comparten
-          vocabulario con la categoría de Odoo, así que probablemente estén mal.
-        </div>
+        {/* Cada canal tiene su propio árbol y su propia forma de llenar esta
+            tabla; el texto lo dice para que nadie busque en Falabella un
+            predictor que solo existe en MercadoLibre. */}
+        {canal === 'mercadolibre' ? (
+          <div className="nota-previa">
+            Cada categoría de Odoo necesita una equivalente en MercadoLibre para poder
+            publicar. Las filas son sugerencias del predictor público de MercadoLibre
+            (<code>integra sugerir-categorias</code>). <strong>Ninguna se usa para
+            publicar hasta que la confirmes.</strong> Las marcadas con ⚠ no comparten
+            vocabulario con la categoría de Odoo, así que probablemente estén mal.
+          </div>
+        ) : (
+          <div className="nota-previa">
+            Falabella también exige una categoría de su árbol por cada categoría de Odoo,
+            pero <strong>Integra todavía no tiene forma de proponerla ni de asignarla</strong>:
+            no hay predictor como el de MercadoLibre ni pantalla para elegirla a mano.
+            Mientras tanto, todo producto queda bloqueado para Falabella por
+            «PrimaryCategory».
+          </div>
+        )}
         <div className="filtros">
           <div className="grupo-badges">
             {Object.entries(NOMBRES).map(([id, nombre]) => (
