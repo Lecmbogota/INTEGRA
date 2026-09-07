@@ -21,10 +21,54 @@ func (s *Server) registrarImagenes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/productos/{id}/imagenes/buscar", s.buscarImagenesWeb)
 	mux.HandleFunc("DELETE /api/productos/{id}/imagenes/{imagenID}", s.quitarImagen)
 	mux.HandleFunc("POST /api/productos/{id}/imagenes/{imagenID}/principal", s.principalImagen)
+	// El banco entero, para la mediateca: lo que no se ve producto a producto.
+	mux.HandleFunc("GET /api/imagenes", s.banco)
+	mux.HandleFunc("DELETE /api/imagenes/{id}", s.borrarDelBanco)
 	// El fichero se sirve por hash, no por identificador: así la URL es
 	// inmutable y se puede cachear para siempre.
 	mux.HandleFunc("GET /imagenes/{sha}", s.servirImagen)
 	mux.HandleFunc("GET /imagenes/{sha}/{variante}", s.servirImagen)
+}
+
+// banco lista el banco de imágenes con filtro, búsqueda y página.
+func (s *Server) banco(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	limite, _ := strconv.Atoi(q.Get("limite"))
+	offset, _ := strconv.Atoi(q.Get("offset"))
+	pg, err := s.st.Banco(r.Context(), q.Get("filtro"), q.Get("q"), limite, offset)
+	if err != nil {
+		escribir(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	escribir(w, http.StatusOK, pg)
+}
+
+// borrarDelBanco elimina del disco una imagen que no usa ningún producto.
+// La base decide si se puede (se niega si alguien la usa); los ficheros se
+// quitan después, y si alguno ya no estaba no pasa nada.
+func (s *Server) borrarDelBanco(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		escribir(w, http.StatusBadRequest, map[string]string{"error": "identificador inválido"})
+		return
+	}
+	rutas, err := s.st.BorrarDelBanco(r.Context(), id)
+	if err != nil {
+		escribir(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	}
+	if s.almacen != nil {
+		for _, ruta := range rutas {
+			_ = s.almacen.Borrar(ruta)
+		}
+	}
+	var usuario *int64
+	if c := ClaimsDeContext(r.Context()); c != nil {
+		usuario = &c.UserID
+	}
+	_ = s.st.RegistrarAuditoria(r.Context(), usuario, "delete", "imagenes",
+		strconv.FormatInt(id, 10), nil, map[string]any{"ficheros": len(rutas)}, r.RemoteAddr)
+	escribir(w, http.StatusOK, map[string]string{"estado": "borrada"})
 }
 
 // productoDesdeRuta acepta el identificador de variante que usa el resto de la

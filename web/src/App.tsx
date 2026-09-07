@@ -308,7 +308,7 @@ function Aplicacion({ sesion, onSalir }: { sesion: Sesion; onSalir: () => void }
               </div>
             )}
 
-            <Mediateca />
+            <Mediateca onVer={(id) => setPreview(id)} />
           </>
         )}
 

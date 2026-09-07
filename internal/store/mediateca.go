@@ -185,24 +185,46 @@ func (s *Store) Banco(ctx context.Context, filtro, busca string, limite, offset 
 	return &pg, nil
 }
 
-// BorrarDelBanco elimina una imagen que no usa ningún producto.
+// BorrarDelBanco elimina una imagen que no usa ningún producto y devuelve
+// las rutas de sus ficheros —el original y las derivadas— para que quien
+// llama los quite del disco: la base los olvida en cascada, pero el disco no.
 //
 // Se niega a borrar una que sí se use: la ficha del canal apunta a esa URL, y
 // dejarla sin fichero convierte una publicación viva en una con la foto rota,
 // que es peor que el disco ocupado. Para quitarla de un producto está la
 // pantalla del producto.
-func (s *Store) BorrarDelBanco(ctx context.Context, id int64) (ruta string, err error) {
+func (s *Store) BorrarDelBanco(ctx context.Context, id int64) ([]string, error) {
 	var enUso int
 	if err := s.pool.QueryRow(ctx,
 		`SELECT count(*) FROM producto_imagenes WHERE imagen_id = $1`, id).Scan(&enUso); err != nil {
-		return "", fmt.Errorf("comprobando el uso de la imagen %d: %w", id, err)
+		return nil, fmt.Errorf("comprobando el uso de la imagen %d: %w", id, err)
 	}
 	if enUso > 0 {
-		return "", fmt.Errorf("la imagen %d la usan %d productos: quítala de ellos antes de borrarla", id, enUso)
+		return nil, fmt.Errorf("la imagen %d la usan %d productos: quítala de ellos antes de borrarla", id, enUso)
 	}
+
+	var rutas []string
+	filas, err := s.pool.Query(ctx, `SELECT ruta FROM imagen_derivadas WHERE imagen_id = $1`, id)
+	if err != nil {
+		return nil, fmt.Errorf("leyendo las derivadas de la imagen %d: %w", id, err)
+	}
+	for filas.Next() {
+		var r string
+		if err := filas.Scan(&r); err != nil {
+			filas.Close()
+			return nil, err
+		}
+		rutas = append(rutas, r)
+	}
+	filas.Close()
+	if err := filas.Err(); err != nil {
+		return nil, err
+	}
+
+	var original string
 	if err := s.pool.QueryRow(ctx,
-		`DELETE FROM imagenes WHERE id = $1 RETURNING ruta`, id).Scan(&ruta); err != nil {
-		return "", fmt.Errorf("borrando la imagen %d: %w", id, err)
+		`DELETE FROM imagenes WHERE id = $1 RETURNING ruta`, id).Scan(&original); err != nil {
+		return nil, fmt.Errorf("borrando la imagen %d: %w", id, err)
 	}
-	return ruta, nil
+	return append(rutas, original), nil
 }

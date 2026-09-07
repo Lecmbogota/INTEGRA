@@ -644,6 +644,7 @@ button.enlace:hover:not(:disabled) { background: none; color: var(--acento-hover
   border-radius: var(--radio); overflow: hidden;
 }
 .galeria figure.principal { border-color: var(--acento); }
+.galeria figure.huerfana { border-style: dashed; opacity: .85; }
 .galeria img {
   width: 100%; aspect-ratio: 1; object-fit: contain;
   background: #fff; display: block;
