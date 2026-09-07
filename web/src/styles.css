@@ -596,6 +596,7 @@ button.enlace:hover:not(:disabled) { background: none; color: var(--acento-hover
 .lista-faltantes li { margin-bottom: 3px; }
 .lista-faltantes.bloqueo { color: var(--error); }
 .lista-faltantes.aviso { color: var(--aviso); }
+.lista-faltantes .arreglo { margin-left: 6px; font-size: 12px; white-space: nowrap; }
 .lista-faltantes code, .json-cabecera code {
   font-family: var(--fuente-mono); font-size: 11px;
 }

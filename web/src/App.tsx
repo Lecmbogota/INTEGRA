@@ -5,11 +5,11 @@ import {
   type ResumenOrdenes, type StockAlmacen,
 } from './api'
 import { Login, borrarSesion, leerSesion, type Sesion } from './Login'
-import { Preview } from './Preview'
+import { Preview, type DestinoFaltante } from './Preview'
 import { Mapeos } from './Mapeos'
 import { Canales } from './Canales'
 import { Cuentas } from './Cuentas'
-import { Catalogo } from './Catalogo'
+import { Catalogo, type AbrirEditor } from './Catalogo'
 import { Pedidos } from './Pedidos'
 import { Publicacion } from './Publicacion'
 import { Prioridad } from './Prioridad'
@@ -89,6 +89,21 @@ function Aplicacion({ sesion, onSalir }: { sesion: Sesion; onSalir: () => void }
   const [error, setError] = useState<string | null>(null)
   const [sincronizando, setSincronizando] = useState(false)
   const [preview, setPreview] = useState<number | null>(null)
+  // Lo que pidió la vista previa al pulsar un faltante: abrir tal producto en
+  // tal pestaña del editor, o ver el mapeo de categorías de tal canal.
+  const [abrirEditor, setAbrirEditor] = useState<AbrirEditor | null>(null)
+  const [canalMapeo, setCanalMapeo] = useState<string | undefined>(undefined)
+
+  const irAArreglar = useCallback((d: DestinoFaltante) => {
+    setPreview(null)
+    if (d.tipo === 'editar') {
+      setAbrirEditor({ id: d.varianteId, sku: d.sku, pestana: d.pestana })
+      irA('catalogo')
+    } else {
+      setCanalMapeo(d.canal)
+      irA('categorias')
+    }
+  }, [irA])
   const [masivo, setMasivo] = useState<BusquedaMasiva | null>(null)
 
   const cargarPanel = useCallback(async () => {
@@ -258,7 +273,8 @@ function Aplicacion({ sesion, onSalir }: { sesion: Sesion; onSalir: () => void }
         )}
 
         {seccion === 'catalogo' && (
-          <Catalogo marcas={marcas} categorias={categorias} onVer={(id) => setPreview(id)} onCambio={() => void cargarPanel()} />
+          <Catalogo marcas={marcas} categorias={categorias} onVer={(id) => setPreview(id)} onCambio={() => void cargarPanel()}
+            abrir={abrirEditor} onAbierto={() => setAbrirEditor(null)} />
         )}
 
         {seccion === 'mediateca' && (
@@ -307,7 +323,7 @@ function Aplicacion({ sesion, onSalir }: { sesion: Sesion; onSalir: () => void }
                 <div className="sub">Equivalencia entre el árbol de Odoo y el de cada canal</div>
               </div>
             </header>
-            <Mapeos />
+            <Mapeos canalInicial={canalMapeo} />
           </>
         )}
 
@@ -348,7 +364,7 @@ function Aplicacion({ sesion, onSalir }: { sesion: Sesion; onSalir: () => void }
       </main>
 
       {preview !== null && (
-        <Preview varianteId={preview} onCerrar={() => setPreview(null)} />
+        <Preview varianteId={preview} onCerrar={() => setPreview(null)} onIr={irAArreglar} />
       )}
     </div>
   )

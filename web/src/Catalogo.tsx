@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api, money, motivo, num, type Categoria, type Marca, type PaginaProductos, type Producto, rolActual , type CuentaCanal } from './api'
-import { Editar } from './Editar'
+import { Editar, type Pestana } from './Editar'
 import { EdicionMasiva } from './EdicionMasiva'
 import { PlantillaMasiva } from './PlantillaMasiva'
 
@@ -26,11 +26,17 @@ const BLOQUEANTES = new Set([
 ])
 const bloqueante = (m: string) => BLOQUEANTES.has(m)
 
-export function Catalogo({ marcas, categorias = [], onVer, onCambio }: {
+// AbrirEditor es lo que pide la vista previa al pulsar «Poner el peso»: que
+// esta pantalla abra el editor de ese producto ya en la pestaña del peso.
+export type AbrirEditor = { id: number; sku: string; pestana: Pestana }
+
+export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = null, onAbierto }: {
   marcas: Marca[]
   categorias?: Categoria[]
   onVer: (varianteId: number) => void
   onCambio: () => void
+  abrir?: AbrirEditor | null
+  onAbierto?: () => void
 }) {
   const [pagina, setPagina] = useState<PaginaProductos | null>(null)
   const [busqueda, setBusqueda] = useState('')
@@ -53,6 +59,10 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio }: {
   const [ordenDesc, setOrdenDesc] = useState(false)
   const [offset, setOffset] = useState(0)
   const [editando, setEditando] = useState<Producto | null>(null)
+  const [pestanaEditor, setPestanaEditor] = useState<Pestana>('venta')
+  // La petición de abrir un producto concreto se resuelve cuando llega la
+  // lista que lo contiene, no antes: la lista se recarga al buscarlo.
+  const pendiente = useRef<AbrirEditor | null>(null)
   const [version, setVersion] = useState(0)
   const [error, setError] = useState<string | null>(null)
   const [cargando, setCargando] = useState(true)
@@ -163,6 +173,17 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio }: {
     setMarcados(s)
   }
 
+  // Al venir de la vista previa se busca el producto por su referencia en vez
+  // de confiar en que esté en la página actual: esta pantalla se monta de
+  // cero al cambiar de sección y la primera página son cincuenta de muchos.
+  useEffect(() => {
+    if (!abrir) return
+    pendiente.current = abrir
+    setBusqueda(abrir.sku)
+    setOffset(0)
+    setVersion((v) => v + 1)
+  }, [abrir])
+
   // La búsqueda se retrasa 300 ms para no lanzar una consulta por tecla.
   // `vigente` descarta la respuesta de una consulta que ya quedó atrás: al
   // teclear rápido hay varias en vuelo y no siempre vuelven en orden, así que
@@ -184,6 +205,18 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio }: {
           // Un error de hace dos búsquedas no debe seguir en pantalla cuando
           // la siguiente ya trajo datos buenos.
           setError(null)
+          const a = pendiente.current
+          if (a) {
+            pendiente.current = null
+            const item = p.items.find((x) => x.id === a.id)
+            if (item) {
+              setPestanaEditor(a.pestana)
+              setEditando(item)
+            } else {
+              setAviso({ texto: `${a.sku} no aparece en la lista con los filtros actuales.`, malo: true })
+            }
+            onAbierto?.()
+          }
         })
         .catch((e) => {
           if (!vigente) return
@@ -406,7 +439,7 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio }: {
                       onClick={(e) => { e.stopPropagation(); onVer(p.id) }}>
                       Ver en canales
                     </button>
-                    <button onClick={(e) => { e.stopPropagation(); setEditando(p) }}
+                    <button onClick={(e) => { e.stopPropagation(); setPestanaEditor('venta'); setEditando(p) }}
                       title="Editar precio, marca y descripción">
                       Editar
                     </button>
@@ -493,7 +526,7 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio }: {
       )}
 
       {editando !== null && (
-        <Editar producto={editando} marcas={marcas}
+        <Editar producto={editando} marcas={marcas} pestanaInicial={pestanaEditor}
           onCerrar={() => setEditando(null)}
           onGuardado={() => {
             setEditando(null)

@@ -1,7 +1,18 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api, money, num, type Mapeo } from './api'
 
-export function Mapeos() {
+const NOMBRES: Record<string, string> = {
+  mercadolibre: 'MercadoLibre',
+  falabella: 'Falabella',
+}
+
+// La pantalla enseñaba solo MercadoLibre aunque la API sirve el mapeo de
+// cualquier canal, y Falabella también exige categoría: quien llega desde
+// «hace falta mapear la categoría al árbol de Falabella» tiene que ver ese
+// árbol y no el de otro canal.
+export function Mapeos({ canalInicial }: { canalInicial?: string } = {}) {
+  const [canal, setCanal] = useState(canalInicial ?? 'mercadolibre')
+  useEffect(() => { if (canalInicial) setCanal(canalInicial) }, [canalInicial])
   const [filas, setFilas] = useState<Mapeo[]>([])
   const [cargando, setCargando] = useState(true)
   const [confirmando, setConfirmando] = useState<number | null>(null)
@@ -9,11 +20,12 @@ export function Mapeos() {
   const [soloDudosos, setSoloDudosos] = useState(false)
 
   const cargar = useCallback(() => {
-    api.mapeos('mercadolibre')
+    setCargando(true)
+    api.mapeos(canal)
       .then(setFilas)
       .catch((e) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setCargando(false))
-  }, [])
+  }, [canal])
 
   useEffect(() => { cargar() }, [cargar])
 
@@ -50,7 +62,7 @@ export function Mapeos() {
 
   return (
     <section className="panel">
-      <h2>Mapeo de categorías — MercadoLibre</h2>
+      <h2>Mapeo de categorías — {NOMBRES[canal] ?? canal}</h2>
       <div className="cuerpo">
         <div className="nota-previa">
           Sugerencias del predictor público de MercadoLibre. <strong>Ninguna se usa
@@ -58,6 +70,12 @@ export function Mapeos() {
           vocabulario con la categoría de Odoo, así que probablemente estén mal.
         </div>
         <div className="filtros">
+          <div className="grupo-badges">
+            {Object.entries(NOMBRES).map(([id, nombre]) => (
+              <button key={id} type="button" className={`badge ${canal === id ? 'activo' : ''}`}
+                onClick={() => setCanal(id)}>{nombre}</button>
+            ))}
+          </div>
           <span className="tenue">
             {confirmados} de {filas.length} confirmadas · {money(desbloqueado)} desbloqueados
           </span>
@@ -76,7 +94,7 @@ export function Mapeos() {
           <thead>
             <tr>
               <th>Categoría en Odoo</th>
-              <th>Categoría en MercadoLibre</th>
+              <th>Categoría en {NOMBRES[canal] ?? canal}</th>
               <th className="num">Productos</th>
               <th className="num">Inventario</th>
               <th className="oculto-movil">Atributos deducidos</th>
@@ -90,7 +108,7 @@ export function Mapeos() {
                   {dudoso(m) && !m.confirmado && <span title="poca coherencia con el origen">⚠ </span>}
                   {m.categoria_odoo}
                 </td>
-                <td className="apilada" data-etiqueta="Categoría en MercadoLibre">
+                <td className="apilada" data-etiqueta={`Categoría en ${NOMBRES[canal] ?? canal}`}>
                   <code>{m.categoria_canal_id}</code>{' '}
                   <span className={dudoso(m) ? 'tenue' : ''}>{m.categoria_canal_nombre}</span>
                 </td>
@@ -124,7 +142,7 @@ export function Mapeos() {
         {!cargando && visibles.length === 0 && (
           <div className="vacio">
             {filas.length === 0
-              ? 'Sin sugerencias todavía. Ejecuta: integra sugerir-categorias'
+              ? `Sin mapeos de ${NOMBRES[canal] ?? canal} todavía.${canal === 'mercadolibre' ? ' Ejecuta: integra sugerir-categorias' : ''}`
               : 'Ninguna coincide con el filtro.'}
           </div>
         )}

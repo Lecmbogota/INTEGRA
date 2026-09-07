@@ -12,7 +12,7 @@ const LIMITES: Record<string, { nombre: string; max: number }> = {
   shopify: { nombre: 'Shopify', max: 255 },
 }
 
-type Pestana = 'venta' | 'promocion' | 'titulos' | 'envio' | 'interno'
+export type Pestana = 'venta' | 'promocion' | 'titulos' | 'envio' | 'interno'
 
 // Un campo mal escrito vive en una pestaña concreta, y el error se enseñaba
 // sin decir en cuál: quien tecleaba mal el peso lo leía desde «Títulos» y no
@@ -23,13 +23,16 @@ type Recolectado =
 
 // Editor de los campos propiedad de Integra. De Odoo solo llegan la
 // referencia, el nombre y el stock; todo lo demás vive aquí.
-export function Editar({ producto, marcas, onCerrar, onGuardado }: {
+export function Editar({ producto, marcas, onCerrar, onGuardado, pestanaInicial }: {
   producto: Producto
   marcas: Marca[]
   onCerrar: () => void
   onGuardado: () => void
+  // Quien llega desde «falta el peso» tiene que caer en la casilla del peso,
+  // no en la primera pestaña a buscarla.
+  pestanaInicial?: Pestana
 }) {
-  const [pestana, setPestana] = useState<Pestana>('venta')
+  const [pestana, setPestana] = useState<Pestana>(pestanaInicial ?? 'venta')
 
   const [precio, setPrecio] = useState(producto.precio === null ? '' : String(producto.precio))
   const [marca, setMarca] = useState(producto.marca)

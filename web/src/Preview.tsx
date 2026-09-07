@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, money, type Competencia, type PreviewRespuesta, type Proyeccion } from './api'
 import { Imagenes } from './Imagenes'
 import { PanelAtributos } from './Atributos'
+import type { Pestana } from './Editar'
 
 const NOMBRES: Record<string, string> = {
   woocommerce: 'WooCommerce',
@@ -10,7 +11,45 @@ const NOMBRES: Record<string, string> = {
   falabella: 'Falabella',
 }
 
-export function Preview({ varianteId, onCerrar }: { varianteId: number; onCerrar: () => void }) {
+// Dónde se arregla cada faltante. Un aviso que dice «falta el peso» y no
+// lleva a la casilla del peso obliga a cerrar la previa, buscar el producto
+// en la lista y recorrer un editor de cinco pestañas. Lo que viene de Odoo
+// (referencia, existencias) no tiene sitio en Integra y se dice tal cual.
+type Arreglo =
+  | { tipo: 'editar'; pestana: Pestana; texto: string }
+  | { tipo: 'categorias'; texto: string }
+  | { tipo: 'imagenes'; texto: string }
+  | { tipo: 'odoo' }
+
+const ARREGLOS: Record<string, Arreglo> = {
+  title: { tipo: 'editar', pestana: 'titulos', texto: 'Corregir el título' },
+  descripcion: { tipo: 'editar', pestana: 'venta', texto: 'Escribir la descripción' },
+  precio: { tipo: 'editar', pestana: 'venta', texto: 'Poner el precio' },
+  'attributes.BRAND': { tipo: 'editar', pestana: 'venta', texto: 'Poner la marca' },
+  Brand: { tipo: 'editar', pestana: 'venta', texto: 'Poner la marca' },
+  vendor: { tipo: 'editar', pestana: 'venta', texto: 'Poner la marca' },
+  PackageWeight: { tipo: 'editar', pestana: 'envio', texto: 'Poner el peso' },
+  category_id: { tipo: 'categorias', texto: 'Mapear la categoría' },
+  PrimaryCategory: { tipo: 'categorias', texto: 'Mapear la categoría' },
+  categories: { tipo: 'categorias', texto: 'Mapear la categoría' },
+  imagenes: { tipo: 'imagenes', texto: 'Subir fotos' },
+  sku: { tipo: 'odoo' },
+  stock: { tipo: 'odoo' },
+}
+
+// Lo que la previa le pide a la aplicación cuando el arreglo está en otra
+// pantalla: abrir el editor de este producto en una pestaña, o ir al mapeo
+// de categorías de un canal.
+export type DestinoFaltante =
+  | { tipo: 'editar'; pestana: Pestana; varianteId: number; sku: string }
+  | { tipo: 'categorias'; canal: string }
+
+export function Preview({ varianteId, onCerrar, onIr }: {
+  varianteId: number
+  onCerrar: () => void
+  onIr?: (destino: DestinoFaltante) => void
+}) {
+  const refImagenes = useRef<HTMLDivElement>(null)
   const [datos, setDatos] = useState<PreviewRespuesta | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [verJson, setVerJson] = useState<string | null>(null)
@@ -51,6 +90,21 @@ export function Preview({ varianteId, onCerrar }: { varianteId: number; onCerrar
   const bloqueados = (datos?.proyecciones ?? []).filter(
     (p) => (p.faltantes ?? []).some((f) => f.severidad === 'bloquea'))
 
+  function arreglar(campo: string, canal: string) {
+    const a = ARREGLOS[campo]
+    if (!a || !datos || a.tipo === 'odoo') return
+    if (a.tipo === 'imagenes') {
+      // Las fotos se suben aquí mismo, más arriba: basta con ir hasta ellas.
+      refImagenes.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      return
+    }
+    if (a.tipo === 'editar') {
+      onIr?.({ tipo: 'editar', pestana: a.pestana, varianteId, sku: datos.producto.sku })
+    } else {
+      onIr?.({ tipo: 'categorias', canal })
+    }
+  }
+
   return (
     <div className="capa" onClick={onCerrar}>
       <div className="hoja" onClick={(e) => e.stopPropagation()}>
@@ -90,12 +144,15 @@ export function Preview({ varianteId, onCerrar }: { varianteId: number; onCerrar
                   bloqueados.map((p) => NOMBRES[p.canal] ?? p.canal).join(', ') + '.'}
             </div>
 
-            <Imagenes varianteId={varianteId} onCambio={recargar} />
+            <div ref={refImagenes}>
+              <Imagenes varianteId={varianteId} onCambio={recargar} />
+            </div>
 
             <div className="previa-rejilla">
               {datos.proyecciones.map((p) => (
                 <TarjetaCanal key={p.canal} p={p} marca={datos.producto.marca}
-                  onVerJson={() => setVerJson(p.canal)} />
+                  onVerJson={() => setVerJson(p.canal)}
+                  onArreglar={(campo) => arreglar(campo, p.canal)} />
               ))}
             </div>
 
@@ -169,7 +226,9 @@ export function Preview({ varianteId, onCerrar }: { varianteId: number; onCerrar
   )
 }
 
-function TarjetaCanal({ p, marca, onVerJson }: { p: Proyeccion; marca: string; onVerJson: () => void }) {
+function TarjetaCanal({ p, marca, onVerJson, onArreglar }: {
+  p: Proyeccion; marca: string; onVerJson: () => void; onArreglar: (campo: string) => void
+}) {
   // Go serializa los slices vacíos como null, así que todo lo que venga de la
   // API en forma de lista hay que normalizarlo antes de usarlo.
   const bloqueos = p.faltantes?.filter((f) => f.severidad === 'bloquea') ?? []
@@ -195,14 +254,20 @@ function TarjetaCanal({ p, marca, onVerJson }: { p: Proyeccion; marca: string; o
       {bloqueos.length > 0 && (
         <ul className="lista-faltantes bloqueo">
           {bloqueos.map((f) => (
-            <li key={f.campo}><code>{f.campo}</code> — {f.motivo}</li>
+            <li key={f.campo}>
+              <code>{f.campo}</code> — {f.motivo}
+              <Arreglar campo={f.campo} onArreglar={onArreglar} />
+            </li>
           ))}
         </ul>
       )}
       {avisos.length > 0 && (
         <ul className="lista-faltantes aviso">
           {avisos.map((f) => (
-            <li key={f.campo}><code>{f.campo}</code> — {f.motivo}</li>
+            <li key={f.campo}>
+              <code>{f.campo}</code> — {f.motivo}
+              <Arreglar campo={f.campo} onArreglar={onArreglar} />
+            </li>
           ))}
         </ul>
       )}
@@ -214,6 +279,19 @@ function TarjetaCanal({ p, marca, onVerJson }: { p: Proyeccion; marca: string; o
 
       <button className="ver-json" onClick={onVerJson}>Ver payload JSON</button>
     </div>
+  )
+}
+
+// Arreglar es el enlace que acompaña a cada faltante: dice qué hacer y
+// lleva a donde se hace. Sin él la lista es un diagnóstico sin tratamiento.
+function Arreglar({ campo, onArreglar }: { campo: string; onArreglar: (campo: string) => void }) {
+  const a = ARREGLOS[campo]
+  if (!a) return null
+  if (a.tipo === 'odoo') return <span className="tenue"> · se corrige en Odoo</span>
+  return (
+    <button className="enlace arreglo" type="button" onClick={() => onArreglar(campo)}>
+      {a.texto} ›
+    </button>
   )
 }
 
