@@ -190,6 +190,11 @@ export function EditorFoto({ foto, onCerrar, onGuardada }: {
   const [guardando, setGuardando] = useState(false)
 
   const [resultado, setResultado] = useState<{ ancho: number; alto: number; bytes: number } | null>(null)
+  // Guías sobre el resultado: el área útil que deja el margen, los tercios
+  // y el contorno del producto detectado. Y cuánto del lienzo ocupa el
+  // producto, que es lo que decide si la ficha se ve grande o perdida.
+  const [guias, setGuias] = useState(true)
+  const [ocupacion, setOcupacion] = useState<number | null>(null)
   const lienzoTrabajo = useRef<HTMLCanvasElement>(null)
   const lienzoResultado = useRef<HTMLCanvasElement>(null)
   const orientada = useRef<HTMLCanvasElement | null>(null)
@@ -252,12 +257,42 @@ export function EditorFoto({ foto, onCerrar, onGuardada }: {
       const ctx = v.getContext('2d')!
       ctx.imageSmoothingQuality = 'high'
       ctx.drawImage(c, 0, 0, v.width, v.height)
+
+      // Dónde quedó el producto dentro del resultado.
+      const caja = bordesBlancos(c)
+      setOcupacion(Math.max(caja.w / c.width, caja.h / c.height))
+
+      if (guias) {
+        ctx.save()
+        // Tercios: la referencia clásica para centrar y equilibrar.
+        ctx.strokeStyle = 'rgba(0,0,0,.18)'
+        ctx.lineWidth = 1
+        for (let k = 1; k <= 2; k++) {
+          ctx.beginPath(); ctx.moveTo((v.width * k) / 3, 0); ctx.lineTo((v.width * k) / 3, v.height); ctx.stroke()
+          ctx.beginPath(); ctx.moveTo(0, (v.height * k) / 3); ctx.lineTo(v.width, (v.height * k) / 3); ctx.stroke()
+        }
+        // Área útil: lo que deja el margen. Es donde debería vivir el producto.
+        if (cuadrado) {
+          const m = (v.width * margen) / 100
+          ctx.setLineDash([6, 4])
+          ctx.strokeStyle = 'rgba(37,99,235,.9)'
+          ctx.lineWidth = 1.5
+          ctx.strokeRect(m + 0.5, m + 0.5, v.width - 2 * m - 1, v.height - 2 * m - 1)
+        }
+        // Contorno del producto detectado: verde si llena bien, naranja si no.
+        const bien = Math.max(caja.w / c.width, caja.h / c.height) >= 0.7
+        ctx.setLineDash([4, 3])
+        ctx.strokeStyle = bien ? 'rgba(22,163,74,.95)' : 'rgba(217,119,6,.95)'
+        ctx.lineWidth = 1.5
+        ctx.strokeRect(caja.x * esc + 0.5, caja.y * esc + 0.5, caja.w * esc - 1, caja.h * esc - 1)
+        ctx.restore()
+      }
       aBlob(c, formato, calidad)
         .then((b) => { if (vigente) setResultado({ ancho: c.width, alto: c.height, bytes: b.size }) })
         .catch(() => { if (vigente) setResultado({ ancho: c.width, alto: c.height, bytes: 0 }) })
     }, 200)
     return () => { vigente = false; clearTimeout(t) }
-  }, [fuente, procesar, formato, calidad])
+  }, [fuente, procesar, formato, calidad, guias, cuadrado, margen])
 
   // ---- recorte con el ratón sobre el lienzo de trabajo
 
@@ -352,6 +387,16 @@ export function EditorFoto({ foto, onCerrar, onGuardada }: {
     if (formato === 'image/png') avisos.push({ texto: 'PNG pesa más y Falabella prefiere JPEG; úsalo solo si hace falta transparencia', malo: false })
     if (resultado.bytes > 3 * 1024 * 1024) avisos.push({ texto: 'Pesa más de 3 MB: baja la calidad o el lado', malo: true })
   }
+  // Cuánto del lienzo ocupa el producto. Los marketplaces enseñan mejor la
+  // ficha cuando el producto llena entre el 75 y el 90 %: menos se ve
+  // perdido en blanco, más se pega a los bordes y la miniatura lo corta.
+  if (ocupacion !== null) {
+    const pct = Math.round(ocupacion * 100)
+    if (ocupacion < 0.6) avisos.push({ texto: `El producto ocupa el ${pct} % del lienzo: se ve pequeño. Baja el margen o recorta más cerca (lo ideal es 75–90 %)`, malo: true })
+    else if (ocupacion < 0.75) avisos.push({ texto: `El producto ocupa el ${pct} %; podría verse algo más grande (lo ideal es 75–90 %)`, malo: false })
+    else if (ocupacion > 0.95) avisos.push({ texto: `El producto ocupa el ${pct} %: toca los bordes y la miniatura lo cortará. Sube el margen`, malo: true })
+    else avisos.push({ texto: `El producto ocupa el ${pct} % del lienzo: bien encuadrado`, malo: false })
+  }
 
   const { W, H } = dims()
   const r = rectActual()
@@ -426,6 +471,11 @@ export function EditorFoto({ foto, onCerrar, onGuardada }: {
                     Resultado: {resultado.ancho}×{resultado.alto} · {tamano(resultado.bytes)} · {formato === 'image/png' ? 'PNG' : 'JPEG'}
                   </div>
                 )}
+                <label className="casilla mini-texto" style={{ justifyContent: 'center', marginTop: 4 }}
+                  title="Tercios, área útil que deja el margen (azul) y contorno del producto detectado (verde si llena bien, naranja si no)">
+                  <input type="checkbox" checked={guias} onChange={(e) => setGuias(e.target.checked)} />
+                  Guías de encuadre
+                </label>
                 <ul className="lista-faltantes" style={{ marginTop: 6 }}>
                   {avisos.map((a, i) => <li key={i} className={a.malo ? 'mal' : ''} style={{ color: a.malo ? 'var(--error)' : 'var(--ok)' }}>{a.texto}</li>)}
                 </ul>
