@@ -1057,7 +1057,26 @@ func (s *Server) competencia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	items, err := mercadolibre.NuevoBuscadorCompetencia(mercadolibre.SitioColombia).
+	// Buscar en los listados exige el token de la cuenta de MercadoLibre. Sin
+	// cuenta conectada no hay competencia que mirar, y se dice en claro en vez
+	// de dejar que el buscador falle con un mensaje sobre tokens.
+	cuentas, err := s.st.CuentasPorCanal(r.Context())
+	if err != nil {
+		s.fallo(w, err)
+		return
+	}
+	cuentaML, hay := cuentas["mercadolibre"]
+	if !hay {
+		escribir(w, http.StatusUnprocessableEntity, map[string]string{
+			"error": "para comparar precios hace falta una cuenta de MercadoLibre conectada y activa (Canales)"})
+		return
+	}
+	token, err := conectores.TokenDeCuenta(r.Context(), s.st, s.cif, cuentaML)
+	if err != nil {
+		s.fallo(w, err)
+		return
+	}
+	items, err := mercadolibre.NuevoBuscadorCompetencia(mercadolibre.SitioColombia, mercadolibre.ConToken(token)).
 		Buscar(r.Context(), consulta, 8)
 	if err != nil {
 		escribir(w, http.StatusBadGateway, map[string]string{"error": err.Error()})

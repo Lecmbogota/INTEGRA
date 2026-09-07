@@ -70,6 +70,32 @@ func AdaptadorDeCuenta(ctx context.Context, st *store.Store, cif *crypto.Cifrado
 	return conCupo{Adapter: ad, lim: limitadorDe(cuentaID, rps, burst)}, nil
 }
 
+// conToken es lo que sabe hacer un adaptador que maneja token propio (hoy,
+// MercadoLibre).
+type conToken interface {
+	Token(context.Context) (string, error)
+}
+
+// TokenDeCuenta devuelve una función que entrega un access token vigente de
+// la cuenta, para llamadas al canal que no pasan por el adaptador —la
+// búsqueda de competencia en MercadoLibre—. Se apoya en el adaptador para
+// que el refresco siga el único camino seguro: con la cuenta bloqueada y
+// adoptando el token que otro haya canjeado antes.
+func TokenDeCuenta(ctx context.Context, st *store.Store, cif *crypto.Cifrador, cuentaID int64) (func(context.Context) (string, error), error) {
+	ad, err := AdaptadorDeCuenta(ctx, st, cif, cuentaID)
+	if err != nil {
+		return nil, err
+	}
+	if c, ok := ad.(conCupo); ok {
+		ad = c.Adapter
+	}
+	f, ok := ad.(conToken)
+	if !ok {
+		return nil, fmt.Errorf("la cuenta %d no es de un canal con token propio", cuentaID)
+	}
+	return f.Token, nil
+}
+
 // descifrarCampos abre el JSON cifrado de una cuenta. Se lee al construir el
 // adaptador y se vuelve a leer, ya con la fila bloqueada, en cada rotación.
 func descifrarCampos(cif *crypto.Cifrador, cuentaID int64, cifrada []byte) (map[string]string, error) {

@@ -1169,6 +1169,12 @@ func (a *Adaptador) buscarPorSKU(ctx context.Context, sku string) (*channel.Exte
 	return &channel.ExternalRef{ListingID: id, VariantID: id, SKU: sku}, nil
 }
 
+// Token expone el access token vigente para quien tenga que llamar a
+// MercadoLibre fuera del adaptador (la búsqueda de competencia). Refresca
+// por el mismo camino que un envío, con la cuenta bloqueada en la base, así
+// que no quema el refresh token de nadie.
+func (a *Adaptador) Token(ctx context.Context) (string, error) { return a.accessToken(ctx) }
+
 // accessToken devuelve un token vigente, refrescándolo si hace falta.
 //
 // ML rota el refresh token en cada canje e invalida el anterior, así que el
