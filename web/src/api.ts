@@ -45,6 +45,9 @@ export interface Producto {
   nota_interna: string
   // Canales donde tiene ficha. Vacío = pendiente de publicar.
   publicado: PublicadoEn[] | null
+  // Qué explica cada problema, por su código. Un aviso sin motivo no se
+  // puede juzgar ni resolver.
+  detalles: Record<string, string> | null
 }
 
 // EdicionProducto son los campos propiedad de Integra. Solo se envían las
@@ -1077,7 +1080,11 @@ export const MOTIVOS: Record<string, string> = {
   title_too_long: 'Título demasiado largo',
   missing_brand: 'Sin marca',
   no_stock: 'Sin existencias',
-  image_mismatch: 'Portada dudosa',
+  missing_image: 'Sin fotos',
+  // «Portada dudosa» no dice quién lo decidió: lo hizo la verificación visual
+  // con IA, y su motivo llega en `detalles`, que la pantalla enseña al pasar
+  // el ratón.
+  image_mismatch: 'La portada no cuadra',
   sku_renombrado: 'SKU renombrado en Odoo',
 }
 

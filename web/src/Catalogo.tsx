@@ -21,6 +21,8 @@ const ESTADO_CANAL: Record<string, string> = {
 
 const BLOQUEANTES = new Set([
   'missing_sku', 'duplicate_sku', 'missing_description', 'missing_price', 'price_below_cost',
+  // Sin foto no publica ningún canal.
+  'missing_image',
 ])
 const bloqueante = (m: string) => BLOQUEANTES.has(m)
 
@@ -387,7 +389,11 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio }: {
                       {p.problemas.length === 0
                         ? <span className="pastilla ok">Listo</span>
                         : p.problemas.map((m) => (
-                          <span key={m} className={`pastilla ${bloqueante(m) ? 'bloqueante' : 'aviso'}`}>
+                          // El detalle va en el title: es lo que explica el
+                          // aviso, y sin él «la portada no cuadra» no se puede
+                          // ni juzgar ni resolver.
+                          <span key={m} title={p.detalles?.[m] || motivo(m)}
+                            className={`pastilla ${bloqueante(m) ? 'bloqueante' : 'aviso'}`}>
                             {motivo(m)}
                           </span>
                         ))}

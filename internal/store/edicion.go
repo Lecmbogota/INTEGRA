@@ -234,14 +234,25 @@ func (s *Store) RecalcularAtencion(ctx context.Context) error {
 		   'sin descripción; se escribe en Integra',
 		   'blocking',
 		   NULLIF(TRIM(COALESCE(c.descripcion, p.description_sale, '')), '') IS NULL),
+		  ('missing_image',
+		   'sin ninguna foto; ningún canal publica sin imagen',
+		   'blocking',
+		   NOT EXISTS (SELECT 1 FROM producto_imagenes pi WHERE pi.product_id = p.id)),
 		  ('missing_price',
 		   'sin precio asignado en Integra',
 		   'blocking',
 		   v.price IS NULL),
+		  -- Se mide el título que va a salir a MercadoLibre, no el nombre de
+		  -- Odoo: con un título propio ya escrito, medir el de Odoo marcaba
+		  -- como demasiado largo un producto perfectamente publicable, y quien
+		  -- lo había arreglado veía el aviso seguir ahí sin saber qué más
+		  -- hacer. Solo se cae al nombre de Odoo cuando no hay título propio,
+		  -- que es lo que se publicaría entonces.
 		  ('title_too_long',
-		   length(p.name) || ' caracteres; MercadoLibre admite 60',
+		   length(COALESCE(NULLIF(c.titulos->>'mercadolibre', ''), p.name)) ||
+		       ' caracteres; MercadoLibre admite 60',
 		   'warning',
-		   length(p.name) > 60),
+		   length(COALESCE(NULLIF(c.titulos->>'mercadolibre', ''), p.name)) > 60),
 		  ('missing_brand',
 		   'sin marca asignada en Integra',
 		   'warning',
@@ -251,8 +262,15 @@ func (s *Store) RecalcularAtencion(ctx context.Context) error {
 		   'warning',
 		   NOT EXISTS (SELECT 1 FROM variant_stock st
 		               WHERE st.variant_id = v.id AND st.qty_on_hand > 0)),
+		  -- El detalle es lo que escribió la verificación visual. Sin él, «la
+		  -- portada no parece mostrar este producto» no dice quién lo decidió
+		  -- ni por qué, y no hay forma de juzgar si tiene razón.
 		  ('image_mismatch',
-		   'la portada no parece mostrar este producto (verificación visual)',
+		   COALESCE((SELECT NULLIF(TRIM(pi.verificacion_nota), '')
+		             FROM producto_imagenes pi
+		             WHERE pi.product_id = p.id AND pi.principal
+		               AND pi.verificacion = 'no_corresponde' LIMIT 1),
+		            'la portada no parece mostrar este producto (verificación visual)'),
 		   'warning',
 		   EXISTS (SELECT 1 FROM producto_imagenes pi
 		           WHERE pi.product_id = p.id AND pi.principal

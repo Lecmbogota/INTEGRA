@@ -95,6 +95,9 @@ type FilaProducto struct {
 	Excluido       bool     `json:"excluido"`
 	Stock          float64  `json:"stock"`
 	Problemas      []string `json:"problemas"`
+	// Detalles explica cada problema, por su código. Un aviso sin motivo no
+	// se puede juzgar ni resolver.
+	Detalles map[string]string `json:"detalles"`
 
 	// Canales donde el producto tiene ficha, con su estado. Vacío significa
 	// que está pendiente de publicar, que es lo que no se podía ver en la
@@ -242,6 +245,12 @@ func (s *Store) ListarProductos(ctx context.Context, f FiltroProductos) ([]FilaP
 		       COALESCE(ARRAY(SELECT a.reason FROM attention_queue a
 		                      WHERE a.variant_id = v.id AND a.resolved_at IS NULL
 		                      ORDER BY a.reason), '{}'),
+		       -- El detalle explica el aviso: sin él «portada dudosa» no dice
+		       -- quién lo decidió ni por qué, y no hay forma de juzgarlo.
+		       COALESCE(ARRAY(SELECT a.reason || '	' || COALESCE(a.detail, '')
+		                      FROM attention_queue a
+		                      WHERE a.variant_id = v.id AND a.resolved_at IS NULL
+		                      ORDER BY a.reason), '{}'),
 		       COALESCE(c.titulos, '{}'::jsonb),
 		       COALESCE(v.largo_cm,0), COALESCE(v.ancho_cm,0), COALESCE(v.alto_cm,0),
 		       p.condicion, p.garantia_meses, COALESCE(p.garantia_tipo,''),
@@ -270,10 +279,10 @@ func (s *Store) ListarProductos(ctx context.Context, f FiltroProductos) ([]FilaP
 	for filas.Next() {
 		var r FilaProducto
 		var titulos []byte
-		var publicado []string
+		var publicado, detalles []string
 		if err := filas.Scan(&r.ID, &r.SKU, &r.Nombre, &r.Marca, &r.Categoria,
 			&r.Precio, &r.PrecioSugerido, &r.Barcode, &r.Peso, &r.Descripcion,
-			&r.Excluido, &r.Stock, &r.Problemas,
+			&r.Excluido, &r.Stock, &r.Problemas, &detalles,
 			&titulos, &r.LargoCm, &r.AnchoCm, &r.AltoCm,
 			&r.Condicion, &r.GarantiaMeses, &r.GarantiaTipo,
 			&r.VideoURL, &r.NotaInterna, &publicado); err != nil {
@@ -284,6 +293,12 @@ func (s *Store) ListarProductos(ctx context.Context, f FiltroProductos) ([]FilaP
 		}
 		// Llegan como «canal:estado» para traerlos en un solo array; el canal
 		// nunca lleva dos puntos, así que partir por el primero es seguro.
+		r.Detalles = map[string]string{}
+		for _, d := range detalles {
+			if i := strings.Index(d, "	"); i >= 0 {
+				r.Detalles[d[:i]] = d[i+1:]
+			}
+		}
 		r.Publicado = []PublicadoEn{}
 		for _, v := range publicado {
 			if i := strings.Index(v, ":"); i > 0 {
