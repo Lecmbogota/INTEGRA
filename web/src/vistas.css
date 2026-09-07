@@ -269,3 +269,229 @@
 @media (hover: none) {
   .icono-vista .vista-acciones { opacity: 1; }
 }
+
+/* ------------------------------------------------------------ explorador */
+
+/* El contenedor de la lista recibe el foco real del teclado; lo que se ve
+   enfocado es la fila (aria-activedescendant), no el contenedor. */
+.explorador {
+  position: relative;
+  outline: none;
+}
+.explorador:focus-visible { box-shadow: inset 0 0 0 1px var(--acento); }
+/* Fila con foco de teclado: un borde punteado, solo mientras el foco esté
+   dentro de la lista; fuera no dice nada. */
+.explorador:focus-within .enfocada:not(tr) {
+  outline: 1px dashed var(--acento);
+  outline-offset: -1px;
+}
+.explorador:focus-within tr.enfocada > td {
+  box-shadow: inset 0 1px 0 var(--acento), inset 0 -1px 0 var(--acento);
+}
+/* Cuadro del lazo, dentro del contenedor (position: relative arriba). */
+.lazo {
+  position: absolute;
+  z-index: 5;
+  pointer-events: none;
+  border: 1px solid var(--acento);
+  background: color-mix(in srgb, var(--acento) 12%, transparent);
+}
+/* Archivo del equipo encima de una fila, tarjeta o del panel: se subirá a
+   ese producto al soltarlo. */
+.explorador .soltar-aqui,
+.panel-detalles.soltar-aqui {
+  outline: 2px dashed var(--acento);
+  outline-offset: -2px;
+  background: color-mix(in srgb, var(--acento) 10%, transparent);
+}
+tbody tr.soltar-aqui > td { background: color-mix(in srgb, var(--acento) 10%, transparent); }
+/* Excluido del catálogo (solo con «Ver excluidos»): atenuado. */
+.explorador .excluida { opacity: .7; }
+
+/* ------------------------------------------------------------ columnas */
+
+/* Con anchos fijos por columna la tabla no reparte el espacio a su aire:
+   cada columna mide lo que se le dio y la última (acciones) absorbe el
+   resto. Si no cabe, el envoltorio desplaza de lado. */
+.tabla-columnas { table-layout: fixed; }
+.tabla-columnas th,
+.tabla-columnas td { overflow: hidden; text-overflow: ellipsis; }
+.tabla-columnas th { position: relative; }
+.tabla-columnas th.ordenada { color: var(--texto); }
+.tabla-columnas th[draggable="true"] .cabecera-texto { cursor: grab; }
+/* Asa de redimensión en el borde derecho de cada cabecera. Es una raya
+   tenue hasta pasar por encima, como en el explorador. */
+.asa-columna {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  width: 9px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 1;
+}
+.asa-columna::after {
+  content: "";
+  position: absolute;
+  top: 25%;
+  bottom: 25%;
+  left: 4px;
+  width: 1px;
+  background: var(--borde-fuerte);
+}
+.asa-columna:hover::after,
+.asa-columna:active::after { top: 0; bottom: 0; width: 2px; background: var(--acento); }
+/* Dónde caerá la columna que se arrastra. */
+.tabla-columnas th.soltar-antes { box-shadow: inset 2px 0 0 var(--acento); }
+.tabla-columnas th.soltar-despues { box-shadow: inset -2px 0 0 var(--acento); }
+/* En el móvil la tabla es una pila de tarjetas: ni anchos ni asas. */
+@media (max-width: 640px) {
+  .tabla-columnas { table-layout: auto; min-width: 0 !important; }
+  .tabla-columnas td { overflow: visible; }
+  .asa-columna { display: none; }
+}
+
+/* ------------------------------------------------------------ menú contextual */
+
+/* Va por portal al body: fijo a la ventana del navegador, por encima de
+   las ventanas del escritorio. */
+.menu-lista {
+  position: fixed;
+  z-index: 1000;
+  min-width: 220px;
+  padding: 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--borde);
+  border-radius: var(--radio-lg);
+  box-shadow: 0 12px 32px color-mix(in srgb, var(--texto) 22%, transparent);
+}
+.menu-lista .menu-nivel { display: flex; flex-direction: column; }
+.menu-lista .menu-entrada { position: relative; }
+.menu-lista [role="menuitem"] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 0;
+  text-align: left;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: var(--radio);
+  background: transparent;
+  color: var(--texto);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.menu-lista [role="menuitem"]:hover,
+.menu-lista [role="menuitem"]:focus-visible {
+  background: color-mix(in srgb, var(--acento) 14%, transparent);
+  outline: none;
+}
+.menu-lista [role="menuitem"]:disabled { opacity: .45; cursor: default; background: transparent; }
+.menu-lista [role="menuitem"].peligroso { color: var(--error); }
+.menu-lista .menu-icono {
+  flex: none;
+  width: 16px;
+  display: inline-flex;
+  justify-content: center;
+  color: var(--acento);
+  font-weight: 700;
+}
+.menu-lista .menu-texto { flex: 1; white-space: nowrap; }
+.menu-lista .menu-atajo { margin-left: 16px; font-size: 11px; color: var(--texto-terciario); }
+.menu-lista .menu-flecha { color: var(--texto-terciario); }
+.menu-lista .menu-separador { height: 1px; margin: 4px 6px; background: var(--borde); }
+/* Submenú: a la derecha de su opción; `izquierda` cuando no cabe. */
+.menu-lista .submenu {
+  position: absolute;
+  left: 100%;
+  top: -7px;
+  margin-left: 2px;
+}
+.menu-lista .submenu.izquierda { left: auto; right: 100%; margin-left: 0; margin-right: 2px; }
+
+/* ------------------------------------------------------------ barra de estado */
+
+.barra-estado {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  align-items: center;
+  padding: 6px 16px;
+  border-top: 1px solid var(--borde);
+  font-size: 12px;
+  color: var(--texto-tenue);
+  background: var(--surface-1);
+}
+.barra-estado .num { font-variant-numeric: tabular-nums; }
+.barra-estado .nota-estado { color: var(--ok); font-weight: 500; }
+
+/* ------------------------------------------------------------ panel de detalles */
+
+/* La lista y el panel lateral, lado a lado. Con poco ancho (una ventana
+   estrecha del escritorio) el panel pasa debajo: se mide el contenedor y
+   no la pantalla, porque lo que importa es cuánto tiene la ventana. */
+.explorador-cuerpo {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  container-type: inline-size;
+}
+.explorador-cuerpo > .tabla-envoltorio { flex: 1; min-width: 0; }
+.panel-detalles {
+  flex: 0 0 280px;
+  width: 280px;
+  min-width: 0;
+  border-left: 1px solid var(--borde);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 13px;
+  background: var(--surface-1);
+}
+.panel-detalles .cabecera-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.panel-detalles > .vista-imagen { aspect-ratio: 1; border-radius: var(--radio); }
+.panel-detalles h3 { margin: 0; font-size: 14px; font-weight: 600; line-height: 1.3; }
+.panel-detalles dl {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px 10px;
+  margin: 0;
+}
+.panel-detalles dt {
+  color: var(--texto-terciario);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  padding-top: 2px;
+}
+.panel-detalles dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.panel-detalles dd.sku { font-family: var(--fuente-mono); font-size: 12px; }
+.panel-detalles .lista-canales,
+.panel-detalles .lista-motivos {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.panel-detalles .vacio { padding: 24px 8px; }
+.panel-detalles .vista-acciones { margin-top: auto; }
+@container (max-width: 760px) {
+  .explorador-cuerpo { flex-direction: column; }
+  .panel-detalles {
+    flex: none;
+    width: auto;
+    border-left: 0;
+    border-top: 1px solid var(--borde);
+  }
+}
+/* El botón «Detalles» va pegado al selector de vista, a la derecha. */
+.filtros .boton-panel { padding: 5px 10px; min-height: 0; }

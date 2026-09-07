@@ -1,6 +1,10 @@
-import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, fecha, money, num, type CuentaCanal, type Orden, type ResumenOrdenes } from './api'
-import { SelectorVista, useVista } from './Vista'
+import {
+  BarraEstado, CabeceraColumnas, SelectorVista,
+  useColumnas, useMenuContextual, useSeleccion, useTecladoLista, useVista,
+  type Columna, type ColumnaDef, type OpcionMenu,
+} from './Vista'
 
 const ESTADOS: Record<string, { texto: string; clase: string }> = {
   received: { texto: 'Recibido', clase: 'aviso' },
@@ -13,6 +17,25 @@ const ESTADOS: Record<string, { texto: string; clase: string }> = {
 // La ingesta la resuelve el worker, no la petición: se refresca al cabo de
 // unos segundos porque antes no hay nada nuevo que mostrar.
 const ESPERA_INGESTA_MS = 6000
+
+// Columnas de la tabla de detalles (useColumnas): ancho, orden y
+// visibilidad se guardan por usuario. Aquí no hay orden del servidor.
+const COLUMNAS: ColumnaDef[] = [
+  { id: 'pedido', titulo: 'Pedido', ancho: 150 },
+  { id: 'canal', titulo: 'Canal', ancho: 120 },
+  { id: 'comprador', titulo: 'Comprador', ancho: 220 },
+  { id: 'total', titulo: 'Total', ancho: 120, clase: 'num' },
+  { id: 'fecha', titulo: 'Fecha', ancho: 150 },
+  { id: 'estado', titulo: 'Estado', ancho: 110 },
+  { id: 'odoo', titulo: 'Pedido Odoo', ancho: 110, clase: 'num', oculta: true },
+  { id: 'acciones', titulo: '', ancho: 130, fija: true, flexible: true },
+]
+// Funciones estables para los hooks de lista.
+const claveDe = (o: Orden) => o.id
+const textoDe = (o: Orden) => [o.numero || o.external_id, o.comprador]
+// Solo lo que aún no está en Odoo ni canceló el canal se puede reintentar:
+// el servidor rechaza el resto, pero no hay por qué ofrecerlo.
+const reintentable = (o: Orden) => o.estado === 'failed' || o.estado === 'received' || o.estado === 'mapped'
 
 // Pedidos que llegaron de los canales y su estado camino a Odoo.
 export function Pedidos() {
@@ -31,6 +54,13 @@ export function Pedidos() {
   // Tabla, filas compactas o tarjetas. Sin foto que enseñar, «iconos» no
   // aporta nada aquí y no se ofrece.
   const [vista, setVista] = useVista('pedidos', 'detalles', ['detalles', 'lista', 'mosaico'])
+  // Confirmación corta («número copiado») en la barra de estado.
+  const [copiado, setCopiado] = useState<string | null>(null)
+  useEffect(() => {
+    if (copiado === null) return
+    const t = window.setTimeout(() => setCopiado(null), 2000)
+    return () => window.clearTimeout(t)
+  }, [copiado])
 
   const cargar = useCallback(() => {
     setRefrescando(true)
@@ -126,7 +156,106 @@ export function Pedidos() {
     }
   }
 
-  const visibles = filtro === '' ? ordenes : ordenes.filter((o) => o.estado === filtro)
+  const visibles = useMemo(
+    () => filtro === '' ? ordenes : ordenes.filter((o) => o.estado === filtro),
+    [ordenes, filtro],
+  )
+
+  // Selección de explorador, teclado, menú contextual y columnas: las
+  // mismas piezas que Productos (Vista.tsx).
+  const seleccion = useSeleccion(visibles, claveDe)
+  const menu = useMenuContextual()
+  const col = useColumnas('pedidos', COLUMNAS)
+  const refLista = useRef<HTMLDivElement>(null)
+  const refTabla = useRef<HTMLTableElement>(null)
+  const alternarDetalle = (o: Orden) => setAbierta((a) => (a === o.id ? null : o.id))
+  const teclado = useTecladoLista(refLista, visibles, {
+    clave: claveDe,
+    seleccion,
+    abrir: alternarDetalle,
+    texto: textoDe,
+    contextual: (o, e) => menu.abrir(e, opcionesDe(o)),
+    copiar: (os) => void copiar(os.map((o) => o.numero || o.external_id).join('\n'), os.length),
+    rol: vista === 'detalles' ? 'grid' : 'listbox',
+  })
+  // Cambiar el filtro de estado limpia la selección: lo marcado dejaría de
+  // verse y las acciones sobre ello serían una sorpresa.
+  const limpiarSeleccion = seleccion.limpiar
+  useEffect(() => { limpiarSeleccion() }, [filtro, limpiarSeleccion])
+
+  async function copiar(texto: string, cuantos: number) {
+    try {
+      await navigator.clipboard.writeText(texto)
+      setCopiado(cuantos === 1 ? 'Número copiado' : `${num(cuantos)} números copiados`)
+    } catch {
+      setError('El navegador no dejó copiar al portapapeles.')
+    }
+  }
+
+  function opcionesDe(o: Orden): OpcionMenu[] {
+    const ids = seleccion.seleccion.has(o.id) ? seleccion.seleccion : new Set([o.id])
+    const elegidos = visibles.filter((x) => ids.has(x.id))
+    const varios = elegidos.length > 1
+    return [
+      { etiqueta: abierta === o.id ? 'Ocultar detalle' : 'Ver detalle', atajo: 'Enter', accion: () => alternarDetalle(o) },
+      ...(reintentable(o) ? [{
+        etiqueta: 'Reintentar en Odoo',
+        deshabilitado: reintentando === o.id,
+        accion: () => void reintentar(o),
+      }] : []),
+      {
+        etiqueta: varios ? `Copiar ${num(elegidos.length)} números` : 'Copiar número',
+        atajo: 'Ctrl+C',
+        separador: true,
+        accion: () => void copiar(elegidos.map((x) => x.numero || x.external_id).join('\n'), elegidos.length),
+      },
+    ]
+  }
+
+  // Totales de la barra de estado: de la selección si la hay, si no de lo
+  // que se ve con el filtro.
+  const totales = useMemo(() => {
+    const base = seleccion.seleccion.size > 0 ? visibles.filter((o) => seleccion.seleccion.has(o.id)) : visibles
+    return {
+      importe: base.reduce((s, o) => s + o.total, 0),
+      fallidos: base.filter((o) => o.estado === 'failed').length,
+      deSeleccion: seleccion.seleccion.size > 0,
+    }
+  }, [visibles, seleccion.seleccion])
+
+  const claseFila = (o: Orden) => [
+    'clicable',
+    teclado.foco === o.id ? 'enfocada' : '',
+    seleccion.seleccion.has(o.id) ? 'marcada' : '',
+  ].join(' ').trim()
+  const TITULO_FILA = 'Doble clic o Enter: ver el detalle · clic derecho: más acciones'
+
+  // Una celda de la tabla según la columna elegida.
+  const celda = (c: Columna, o: Orden, desplegada: boolean) => {
+    const e = ESTADOS[o.estado] ?? { texto: o.estado, clase: 'aviso' }
+    switch (c.id) {
+      case 'pedido': return { clase: 'sku titulo-tarjeta', contenido: o.numero || o.external_id }
+      case 'canal': return { etiqueta: 'Canal', contenido: o.canal }
+      case 'comprador': return { etiqueta: 'Comprador', contenido: o.comprador || <span className="tenue">—</span> }
+      case 'total': return { clase: 'num', etiqueta: 'Total', contenido: <strong>{money(o.total)}</strong> }
+      case 'fecha': return { clase: 'tenue', etiqueta: 'Fecha', contenido: fecha(o.fecha_pedido) }
+      case 'estado': return { etiqueta: 'Estado', contenido: <span className={`pastilla ${e.clase}`}>{e.texto}</span> }
+      case 'odoo': return { clase: 'num', etiqueta: 'Pedido Odoo', contenido: o.odoo_pedido_id ? `#${o.odoo_pedido_id}` : <span className="tenue">—</span> }
+      case 'acciones':
+        return {
+          clase: 'acciones-fila',
+          contenido: (
+            // La fila entera abre el detalle, pero eso no llega con el
+            // teclado en el móvil: el botón es el que sí es accesible.
+            <button className="enlace" aria-expanded={desplegada}
+              onClick={(ev) => { ev.stopPropagation(); alternarDetalle(o) }}>
+              {desplegada ? 'Ocultar detalle' : 'Ver detalle'}
+            </button>
+          ),
+        }
+      default: return { contenido: null }
+    }
+  }
 
   // El detalle desplegado de un pedido es el mismo en los tres modos: en la
   // tabla va dentro de una fila extra; en lista y mosaico, bajo la fila o la
@@ -177,7 +306,7 @@ export function Pedidos() {
         {/* Solo lo que aún no está en Odoo ni canceló el canal:
             el servidor rechaza el resto, pero no hay por qué
             ofrecer un botón que no puede hacer nada. */}
-        {(o.estado === 'failed' || o.estado === 'received' || o.estado === 'mapped') && (
+        {reintentable(o) && (
           <div className="grupo-acciones">
             <button className="primario" data-guia="ped-reintentar" onClick={() => void reintentar(o)}
               disabled={reintentando === o.id}>
@@ -308,41 +437,27 @@ export function Pedidos() {
             <SelectorVista modo={vista} onCambiar={setVista} admitidos={['detalles', 'lista', 'mosaico']} />
           </div>
         </div>
-        <div className="tabla-envoltorio" data-guia="ped-tabla">
+        <div {...teclado.propsContenedor} className={`tabla-envoltorio explorador vista-${vista}`} data-guia="ped-tabla"
+          aria-label="Pedidos" aria-busy={refrescando}
+          onMouseDown={seleccion.lazo.onMouseDown}>
           {vista === 'detalles' && (
-          <table className="tabla-tarjetas">
-            <thead>
-              <tr>
-                <th>Pedido</th><th>Canal</th><th>Comprador</th>
-                <th className="num">Total</th><th>Fecha</th><th>Estado</th><th></th>
-              </tr>
-            </thead>
+          <table className="tabla-tarjetas tabla-columnas" ref={refTabla} style={{ minWidth: col.anchoMinimo }}>
+            {col.colgroup}
+            <CabeceraColumnas col={col} menu={menu} refTabla={refTabla} />
             <tbody>
               {visibles.map((o) => {
-                const e = ESTADOS[o.estado] ?? { texto: o.estado, clase: 'aviso' }
                 const desplegada = abierta === o.id
                 return (
                   <Fragment key={o.id}>
-                    <tr className="clicable"
-                      onClick={() => setAbierta(desplegada ? null : o.id)}>
-                      <td className="sku titulo-tarjeta">{o.numero || o.external_id}</td>
-                      <td data-etiqueta="Canal">{o.canal}</td>
-                      <td data-etiqueta="Comprador">{o.comprador || <span className="tenue">—</span>}</td>
-                      <td className="num" data-etiqueta="Total"><strong>{money(o.total)}</strong></td>
-                      <td className="tenue" data-etiqueta="Fecha">{fecha(o.fecha_pedido)}</td>
-                      <td data-etiqueta="Estado"><span className={`pastilla ${e.clase}`}>{e.texto}</span></td>
-                      <td className="acciones-fila">
-                        {/* La fila entera abre el detalle, pero eso no llega con
-                            el teclado: el botón es el que sí es accesible. */}
-                        <button className="enlace" aria-expanded={desplegada}
-                          onClick={(ev) => { ev.stopPropagation(); setAbierta(desplegada ? null : o.id) }}>
-                          {desplegada ? 'Ocultar detalle' : 'Ver detalle'}
-                        </button>
-                      </td>
+                    <tr {...teclado.propsFila(o)} className={claseFila(o)} title={TITULO_FILA}>
+                      {col.columnas.map((c) => {
+                        const { clase, etiqueta, contenido } = celda(c, o, desplegada)
+                        return <td key={c.id} className={clase} data-etiqueta={etiqueta}>{contenido}</td>
+                      })}
                     </tr>
                     {desplegada && (
-                      <tr>
-                        <td colSpan={7} className="detalle-pedido" data-guia="ped-detalle">
+                      <tr className="lazo-ignorar">
+                        <td colSpan={col.columnas.length} className="detalle-pedido" data-guia="ped-detalle">
                           {detalleDe(o)}
                         </td>
                       </tr>
@@ -361,7 +476,7 @@ export function Pedidos() {
                 const desplegada = abierta === o.id
                 return (
                   <Fragment key={o.id}>
-                    <div className="fila-lista clicable" onClick={() => setAbierta(desplegada ? null : o.id)}>
+                    <div {...teclado.propsFila(o)} className={`fila-lista ${claseFila(o)}`} title={TITULO_FILA}>
                       <IconoCanal canal={o.canal} />
                       <span className="sku">{o.numero || o.external_id}</span>
                       <span className="principal" title={o.comprador || ''}>
@@ -372,12 +487,12 @@ export function Pedidos() {
                       <span className={`pastilla ${e.clase}`}>{e.texto}</span>
                       <span className="vista-acciones">
                         <button className="enlace" aria-expanded={desplegada}
-                          onClick={(ev) => { ev.stopPropagation(); setAbierta(desplegada ? null : o.id) }}>
+                          onClick={(ev) => { ev.stopPropagation(); alternarDetalle(o) }}>
                           {desplegada ? 'Ocultar detalle' : 'Ver detalle'}
                         </button>
                       </span>
                     </div>
-                    {desplegada && <div className="vista-detalle detalle-pedido">{detalleDe(o)}</div>}
+                    {desplegada && <div className="vista-detalle detalle-pedido lazo-ignorar">{detalleDe(o)}</div>}
                   </Fragment>
                 )
               })}
@@ -391,7 +506,7 @@ export function Pedidos() {
                 const desplegada = abierta === o.id
                 return (
                   <Fragment key={o.id}>
-                    <div className="tarjeta-vista clicable" onClick={() => setAbierta(desplegada ? null : o.id)}>
+                    <div {...teclado.propsFila(o)} className={`tarjeta-vista ${claseFila(o)}`} title={TITULO_FILA}>
                       <div className="cuerpo-tarjeta">
                         <div className="fila">
                           <IconoCanal canal={o.canal} />
@@ -408,13 +523,13 @@ export function Pedidos() {
                         <div className="etiquetas"><span className={`pastilla ${e.clase}`}>{e.texto}</span></div>
                         <div className="vista-acciones">
                           <button className="enlace" aria-expanded={desplegada}
-                            onClick={(ev) => { ev.stopPropagation(); setAbierta(desplegada ? null : o.id) }}>
+                            onClick={(ev) => { ev.stopPropagation(); alternarDetalle(o) }}>
                             {desplegada ? 'Ocultar detalle' : 'Ver detalle'}
                           </button>
                         </div>
                       </div>
                     </div>
-                    {desplegada && <div className="vista-detalle detalle-pedido">{detalleDe(o)}</div>}
+                    {desplegada && <div className="vista-detalle detalle-pedido lazo-ignorar">{detalleDe(o)}</div>}
                   </Fragment>
                 )
               })}
@@ -432,8 +547,21 @@ export function Pedidos() {
               Ningún pedido reciente con ese estado.
             </div>
           )}
+          {seleccion.lazo.marco}
         </div>
+
+        <BarraEstado total={visibles.length} seleccionados={seleccion.seleccion.size} nombre="pedidos">
+          {visibles.length > 0 && (
+            <span className="num">
+              {totales.deSeleccion ? 'Selección' : 'Total'}: {money(totales.importe)}
+              {totales.fallidos > 0 && ` · ${num(totales.fallidos)} fallido${totales.fallidos === 1 ? '' : 's'}`}
+            </span>
+          )}
+          {copiado && <span className="nota-estado">{copiado}</span>}
+        </BarraEstado>
       </section>
+
+      {menu.Menu}
     </>
   )
 }

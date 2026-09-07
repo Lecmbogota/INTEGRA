@@ -1,10 +1,15 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type ReactNode } from 'react'
 import { api, money, motivo, num, type Categoria, type Marca, type PaginaProductos, type Producto, rolActual , type CuentaCanal } from './api'
 import { Editar, type Pestana } from './Editar'
 import { EdicionMasiva } from './EdicionMasiva'
 import { PlantillaMasiva } from './PlantillaMasiva'
-import { useEvento, useIr, useSistemaOpcional } from './escritorio/sistema'
-import { Imagen, SelectorVista, useVista } from './Vista'
+import { confirmar } from './escritorio/Dialogos'
+import { useEvento, useIr, useSistemaOpcional, useVentanaActual } from './escritorio/sistema'
+import {
+  BarraEstado, CabeceraColumnas, Imagen, SelectorVista,
+  useColumnas, useMenuContextual, useSeleccion, useTecladoLista, useVista,
+  type Columna, type ColumnaDef, type OpcionMenu,
+} from './Vista'
 
 const POR_PAGINA = 50
 // Motivos que impiden publicar. Un producto con cualquiera de ellos no sale al
@@ -27,6 +32,32 @@ const BLOQUEANTES = new Set([
   'missing_image',
 ])
 const bloqueante = (m: string) => BLOQUEANTES.has(m)
+
+// Columnas de la vista de detalles. Las ocultas por defecto (categoría, EAN,
+// peso, condición) se eligen desde el menú de la cabecera; el orden y los
+// anchos se guardan por usuario en localStorage (useColumnas).
+const COLUMNAS: ColumnaDef[] = [
+  { id: 'check', titulo: '', ancho: 34, minimo: 34, fija: true, clase: 'col-check' },
+  { id: 'sku', titulo: 'Referencia', ancho: 130, orden: 'sku', clase: 'oculto-movil' },
+  { id: 'nombre', titulo: 'Producto', ancho: 320, orden: 'nombre' },
+  { id: 'marca', titulo: 'Marca', ancho: 130, orden: 'marca', clase: 'oculto-movil' },
+  { id: 'categoria', titulo: 'Categoría', ancho: 160, clase: 'oculto-movil', oculta: true },
+  { id: 'precio', titulo: 'Precio', ancho: 120, orden: 'precio', clase: 'num' },
+  { id: 'stock', titulo: 'Stock', ancho: 80, orden: 'stock', clase: 'num' },
+  { id: 'publicacion', titulo: 'Publicación', ancho: 160, guia: 'cat-publicacion' },
+  { id: 'estado', titulo: 'Estado', ancho: 200, guia: 'estado' },
+  { id: 'ean', titulo: 'EAN', ancho: 130, clase: 'oculto-movil', oculta: true },
+  { id: 'peso', titulo: 'Peso', ancho: 80, clase: 'num oculto-movil', oculta: true },
+  { id: 'condicion', titulo: 'Condición', ancho: 110, clase: 'oculto-movil', oculta: true },
+  { id: 'acciones', titulo: '', ancho: 170, fija: true, flexible: true },
+]
+const CONDICION: Record<Producto['condicion'], string> = { nuevo: 'Nuevo', usado: 'Usado', reacondicionado: 'Reacondicionado' }
+
+const CLAVE_PANEL = 'integra.catalogo.panel'
+// Funciones estables para los hooks de lista: si se crearan en cada render,
+// recalcularían sus memos por nada.
+const claveDe = (p: Producto) => p.id
+const textoDe = (p: Producto) => [p.nombre, p.sku]
 
 // AbrirEditor es lo que pide la vista previa al pulsar «Poner el peso»: que
 // esta pantalla abra el editor de ese producto ya en la pestaña del peso.
@@ -71,7 +102,6 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = nul
   const [version, setVersion] = useState(0)
   const [error, setError] = useState<string | null>(null)
   const [cargando, setCargando] = useState(true)
-  const [marcados, setMarcados] = useState<Set<number>>(new Set())
   const [masiva, setMasiva] = useState(false)
   const [plantilla, setPlantilla] = useState(false)
   const [publicando, setPublicando] = useState(false)
@@ -83,15 +113,71 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = nul
   // Cómo se enseña la lista: la tabla de siempre o tarjetas/iconos con la
   // portada, que es lo que permite reconocer un producto de un vistazo.
   const [vista, setVista] = useVista('catalogo', 'detalles')
+  // Cuentas de canal, para el submenú «Publicar en…». Se piden una vez: el
+  // menú se arma en el instante del clic derecho y no puede esperar.
+  const [cuentas, setCuentas] = useState<CuentaCanal[]>([])
+  useEffect(() => { api.cuentas().then(setCuentas).catch(() => setCuentas([])) }, [])
+  // Panel lateral de detalles, como el de vista previa del explorador.
+  const [panel, setPanel] = useState(() => {
+    try { return window.localStorage.getItem(CLAVE_PANEL) === '1' } catch { return false }
+  })
+  const alternarPanel = () => {
+    setPanel((p) => {
+      try { window.localStorage.setItem(CLAVE_PANEL, p ? '0' : '1') } catch { /* se pierde al recargar */ }
+      return !p
+    })
+  }
+  // Sobre qué producto se está arrastrando un archivo, y qué se está
+  // subiendo. Van aparte del aviso: son transitorios y se ven en la barra.
+  const [arrastreSobre, setArrastreSobre] = useState<number | null>(null)
+  const [subiendo, setSubiendo] = useState<{ sku: string; hechas: number; total: number } | null>(null)
+  // Confirmaciones cortas («SKU copiado») en la barra de estado, dos segundos.
+  const [nota, setNota] = useState<string | null>(null)
+  useEffect(() => {
+    if (nota === null) return
+    const t = window.setTimeout(() => setNota(null), 2000)
+    return () => window.clearTimeout(t)
+  }, [nota])
 
   // Dentro del escritorio, los diálogos son páginas de esta misma ventana:
   // se navega a ellos, ← vuelve a la lista tal como estaba, y el resultado
   // vuelve por el bus (la página no sabe quién la abrió). Fuera (sistema
   // null) siguen siendo modales de esta pantalla, sin cambios.
   const sistema = useSistemaOpcional()
+  const ventanaId = useVentanaActual()
   const ir = useIr()
   useEvento('producto-cambiado', () => setVersion((v) => v + 1))
   useEvento('fotos-cambiadas', () => setVersion((v) => v + 1))
+
+  // La lista de la página actual, con identidad estable mientras no llegue
+  // otra: de ella cuelgan la selección, el teclado y los totales.
+  const items = useMemo(() => pagina?.items ?? [], [pagina])
+  // Selección de explorador: clic, Ctrl, Shift, lazo y también las casillas
+  // de siempre. `marcados` es el nombre que ya usaban las acciones en masa.
+  const seleccion = useSeleccion(items, claveDe)
+  const marcados = seleccion.seleccion
+  const menu = useMenuContextual()
+  const col = useColumnas('catalogo', COLUMNAS)
+  const refLista = useRef<HTMLDivElement>(null)
+  const refTabla = useRef<HTMLTableElement>(null)
+  const teclado = useTecladoLista(refLista, items, {
+    clave: claveDe,
+    seleccion,
+    abrir: (p) => onVer(p.id),
+    texto: textoDe,
+    contextual: (p, e) => menu.abrir(e, opcionesDe(p)),
+    copiar: (ps) => void copiar(ps.map((p) => p.sku || p.nombre).join('\n'), ps.length === 1 ? 'SKU copiado' : `${num(ps.length)} SKU copiados`),
+    rol: vista === 'detalles' ? 'grid' : 'listbox',
+  })
+  // Lo que enseña el panel de detalles: la fila con foco y, si no hay, la
+  // última seleccionada.
+  const actual = useMemo(() => {
+    const porId = new Map(items.map((p) => [p.id, p]))
+    return (teclado.foco !== null ? porId.get(teclado.foco) : undefined)
+      ?? (seleccion.ancla !== null ? porId.get(seleccion.ancla) : undefined)
+      ?? null
+  }, [items, teclado.foco, seleccion.ancla])
+
   function abrirEditor(p: Producto, pestana: Pestana) {
     if (sistema) {
       ir('editar', { varianteId: p.id, sku: p.sku, pestana }, `Editar · ${p.sku || p.nombre}`)
@@ -113,6 +199,111 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = nul
       setMasiva(true)
     }
   }
+  // La vista previa en otra pestaña de esta ventana. `abrirEnPestana` llega
+  // con las pestañas del escritorio; si esa parte aún no está, ventana
+  // nueva, que es lo que había.
+  function abrirEnPestana(p: Producto) {
+    if (!sistema) return
+    const titulo = `Vista previa · ${p.sku || p.nombre}`
+    const s = sistema as typeof sistema & {
+      abrirEnPestana?: (id: string, app: 'preview', props: Record<string, unknown>, titulo?: string) => void
+    }
+    if (ventanaId && typeof s.abrirEnPestana === 'function') s.abrirEnPestana(ventanaId, 'preview', { varianteId: p.id }, titulo)
+    else sistema.abrir('preview', { varianteId: p.id }, { titulo })
+  }
+
+  async function copiar(texto: string, confirmacion: string) {
+    try {
+      await navigator.clipboard.writeText(texto)
+      setNota(confirmacion)
+    } catch {
+      setAviso({ texto: 'El navegador no dejó copiar al portapapeles.', malo: true })
+    }
+  }
+
+  // Excluir saca el producto del catálogo (gastos, activos, servicios que
+  // Odoo trae mezclados) sin borrarlo: se vuelve con «Ver excluidos».
+  async function alternarExclusion(ps: Producto[], excluir: boolean) {
+    const n = ps.length
+    const quien = n === 1 ? `«${ps[0].nombre}»` : `${num(n)} productos`
+    const pl = n === 1 ? '' : 'n'
+    const ok = await confirmar({
+      titulo: excluir ? 'Excluir del catálogo' : 'Incluir en el catálogo',
+      texto: excluir
+        ? `${quien} dejará${pl} de aparecer en el catálogo y no se publicará${pl} en ningún canal. No se borra nada: se vuelve desde «Ver excluidos».`
+        : `${quien} volverá${pl} al catálogo y podrá${pl} publicarse en los canales.`,
+      aceptar: excluir ? 'Excluir' : 'Incluir',
+      peligroso: excluir,
+    })
+    if (!ok) return
+    setAviso(null)
+    const fallos: string[] = []
+    for (const p of ps) {
+      try { await api.editarProducto(p.id, { excluido: excluir }) } catch { fallos.push(p.sku || p.nombre) }
+    }
+    if (fallos.length > 0) {
+      setAviso({ texto: `No se pudo cambiar ${fallos.length === 1 ? 'el producto' : 'los productos'} ${fallos.join(', ')}.`, malo: true })
+    } else {
+      setNota(excluir ? `${quien} fuera del catálogo` : `${quien} de vuelta en el catálogo`)
+    }
+    seleccion.limpiar()
+    if (sistema) sistema.emitir({ nombre: 'producto-cambiado' }); else setVersion((v) => v + 1)
+    onCambio()
+  }
+
+  // Fotos soltadas desde el equipo sobre una fila: se suben en serie a ese
+  // producto. En serie y no a la vez porque el servidor las ordena por
+  // llegada y así la primera que se soltó queda primera.
+  async function subirFotos(p: Producto, archivos: File[]) {
+    const fotos = archivos.filter((f) => f.type.startsWith('image/'))
+    if (fotos.length === 0) {
+      setAviso({ texto: 'Solo se pueden soltar imágenes (JPG, PNG, WebP).', malo: true })
+      return
+    }
+    const nombre = p.sku || p.nombre
+    const fallos: string[] = []
+    for (let i = 0; i < fotos.length; i++) {
+      setSubiendo({ sku: nombre, hechas: i, total: fotos.length })
+      try {
+        await api.subirImagen(p.id, fotos[i])
+      } catch (e) {
+        fallos.push(`${fotos[i].name}: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
+    setSubiendo(null)
+    const subidas = fotos.length - fallos.length
+    if (fallos.length > 0) {
+      setAviso({ texto: `${num(subidas)} de ${num(fotos.length)} fotos subidas a ${nombre}. Fallaron: ${fallos.join(' · ')}`, malo: true })
+    } else {
+      setNota(`${num(subidas)} foto${subidas === 1 ? '' : 's'} subida${subidas === 1 ? '' : 's'} a ${nombre}`)
+    }
+    if (subidas > 0) {
+      // Por el bus llega también a esta pantalla (useEvento de arriba) y a
+      // la vista previa si está abierta; fuera del escritorio, a mano.
+      if (sistema) sistema.emitir({ nombre: 'fotos-cambiadas', varianteId: p.id }); else setVersion((v) => v + 1)
+      onCambio()
+    }
+  }
+  // Manejadores de arrastre de archivos para una fila, una tarjeta o el
+  // panel. Solo reaccionan a archivos: arrastrar una cabecera de columna
+  // también pasa por aquí y no debe encender nada.
+  const propsSoltar = (p: Producto) => ({
+    onDragOver: (e: DragEvent<HTMLElement>) => {
+      if (!e.dataTransfer.types.includes('Files')) return
+      e.preventDefault()
+      e.dataTransfer.dropEffect = 'copy'
+      if (arrastreSobre !== p.id) setArrastreSobre(p.id)
+    },
+    onDragLeave: (e: DragEvent<HTMLElement>) => {
+      if (!e.currentTarget.contains(e.relatedTarget as Node | null) && arrastreSobre === p.id) setArrastreSobre(null)
+    },
+    onDrop: (e: DragEvent<HTMLElement>) => {
+      if (!e.dataTransfer.types.includes('Files')) return
+      e.preventDefault()
+      setArrastreSobre(null)
+      void subirFotos(p, Array.from(e.dataTransfer.files))
+    },
+  })
 
   // Publicar lo seleccionado. Planificar la cuenta entera es lo correcto para
   // la corrida nocturna, pero quien acaba de arreglar tres fichas quiere
@@ -132,7 +323,7 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = nul
       const ids = [...marcados]
       let total = 0
       for (const c of cuentas) total += (await api.borrarPublicaciones(c.id, ids)).encoladas
-      setMarcados(new Set())
+      seleccion.limpiar()
       setAviso({
         texto: `${num(total)} publicaciones encoladas para quitarse del canal. Los productos siguen en Integra.`,
         malo: false,
@@ -144,18 +335,17 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = nul
     }
   }
 
-  async function publicarSeleccion() {
+  // Encola `ids` en las cuentas dadas. Desde la barra van todas las
+  // activas; desde el menú contextual, la que se eligió.
+  async function publicarEn(ids: number[], activas: CuentaCanal[]) {
     setError(null)
     setAviso(null)
     setPublicando(true)
     try {
-      const cuentas = await api.cuentas()
-      const activas = cuentas.filter((c) => c.activa)
       if (activas.length === 0) {
         setAviso({ texto: 'No hay ninguna cuenta de canal activa: configúrala en Canales antes de publicar.', malo: true })
         return
       }
-      const ids = [...marcados]
       const partes: string[] = []
       for (const c of activas) {
         const p = await api.planificar(c.id, ids)
@@ -178,6 +368,71 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = nul
     }
   }
 
+  async function publicarSeleccion() {
+    // Se vuelven a pedir las cuentas: la lista de arriba puede ser de hace
+    // un rato y alguien pudo activar una entre medias.
+    let activas: CuentaCanal[]
+    try {
+      activas = (await api.cuentas()).filter((c) => c.activa)
+    } catch (e) {
+      setAviso({ texto: `No se pudo publicar la selección: ${e instanceof Error ? e.message : String(e)}`, malo: true })
+      return
+    }
+    await publicarEn([...marcados], activas)
+  }
+
+  // Menú contextual de un producto. Si está seleccionado, las acciones en
+  // lote van sobre toda la selección; si no, sobre él solo (al abrir el
+  // menú pasa a ser la selección, pero ese estado aún no se ve aquí).
+  function opcionesDe(p: Producto): OpcionMenu[] {
+    const ids = marcados.has(p.id) ? [...marcados] : [p.id]
+    const conjunto = new Set(ids)
+    const elegidos = items.filter((x) => conjunto.has(x.id))
+    const varios = ids.length > 1
+    const cuantos = num(ids.length)
+    const activas = cuentas.filter((c) => c.activa)
+    const nombreCuenta = (c: CuentaCanal) => NOMBRE_CANAL[c.canal] ?? c.canal_nombre ?? c.canal
+    return [
+      { etiqueta: 'Ver en canales', atajo: 'Enter', accion: () => onVer(p.id) },
+      { etiqueta: 'Editar', accion: () => abrirEditor(p, 'venta') },
+      { etiqueta: 'Abrir en pestaña nueva', deshabilitado: !sistema, accion: () => abrirEnPestana(p) },
+      {
+        etiqueta: varios ? `Publicar ${cuantos} en…` : 'Publicar en…',
+        separador: true,
+        deshabilitado: publicando,
+        submenu: [
+          { etiqueta: 'Todos los canales activos', deshabilitado: activas.length === 0, accion: () => void publicarEn(ids, activas) },
+          ...activas.map((c, i) => ({
+            etiqueta: nombreCuenta(c), separador: i === 0, accion: () => void publicarEn(ids, [c]),
+          })),
+        ],
+      },
+      ...(esAdmin ? [{
+        etiqueta: varios ? `Despublicar ${cuantos}…` : 'Despublicar…',
+        deshabilitado: publicando,
+        accion: () => setDespublicando(true),
+      }] : []),
+      {
+        etiqueta: varios ? `Copiar ${cuantos} SKU` : 'Copiar SKU',
+        atajo: 'Ctrl+C',
+        separador: true,
+        accion: () => void copiar(elegidos.map((x) => x.sku).filter(Boolean).join('\n'), varios ? `${cuantos} SKU copiados` : 'SKU copiado'),
+      },
+      {
+        etiqueta: varios ? `Copiar ${cuantos} nombres` : 'Copiar nombre',
+        accion: () => void copiar(elegidos.map((x) => x.nombre).join('\n'), varios ? `${cuantos} nombres copiados` : 'Nombre copiado'),
+      },
+      {
+        etiqueta: p.excluido
+          ? (varios ? `Incluir ${cuantos} en el catálogo` : 'Incluir en el catálogo')
+          : (varios ? `Excluir ${cuantos} del catálogo` : 'Excluir del catálogo'),
+        separador: true,
+        peligroso: !p.excluido,
+        accion: () => void alternarExclusion(elegidos, !p.excluido),
+      },
+    ]
+  }
+
   const filtroActual = {
     q: busqueda, marca, categoria, problemas: soloProblemas,
     excluidos: verExcluidos, sin_precio: sinPrecio, sin_publicar: sinPublicar,
@@ -187,29 +442,48 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = nul
   const hayFiltro = !!(busqueda || marca || categoria || soloProblemas || verExcluidos || sinPrecio || sinPublicar)
 
   // Pulsar una cabecera ordena por ella; volver a pulsarla invierte el
-  // sentido. Se vuelve a la primera página porque, si no, se sigue viendo la
-  // página 3 de un orden que ya no existe.
-  const ordenarPor = (col: string) => {
-    if (orden === col) setOrdenDesc(!ordenDesc)
-    else { setOrden(col); setOrdenDesc(false) }
+  // sentido (desde el menú de la cabecera se fija un sentido concreto). Se
+  // vuelve a la primera página porque, si no, se sigue viendo la página 3
+  // de un orden que ya no existe.
+  const ordenarPor = (campo: string, desc?: boolean) => {
+    if (desc !== undefined) { setOrden(campo); setOrdenDesc(desc) }
+    else if (orden === campo) setOrdenDesc(!ordenDesc)
+    else { setOrden(campo); setOrdenDesc(false) }
     setOffset(0)
   }
-  const flecha = (col: string) => orden === col ? (ordenDesc ? ' ↓' : ' ↑') : ''
 
-  const alternar = (id: number) => {
-    const s = new Set(marcados)
-    s.has(id) ? s.delete(id) : s.add(id)
-    setMarcados(s)
+  // La casilla de una fila: alterna, y con Shift extiende el rango como en
+  // el explorador. El evento de cambio de una casilla es el clic, así que
+  // trae los modificadores.
+  const casilla = (p: Producto) => (e: ChangeEvent<HTMLInputElement>) => {
+    const ne = e.nativeEvent as MouseEvent
+    if (ne.shiftKey) seleccion.rango(p.id, true); else seleccion.alternar(p.id)
   }
-  const items = pagina?.items ?? []
   // `every` sobre una lista vacía da true, y eso dejaría la casilla de
   // «seleccionar todo» marcada en una página sin productos.
   const paginaEntera = items.length > 0 && items.every((p) => marcados.has(p.id))
   const alternarPagina = () => {
-    const s = new Set(marcados)
-    for (const p of items) paginaEntera ? s.delete(p.id) : s.add(p.id)
-    setMarcados(s)
+    if (paginaEntera) {
+      const s = new Set(marcados)
+      for (const p of items) s.delete(p.id)
+      seleccion.establecer(s)
+    } else {
+      seleccion.todo()
+    }
   }
+
+  // Totales de la barra de estado: de la selección si la hay, si no de la
+  // página cargada. Solo cuenta lo cargado: el valor es precio × stock de
+  // las filas que hay en pantalla, no del filtro entero.
+  const totales = useMemo(() => {
+    const base = marcados.size > 0 ? items.filter((p) => marcados.has(p.id)) : items
+    let unidades = 0, valor = 0, sinPrecio = 0
+    for (const p of base) {
+      unidades += p.stock
+      if (p.precio !== null) valor += p.precio * p.stock; else sinPrecio++
+    }
+    return { unidades, valor, sinPrecio, cuantos: base.length, deSeleccion: marcados.size > 0 }
+  }, [items, marcados])
 
   // Al venir de la vista previa se busca el producto por su referencia en vez
   // de confiar en que esté en la página actual: esta pantalla se monta de
@@ -269,9 +543,96 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = nul
   // de un resultado que ahora tiene 2 muestra una tabla vacía sin explicación.
   // Cambiar de filtro limpia la selección: aplicar una operación a productos
   // que ya no se ven en pantalla sería una sorpresa desagradable.
-  useEffect(() => { setOffset(0); setMarcados(new Set()) },
+  const limpiarSeleccion = seleccion.limpiar
+  useEffect(() => { setOffset(0); limpiarSeleccion() },
     [busqueda, marca, categoria, soloProblemas, verExcluidos, sinPrecio, sinPublicar,
-      sinFoto, sinDescripcion, sinEAN, conPromo])
+      sinFoto, sinDescripcion, sinEAN, conPromo, limpiarSeleccion])
+
+  // Clases de una fila en cualquiera de las cuatro vistas: foco de teclado,
+  // selección, archivo encima y excluida del catálogo.
+  const claseFila = (p: Producto) => [
+    'clicable', teclado.foco === p.id ? 'enfocada' : '',
+    marcados.has(p.id) ? 'marcada' : '',
+    arrastreSobre === p.id ? 'soltar-aqui' : '',
+    p.excluido ? 'excluida' : '',
+  ].join(' ').trim()
+  const TITULO_FILA = 'Doble clic o Enter: ver cómo quedaría en cada canal · clic derecho: más acciones'
+
+  // Una celda de la tabla de detalles según la columna. Las columnas se
+  // pintan en el orden y con la visibilidad que eligió quien la usa.
+  const celda = (c: Columna, p: Producto): { clase?: string; etiqueta?: string; contenido: ReactNode } => {
+    switch (c.id) {
+      case 'check':
+        return {
+          clase: 'col-check',
+          contenido: (
+            <label className="casilla">
+              <input type="checkbox" checked={marcados.has(p.id)} onChange={casilla(p)} />
+              {/* En tarjeta la casilla queda suelta sin nada que la
+                  nombre; en la tabla el encabezado ya lo dice. */}
+              <span className="solo-movil mini-texto tenue">Seleccionar</span>
+            </label>
+          ),
+        }
+      case 'sku':
+        return { clase: 'sku oculto-movil', contenido: p.sku || <span className="tenue">—</span> }
+      case 'nombre':
+        return {
+          clase: 'titulo-tarjeta',
+          contenido: (
+            <>
+              <div>{p.nombre}</div>
+              {p.categoria && <div className="categoria">{p.categoria}</div>}
+              {/* La columna Referencia se esconde en el móvil, pero saber
+                  qué SKU es sigue siendo lo primero que se busca. */}
+              <div className="solo-movil mini-texto tenue">
+                Ref. {p.sku || '—'}{p.marca ? ` · ${p.marca}` : ''}
+              </div>
+            </>
+          ),
+        }
+      case 'marca':
+        return { clase: 'oculto-movil', contenido: p.marca || <span className="tenue">—</span> }
+      case 'categoria':
+        return { clase: 'oculto-movil', contenido: p.categoria || <span className="tenue">—</span> }
+      case 'precio':
+        return { clase: 'num', etiqueta: 'Precio', contenido: <PrecioDe p={p} /> }
+      case 'stock':
+        return { clase: 'num', etiqueta: 'Stock', contenido: num(p.stock) }
+      // Dónde vive la ficha. Sin esto había que ir canal por canal a
+      // adivinar si el producto estaba subido y a cuál.
+      case 'publicacion':
+        return { clase: 'apilada', etiqueta: 'Publicación', contenido: <div className="etiquetas"><Publicacion p={p} /></div> }
+      case 'estado':
+        return { clase: 'apilada', etiqueta: 'Estado', contenido: <div className="etiquetas"><Estado p={p} /></div> }
+      case 'ean':
+        return { clase: 'sku oculto-movil', contenido: p.barcode || <span className="tenue">—</span> }
+      case 'peso':
+        return { clase: 'num oculto-movil', contenido: p.peso > 0 ? `${p.peso} kg` : <span className="tenue">—</span> }
+      case 'condicion':
+        return { clase: 'oculto-movil', contenido: CONDICION[p.condicion] ?? p.condicion }
+      case 'acciones':
+        return {
+          clase: 'acciones-fila',
+          contenido: (
+            <>
+              {/* Tocar la tarjeta abre la vista previa, pero eso no se ve;
+                  en el móvil el botón lo hace explícito. */}
+              <button className="solo-movil"
+                onClick={(e) => { e.stopPropagation(); onVer(p.id) }}>
+                Ver en canales
+              </button>
+              <button onClick={(e) => { e.stopPropagation(); abrirEditor(p, 'venta') }} data-guia="editar"
+                title="Editar precio, marca y descripción">
+                Editar
+              </button>
+            </>
+          ),
+        }
+      default:
+        return { contenido: null }
+    }
+  }
 
   return (
     <>
@@ -342,6 +703,11 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = nul
               Ver excluidos
             </label>
             <SelectorVista modo={vista} onCambiar={setVista} />
+            <button type="button" className={`badge boton-panel ${panel ? 'activo' : ''}`} aria-pressed={panel}
+              title="Panel lateral con la ficha del producto con foco"
+              onClick={alternarPanel}>
+              Detalles
+            </button>
           </div>
         </div>
 
@@ -362,7 +728,7 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = nul
               </button>
             )}
             {marcados.size > 0 && (
-              <button onClick={() => setMarcados(new Set())}>Limpiar selección</button>
+              <button onClick={seleccion.limpiar}>Limpiar selección</button>
             )}
             {marcados.size > 0 && (
               <button className="primario" onClick={() => void publicarSeleccion()} data-guia="publicar"
@@ -387,102 +753,38 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = nul
           </div>
         )}
 
-        <div className="tabla-envoltorio">
+        <div className="explorador-cuerpo">
+        {/* El contenedor recibe el foco real (teclado) y el lazo; las filas
+            llevan data-clave y aria-selected. */}
+        <div {...teclado.propsContenedor} className={`tabla-envoltorio explorador vista-${vista}`}
+          aria-label="Productos" aria-busy={cargando}
+          onMouseDown={seleccion.lazo.onMouseDown}>
           {vista === 'detalles' && (
-          <table className="tabla-tarjetas">
-            <thead>
-              <tr data-guia="cat-cabecera">
-                <th className="col-check">
+          <table className="tabla-tarjetas tabla-columnas" ref={refTabla} style={{ minWidth: col.anchoMinimo }}>
+            {col.colgroup}
+            <CabeceraColumnas col={col} orden={{ campo: orden, desc: ordenDesc }} onOrdenar={ordenarPor}
+              menu={menu} refTabla={refTabla} atributos={{ 'data-guia': 'cat-cabecera' }}
+              contenido={(c) => c.id === 'check'
+                ? (
                   <input type="checkbox" checked={paginaEntera} data-guia="cat-seleccionar"
                     title="Seleccionar los de esta página"
+                    onClick={(e) => e.stopPropagation()}
                     onChange={alternarPagina} />
-                </th>
-                <th className="oculto-movil ordenable" onClick={() => ordenarPor('sku')}>Referencia{flecha('sku')}</th>
-                <th className="ordenable" onClick={() => ordenarPor('nombre')}>Producto{flecha('nombre')}</th>
-                <th className="oculto-movil ordenable" onClick={() => ordenarPor('marca')}>Marca{flecha('marca')}</th>
-                <th className="num ordenable" onClick={() => ordenarPor('precio')}>Precio{flecha('precio')}</th>
-                <th className="num ordenable" onClick={() => ordenarPor('stock')}>Stock{flecha('stock')}</th>
-                <th data-guia="cat-publicacion">Publicación</th>
-                <th data-guia="estado">Estado</th><th></th>
-              </tr>
-            </thead>
+                )
+                : undefined} />
             <tbody>
-              {pagina?.items.map((p) => (
-                <tr key={p.id} data-guia="fila" className={`clicable ${marcados.has(p.id) ? 'marcada' : ''}`}
-                  onClick={() => onVer(p.id)}
-                  title="Ver cómo quedaría en cada canal">
-                  <td className="col-check" onClick={(e) => e.stopPropagation()}>
-                    <label className="casilla">
-                      <input type="checkbox" checked={marcados.has(p.id)}
-                        onChange={() => alternar(p.id)} />
-                      {/* En tarjeta la casilla queda suelta sin nada que la
-                          nombre; en la tabla el encabezado ya lo dice. */}
-                      <span className="solo-movil mini-texto tenue">Seleccionar</span>
-                    </label>
-                  </td>
-                  <td className="sku oculto-movil">{p.sku || <span className="tenue">—</span>}</td>
-                  <td className="titulo-tarjeta">
-                    <div>{p.nombre}</div>
-                    {p.categoria && <div className="categoria">{p.categoria}</div>}
-                    {/* La columna Referencia se esconde en el móvil, pero saber
-                        qué SKU es sigue siendo lo primero que se busca. */}
-                    <div className="solo-movil mini-texto tenue">
-                      Ref. {p.sku || '—'}{p.marca ? ` · ${p.marca}` : ''}
-                    </div>
-                  </td>
-                  <td className="oculto-movil">{p.marca || <span className="tenue">—</span>}</td>
-                  <td className="num" data-etiqueta="Precio">
-                    {p.precio !== null
-                      ? <strong>{money(p.precio)}</strong>
-                      : p.precio_sugerido !== null
-                        ? <span className="tenue" title="Sugerencia según tarifas de Odoo; asígnalo al editar">
-                            ({money(p.precio_sugerido)}) sugerido
-                          </span>
-                        : <span className="tenue">Sin precio</span>}
-                  </td>
-                  <td className="num" data-etiqueta="Stock">{num(p.stock)}</td>
-                  {/* Dónde vive la ficha. Sin esto había que ir canal por canal
-                      a adivinar si el producto estaba subido y a cuál. */}
-                  <td className="apilada" data-etiqueta="Publicación">
-                    <div className="etiquetas">
-                      {!p.publicado || p.publicado.length === 0
-                        ? <span className="pastilla dudosa">Sin publicar</span>
-                        : p.publicado.map((c) => (
-                          <span key={c.canal}
-                            className={`pastilla ${c.estado === 'published' ? 'ok' : c.estado === 'error' ? 'bloqueante' : 'aviso'}`}
-                            title={ESTADO_CANAL[c.estado] ?? c.estado}>
-                            {NOMBRE_CANAL[c.canal] ?? c.canal}
-                          </span>
-                        ))}
-                    </div>
-                  </td>
-                  <td className="apilada" data-etiqueta="Estado">
-                    <div className="etiquetas">
-                      {p.problemas.length === 0
-                        ? <span className="pastilla ok">Listo</span>
-                        : p.problemas.map((m) => (
-                          // El detalle va en el title: es lo que explica el
-                          // aviso, y sin él «la portada no cuadra» no se puede
-                          // ni juzgar ni resolver.
-                          <span key={m} title={p.detalles?.[m] || motivo(m)}
-                            className={`pastilla ${bloqueante(m) ? 'bloqueante' : 'aviso'}`}>
-                            {motivo(m)}
-                          </span>
-                        ))}
-                    </div>
-                  </td>
-                  <td className="acciones-fila">
-                    {/* Tocar la tarjeta abre la vista previa, pero eso no se ve;
-                        en el móvil el botón lo hace explícito. */}
-                    <button className="solo-movil"
-                      onClick={(e) => { e.stopPropagation(); onVer(p.id) }}>
-                      Ver en canales
-                    </button>
-                    <button onClick={(e) => { e.stopPropagation(); abrirEditor(p, 'venta') }} data-guia="editar"
-                      title="Editar precio, marca y descripción">
-                      Editar
-                    </button>
-                  </td>
+              {items.map((p) => (
+                <tr key={p.id} {...teclado.propsFila(p)} {...propsSoltar(p)} data-guia="fila"
+                  className={claseFila(p)} title={TITULO_FILA}>
+                  {col.columnas.map((c) => {
+                    const { clase, etiqueta, contenido } = celda(c, p)
+                    return (
+                      <td key={c.id} className={clase} data-etiqueta={etiqueta}
+                        onClick={c.id === 'check' ? (e) => e.stopPropagation() : undefined}>
+                        {contenido}
+                      </td>
+                    )
+                  })}
                 </tr>
               ))}
             </tbody>
@@ -490,14 +792,13 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = nul
           )}
 
           {/* Los otros modos comparten las mismas acciones que la fila de la
-              tabla: casilla, vista previa al pulsar, Editar y Ver en canales. */}
+              tabla: casilla, vista previa al abrir, Editar y Ver en canales. */}
           {vista === 'lista' && items.length > 0 && (
             <div className="vista-lista">
               {items.map((p) => (
-                <div key={p.id} className={`fila-lista clicable ${marcados.has(p.id) ? 'marcada' : ''}`}
-                  onClick={() => onVer(p.id)} title="Ver cómo quedaría en cada canal">
+                <div key={p.id} {...teclado.propsFila(p)} {...propsSoltar(p)} className={`fila-lista ${claseFila(p)}`} title={TITULO_FILA}>
                   <input type="checkbox" checked={marcados.has(p.id)} aria-label="Seleccionar"
-                    onClick={(e) => e.stopPropagation()} onChange={() => alternar(p.id)} />
+                    onClick={(e) => e.stopPropagation()} onChange={casilla(p)} />
                   <span className="sku">{p.sku || '—'}</span>
                   <span className="principal" title={p.nombre}>
                     {p.nombre}{p.marca && <span className="tenue"> · {p.marca}</span>}
@@ -523,12 +824,11 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = nul
           {vista === 'mosaico' && items.length > 0 && (
             <div className="vista-mosaico">
               {items.map((p) => (
-                <div key={p.id} className={`tarjeta-vista clicable ${marcados.has(p.id) ? 'marcada' : ''}`}
-                  onClick={() => onVer(p.id)} title="Ver cómo quedaría en cada canal">
+                <div key={p.id} {...teclado.propsFila(p)} {...propsSoltar(p)} className={`tarjeta-vista ${claseFila(p)}`} title={TITULO_FILA}>
                   <Imagen sha={p.portada_sha}>
                     <label className="marca-esquina" onClick={(e) => e.stopPropagation()}>
                       <input type="checkbox" checked={marcados.has(p.id)} aria-label="Seleccionar"
-                        onChange={() => alternar(p.id)} />
+                        onChange={casilla(p)} />
                     </label>
                   </Imagen>
                   <div className="cuerpo-tarjeta">
@@ -559,12 +859,12 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = nul
           {vista === 'iconos' && items.length > 0 && (
             <div className="vista-iconos">
               {items.map((p) => (
-                <div key={p.id} className={`icono-vista clicable ${marcados.has(p.id) ? 'marcada' : ''}`}
-                  onClick={() => onVer(p.id)} title={`${p.nombre} — ver cómo quedaría en cada canal`}>
+                <div key={p.id} {...teclado.propsFila(p)} {...propsSoltar(p)} className={`icono-vista ${claseFila(p)}`}
+                  title={`${p.nombre} — ${TITULO_FILA}`}>
                   <Imagen sha={p.portada_sha}>
                     <label className="marca-esquina" onClick={(e) => e.stopPropagation()}>
                       <input type="checkbox" checked={marcados.has(p.id)} aria-label="Seleccionar"
-                        onChange={() => alternar(p.id)} />
+                        onChange={casilla(p)} />
                     </label>
                   </Imagen>
                   <div className="nombre">{p.nombre}</div>
@@ -592,7 +892,32 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = nul
                 : 'Todavía no hay productos. Sincroniza con Odoo para traer el catálogo.'}
             </div>
           )}
+          {seleccion.lazo.marco}
         </div>
+
+        {panel && (
+          <PanelDetalles p={actual} seleccionados={marcados.size}
+            arrastre={actual !== null && arrastreSobre === actual.id}
+            propsSoltar={propsSoltar}
+            onVer={onVer} onEditar={(p) => abrirEditor(p, 'venta')} onCerrar={alternarPanel} />
+        )}
+        </div>
+
+        <BarraEstado total={pagina?.total ?? 0} seleccionados={marcados.size} nombre="productos">
+          {totales.cuantos > 0 && (
+            <span className="num"
+              title={totales.deSeleccion
+                ? 'Suma de la selección (solo lo que hay cargado en esta página)'
+                : 'Suma de esta página, a precio × stock'}>
+              {totales.deSeleccion ? 'Selección' : 'Página'}: {num(totales.unidades)} unidades · {money(totales.valor)} en inventario
+              {totales.sinPrecio > 0 && ` (${num(totales.sinPrecio)} sin precio)`}
+            </span>
+          )}
+          {subiendo && (
+            <span>Subiendo foto {num(subiendo.hechas + 1)} de {num(subiendo.total)} a {subiendo.sku}…</span>
+          )}
+          {nota && <span className="nota-estado">{nota}</span>}
+        </BarraEstado>
 
         {pagina && pagina.total > 0 && (
           <div className="paginacion" data-guia="cat-paginacion">
@@ -610,6 +935,8 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = nul
           </div>
         )}
       </section>
+
+      {menu.Menu}
 
       {despublicando && (
         <DialogoDespublicar
@@ -653,7 +980,7 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = nul
           onCerrar={() => setMasiva(false)}
           onAplicado={() => {
             setMasiva(false)
-            setMarcados(new Set())
+            seleccion.limpiar()
             setVersion((v) => v + 1)
             onCambio()
           }} />
@@ -669,6 +996,89 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = nul
           }} />
       )}
     </>
+  )
+}
+
+// Panel lateral de detalles, como el de vista previa del explorador: la
+// ficha del producto con foco (o del último seleccionado), la portada
+// grande y las mismas acciones que la fila. También admite soltar fotos.
+function PanelDetalles({ p, seleccionados, arrastre, propsSoltar, onVer, onEditar, onCerrar }: {
+  p: Producto | null
+  seleccionados: number
+  arrastre: boolean
+  propsSoltar: (p: Producto) => Record<string, (e: DragEvent<HTMLElement>) => void>
+  onVer: (id: number) => void
+  onEditar: (p: Producto) => void
+  onCerrar: () => void
+}) {
+  return (
+    <aside className={`panel-detalles lazo-ignorar ${arrastre ? 'soltar-aqui' : ''}`}
+      aria-label="Detalles del producto" {...(p ? propsSoltar(p) : {})}>
+      <div className="cabecera-panel">
+        <strong>Detalles</strong>
+        <button type="button" className="enlace" onClick={onCerrar} aria-label="Cerrar el panel de detalles">✕</button>
+      </div>
+      {p === null ? (
+        <div className="vacio">
+          {seleccionados > 1
+            ? `${num(seleccionados)} productos seleccionados`
+            : 'Selecciona un producto para ver su ficha aquí.'}
+        </div>
+      ) : (
+        <>
+          <Imagen sha={p.portada_sha} variante="web_800" titulo={p.nombre} />
+          <h3>{p.nombre}</h3>
+          <dl>
+            <dt>Referencia</dt><dd className="sku">{p.sku || '—'}</dd>
+            <dt>Marca</dt><dd>{p.marca || '—'}</dd>
+            <dt>Categoría</dt><dd>{p.categoria || '—'}</dd>
+            <dt>Precio</dt><dd><PrecioDe p={p} /></dd>
+            <dt>Stock</dt><dd>{num(p.stock)} unidades</dd>
+            <dt>EAN</dt><dd className="sku">{p.barcode || '—'}</dd>
+            <dt>Publicación</dt>
+            <dd>
+              {(p.publicado ?? []).length === 0
+                ? <span className="pastilla dudosa">Sin publicar</span>
+                : (
+                  <ul className="lista-canales">
+                    {(p.publicado ?? []).map((c) => (
+                      <li key={c.canal}>
+                        <span className={`pastilla ${c.estado === 'published' ? 'ok' : c.estado === 'error' ? 'bloqueante' : 'aviso'}`}>
+                          {NOMBRE_CANAL[c.canal] ?? c.canal}
+                        </span>
+                        <span className="tenue mini-texto"> {ESTADO_CANAL[c.estado] ?? c.estado}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+            </dd>
+            <dt>Estado</dt>
+            <dd>
+              {p.problemas.length === 0
+                ? <span className="pastilla ok">Listo</span>
+                : (
+                  <ul className="lista-motivos">
+                    {p.problemas.map((m) => (
+                      <li key={m}>
+                        <span className={`pastilla ${bloqueante(m) ? 'bloqueante' : 'aviso'}`}>{motivo(m)}</span>
+                        {p.detalles?.[m] && <div className="tenue mini-texto">{p.detalles[m]}</div>}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+            </dd>
+          </dl>
+          {p.excluido && <span className="pastilla neutra">Excluido del catálogo</span>}
+          <div className="vista-acciones">
+            <button onClick={() => onVer(p.id)}>Ver en canales</button>
+            <button onClick={() => onEditar(p)} title="Editar precio, marca y descripción">Editar</button>
+          </div>
+          <div className="tenue mini-texto">
+            Arrastra fotos desde tu equipo aquí o sobre la fila para añadirlas al producto.
+          </div>
+        </>
+      )}
+    </aside>
   )
 }
 
@@ -729,6 +1139,8 @@ function Estado({ p, resumen = false }: { p: Producto; resumen?: boolean }) {
   return (
     <>
       {p.problemas.map((m) => (
+        // El detalle va en el title: es lo que explica el aviso, y sin él
+        // «la portada no cuadra» no se puede ni juzgar ni resolver.
         <span key={m} title={p.detalles?.[m] || motivo(m)}
           className={`pastilla ${bloqueante(m) ? 'bloqueante' : 'aviso'}`}>
           {motivo(m)}
