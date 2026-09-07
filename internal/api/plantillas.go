@@ -47,6 +47,13 @@ func (s *Server) descargarPlantilla(w http.ResponseWriter, r *http.Request) {
 		SoloProblemas: verdadero(q.Get("problemas")),
 		VerExcluidos:  verdadero(q.Get("excluidos")),
 		SoloSinPrecio: verdadero(q.Get("sin_precio")),
+		// Los mismos criterios que la lista: la plantilla tiene que traer
+		// exactamente lo que el operador está mirando, ni más ni menos.
+		SoloSinPublicar:    verdadero(q.Get("sin_publicar")),
+		SoloSinFoto:        verdadero(q.Get("sin_foto")),
+		SoloSinDescripcion: verdadero(q.Get("sin_descripcion")),
+		SoloSinEAN:         verdadero(q.Get("sin_ean")),
+		SoloConPromo:       verdadero(q.Get("con_promo")),
 	}
 
 	filas, err := s.st.FilasParaPlantilla(r.Context(), filtro)

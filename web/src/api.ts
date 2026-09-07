@@ -175,6 +175,10 @@ export interface FiltroCatalogo {
   sin_precio?: boolean
   // Lo que aún no está en ningún canal.
   sin_publicar?: boolean
+  sin_foto?: boolean
+  sin_descripcion?: boolean
+  sin_ean?: boolean
+  con_promo?: boolean
 }
 
 export interface ProblemaPlantilla {
@@ -661,7 +665,7 @@ export const api = {
   atencion: () => pedir<Atencion[]>('/api/atencion'),
   stock: () => pedir<StockAlmacen[]>('/api/stock'),
 
-  productos: (p: { q?: string; marca?: string; categoria?: string; problemas?: boolean; excluidos?: boolean; sin_precio?: boolean; sin_publicar?: boolean; orden?: string; desc?: boolean; limite?: number; offset?: number }) => {
+  productos: (p: { q?: string; marca?: string; categoria?: string; problemas?: boolean; excluidos?: boolean; sin_precio?: boolean; sin_publicar?: boolean; sin_foto?: boolean; sin_descripcion?: boolean; sin_ean?: boolean; con_promo?: boolean; orden?: string; desc?: boolean; limite?: number; offset?: number }) => {
     const qs = new URLSearchParams()
     if (p.q) qs.set('q', p.q)
     if (p.marca) qs.set('marca', p.marca)
@@ -670,6 +674,10 @@ export const api = {
     if (p.excluidos) qs.set('excluidos', '1')
     if (p.sin_precio) qs.set('sin_precio', '1')
     if (p.sin_publicar) qs.set('sin_publicar', '1')
+    if (p.sin_foto) qs.set('sin_foto', '1')
+    if (p.sin_descripcion) qs.set('sin_descripcion', '1')
+    if (p.sin_ean) qs.set('sin_ean', '1')
+    if (p.con_promo) qs.set('con_promo', '1')
     if (p.orden) qs.set('orden', p.orden)
     if (p.desc) qs.set('desc', '1')
     qs.set('limite', String(p.limite ?? 50))
@@ -820,6 +828,11 @@ export const api = {
     if (filtro.problemas) p.set('problemas', '1')
     if (filtro.excluidos) p.set('excluidos', '1')
     if (filtro.sin_precio) p.set('sin_precio', '1')
+    if (filtro.sin_publicar) p.set('sin_publicar', '1')
+    if (filtro.sin_foto) p.set('sin_foto', '1')
+    if (filtro.sin_descripcion) p.set('sin_descripcion', '1')
+    if (filtro.sin_ean) p.set('sin_ean', '1')
+    if (filtro.con_promo) p.set('con_promo', '1')
 
     const cab = new Headers()
     const t = tokenGuardado()

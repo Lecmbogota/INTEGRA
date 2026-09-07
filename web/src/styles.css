@@ -1003,3 +1003,40 @@ th.ordenable:hover { text-decoration: underline; }
   font-size: 12px;
 }
 .pastilla.quitable:hover { filter: brightness(0.94); }
+
+/* Badges seleccionables para filtrar. Un desplegable esconde las opciones y no
+   deja combinar dos; esto se ve entero y se pulsa. */
+.grupo-badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0;
+}
+.etiqueta-grupo {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--tenue, #71717A);
+  margin-right: 4px;
+  min-width: 62px;
+}
+.badge {
+  border: 1px solid var(--borde);
+  background: var(--fondo, #fff);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  color: inherit;
+}
+.badge:hover { border-color: var(--borde-fuerte); }
+.badge.activo {
+  background: var(--primario, #2563EB);
+  border-color: var(--primario, #2563EB);
+  color: #fff;
+}
+/* El número de productos de cada badge, en tono menor para que no compita con
+   el nombre. */
+.badge-num { opacity: .6; font-variant-numeric: tabular-nums; }
+.badge.activo .badge-num { opacity: .8; }

@@ -7,6 +7,19 @@ import { api, money, num, type Categoria, type FiltroCatalogo, type Marca, type 
 // pasar, y solo entonces confirmar. Una plantilla puede cambiar el precio de
 // cientos de productos y no hay forma de deshacer eso a mano, así que el paso
 // intermedio no es una cortesía: es lo que hace la herramienta usable.
+// Los criterios que responden a una pregunta que alguien se hace de verdad
+// antes de actualizar precios en bloque. El orden es el de lo que más urge
+// resolver: sin precio no se vende, sin foto no se publica.
+const CONDICIONES: { clave: keyof FiltroCatalogo; texto: string; ayuda: string }[] = [
+  { clave: 'sin_precio', texto: 'sin precio', ayuda: 'No tienen PVP asignado' },
+  { clave: 'sin_foto', texto: 'sin fotos', ayuda: 'Sin foto no publica ningún canal' },
+  { clave: 'sin_descripcion', texto: 'sin descripción', ayuda: 'Sin ella tampoco sale a ningún canal' },
+  { clave: 'sin_ean', texto: 'sin EAN', ayuda: 'Solo lo exige Falabella, pero es el dato que más falta' },
+  { clave: 'sin_publicar', texto: 'sin publicar', ayuda: 'Todavía no están en ningún canal' },
+  { clave: 'con_promo', texto: 'con promoción', ayuda: 'Tienen una oferta vigente ahora mismo' },
+  { clave: 'problemas', texto: 'con problemas', ayuda: 'Algo les impide publicarse' },
+]
+
 export function PlantillaMasiva({ filtro, total, marcas, categorias, onFiltrar, onCerrar, onAplicado }: {
   filtro: FiltroCatalogo
   total: number
@@ -25,9 +38,12 @@ export function PlantillaMasiva({ filtro, total, marcas, categorias, onFiltrar, 
   const [error, setError] = useState<string | null>(null)
   const [ocupado, setOcupado] = useState<'descarga' | 'revision' | 'aplicar' | null>(null)
   const entrada = useRef<HTMLInputElement>(null)
+  // Las categorías pueden ser decenas: se enseñan ocho y el resto a demanda.
+  const [verTodas, setVerTodas] = useState(false)
 
   const hayFiltro = !!(filtro.q || filtro.marca || filtro.categoria ||
-    filtro.problemas || filtro.excluidos || filtro.sin_precio || filtro.sin_publicar)
+    filtro.problemas || filtro.excluidos || filtro.sin_precio || filtro.sin_publicar ||
+    filtro.sin_foto || filtro.sin_descripcion || filtro.sin_ean || filtro.con_promo)
 
   // Lo que está acotando la descarga, dicho en palabras y con su aspa para
   // quitarlo. Un filtro que no se ve es un filtro que sorprende.
@@ -41,6 +57,10 @@ export function PlantillaMasiva({ filtro, total, marcas, categorias, onFiltrar, 
   if (filtro.excluidos) activos.push({ clave: 'excluidos', texto: 'solo excluidos' })
   if (filtro.sin_precio) activos.push({ clave: 'sin_precio', texto: 'sin precio' })
   if (filtro.sin_publicar) activos.push({ clave: 'sin_publicar', texto: 'pendientes por publicar' })
+  if (filtro.sin_foto) activos.push({ clave: 'sin_foto', texto: 'sin fotos' })
+  if (filtro.sin_descripcion) activos.push({ clave: 'sin_descripcion', texto: 'sin descripción' })
+  if (filtro.sin_ean) activos.push({ clave: 'sin_ean', texto: 'sin EAN' })
+  if (filtro.con_promo) activos.push({ clave: 'con_promo', texto: 'con promoción vigente' })
 
   async function descargar() {
     setOcupado('descarga')
@@ -135,22 +155,49 @@ export function PlantillaMasiva({ filtro, total, marcas, categorias, onFiltrar, 
 
             {/* Acotar la descarga desde aquí. Sin esto había que cerrar el
                 diálogo, filtrar en la lista y volver a abrirlo. */}
+            {/* Badges en vez de desplegables: un desplegable esconde las
+                opciones y no deja ver de un vistazo qué hay ni combinar dos.
+                Aquí se ve todo y se pulsa lo que se quiere. */}
             <div className="filtros-plantilla">
-              <select value={filtro.marca ?? ''} aria-label="Filtrar por marca"
-                onChange={(e) => onFiltrar({ marca: e.target.value || undefined })}>
-                <option value="">Todas las marcas</option>
-                {marcas.map((m) => <option key={m.codigo} value={m.codigo}>{m.nombre}</option>)}
-              </select>
-              <select value={filtro.categoria ?? ''} aria-label="Filtrar por categoría"
-                onChange={(e) => onFiltrar({ categoria: e.target.value || undefined })}>
-                <option value="">Todas las categorías</option>
-                {categorias.map((c) => <option key={c.nombre} value={c.nombre}>{c.nombre}</option>)}
-              </select>
-              <label className="casilla">
-                <input type="checkbox" checked={!!filtro.sin_precio}
-                  onChange={(e) => onFiltrar({ sin_precio: e.target.checked || undefined })} />
-                Solo sin precio
-              </label>
+              <div className="grupo-badges">
+                <span className="etiqueta-grupo">Marca</span>
+                {marcas.map((m) => (
+                  <button key={m.codigo}
+                    className={`badge ${filtro.marca === m.codigo ? 'activo' : ''}`}
+                    onClick={() => onFiltrar({ marca: filtro.marca === m.codigo ? undefined : m.codigo })}>
+                    {m.nombre} <span className="badge-num">{num(m.cantidad)}</span>
+                  </button>
+                ))}
+              </div>
+
+              <div className="grupo-badges">
+                <span className="etiqueta-grupo">Categoría</span>
+                {categorias.slice(0, verTodas ? categorias.length : 8).map((c) => (
+                  <button key={c.nombre}
+                    className={`badge ${filtro.categoria === c.nombre ? 'activo' : ''}`}
+                    title={c.nombre}
+                    onClick={() => onFiltrar({ categoria: filtro.categoria === c.nombre ? undefined : c.nombre })}>
+                    {c.nombre.split(' / ').pop()} <span className="badge-num">{num(c.cantidad)}</span>
+                  </button>
+                ))}
+                {categorias.length > 8 && (
+                  <button className="enlace" onClick={() => setVerTodas(!verTodas)}>
+                    {verTodas ? 'ver menos' : `ver las ${categorias.length}`}
+                  </button>
+                )}
+              </div>
+
+              <div className="grupo-badges">
+                <span className="etiqueta-grupo">Le falta</span>
+                {CONDICIONES.map((c) => (
+                  <button key={c.clave}
+                    className={`badge ${filtro[c.clave] ? 'activo' : ''}`}
+                    title={c.ayuda}
+                    onClick={() => onFiltrar({ [c.clave]: filtro[c.clave] ? undefined : true } as Partial<FiltroCatalogo>)}>
+                    {c.texto}
+                  </button>
+                ))}
+              </div>
             </div>
 
             {activos.length > 0 && (
@@ -166,6 +213,8 @@ export function PlantillaMasiva({ filtro, total, marcas, categorias, onFiltrar, 
                   q: undefined, marca: undefined, categoria: undefined,
                   problemas: undefined, excluidos: undefined,
                   sin_precio: undefined, sin_publicar: undefined,
+                  sin_foto: undefined, sin_descripcion: undefined,
+                  sin_ean: undefined, con_promo: undefined,
                 })}>Quitar todos</button>
               </div>
             )}

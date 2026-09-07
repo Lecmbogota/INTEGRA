@@ -40,6 +40,13 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio }: {
   // Lo que aún no está en ningún canal. Es el filtro que contesta «¿qué me
   // falta por subir?», que antes obligaba a comparar dos pantallas a ojo.
   const [sinPublicar, setSinPublicar] = useState(false)
+  // Criterios que solo se usan desde la plantilla, de momento. Viven aquí y no
+  // allí porque el filtro es uno solo: lo que se descarga tiene que ser lo
+  // mismo que se ve en la lista de detrás.
+  const [sinFoto, setSinFoto] = useState(false)
+  const [sinDescripcion, setSinDescripcion] = useState(false)
+  const [sinEAN, setSinEAN] = useState(false)
+  const [conPromo, setConPromo] = useState(false)
   const [orden, setOrden] = useState('nombre')
   const [ordenDesc, setOrdenDesc] = useState(false)
   const [offset, setOffset] = useState(0)
@@ -124,6 +131,7 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio }: {
   const filtroActual = {
     q: busqueda, marca, categoria, problemas: soloProblemas,
     excluidos: verExcluidos, sin_precio: sinPrecio, sin_publicar: sinPublicar,
+    sin_foto: sinFoto, sin_descripcion: sinDescripcion, sin_ean: sinEAN, con_promo: conPromo,
     orden, desc: ordenDesc,
   }
   const hayFiltro = !!(busqueda || marca || categoria || soloProblemas || verExcluidos || sinPrecio || sinPublicar)
@@ -164,6 +172,7 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio }: {
       api.productos({
         q: busqueda, marca, categoria, problemas: soloProblemas,
         excluidos: verExcluidos, sin_precio: sinPrecio, sin_publicar: sinPublicar,
+        sin_foto: sinFoto, sin_descripcion: sinDescripcion, sin_ean: sinEAN, con_promo: conPromo,
         orden, desc: ordenDesc,
         limite: POR_PAGINA, offset,
       })
@@ -182,14 +191,15 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio }: {
     }, 300)
     return () => { vigente = false; clearTimeout(t) }
   }, [busqueda, marca, categoria, soloProblemas, verExcluidos, sinPrecio, sinPublicar,
-    orden, ordenDesc, offset, version])
+    sinFoto, sinDescripcion, sinEAN, conPromo, orden, ordenDesc, offset, version])
 
   // Al cambiar un filtro se vuelve a la primera página: quedarse en la página 7
   // de un resultado que ahora tiene 2 muestra una tabla vacía sin explicación.
   // Cambiar de filtro limpia la selección: aplicar una operación a productos
   // que ya no se ven en pantalla sería una sorpresa desagradable.
   useEffect(() => { setOffset(0); setMarcados(new Set()) },
-    [busqueda, marca, categoria, soloProblemas, verExcluidos, sinPrecio, sinPublicar])
+    [busqueda, marca, categoria, soloProblemas, verExcluidos, sinPrecio, sinPublicar,
+      sinFoto, sinDescripcion, sinEAN, conPromo])
 
   return (
     <>
@@ -450,6 +460,10 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio }: {
             if ('excluidos' in c) setVerExcluidos(!!c.excluidos)
             if ('sin_precio' in c) setSinPrecio(!!c.sin_precio)
             if ('sin_publicar' in c) setSinPublicar(!!c.sin_publicar)
+            if ('sin_foto' in c) setSinFoto(!!c.sin_foto)
+            if ('sin_descripcion' in c) setSinDescripcion(!!c.sin_descripcion)
+            if ('sin_ean' in c) setSinEAN(!!c.sin_ean)
+            if ('con_promo' in c) setConPromo(!!c.con_promo)
           }}
           onCerrar={() => setPlantilla(false)}
           onAplicado={() => {
