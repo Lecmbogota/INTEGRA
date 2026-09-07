@@ -1,0 +1,116 @@
+/* Tema oscuro del escritorio y ajustes de tamaño de texto.
+   preferencias.tsx pone en <html> data-tema="claro|oscuro" y, si procede,
+   data-texto="grande"; aquí se redefinen las variables de styles.css y se
+   corrigen las reglas que allí llevan colores fijos. No se toca styles.css. */
+
+html[data-tema="oscuro"] {
+  color-scheme: dark;
+
+  /* Superficies: gris azulado, de más hondo (fondo) a más elevado (tooltips). */
+  --surface-0: #141821;
+  --surface-1: #1a1f2a;
+  --surface-2: #1e2430;
+  --surface-3: #232a37;
+  --surface-4: #2a3240;
+
+  /* Texto claro sin llegar al blanco puro: deslumbra menos sobre fondo oscuro. */
+  --texto: #e6e8ee;
+  --texto-tenue: #a6adbd;
+  --texto-terciario: #7f8797;
+
+  --borde: #2c3442;
+  --borde-fuerte: #3b4456;
+
+  /* Acento un punto más luminoso que en claro para conservar el contraste. */
+  --acento: #5b8dff;
+  --acento-hover: #7aa3ff;
+  --acento-activo: #4a7ae8;
+  --ok: #3ccf6a;
+  --aviso: #f2a93b;
+  --error: #f26b6b;
+
+  /* Alias que algunas reglas usan con fallback fijo (var(--primario, #2563EB)). */
+  --primario: var(--acento);
+  --tenue: var(--texto-terciario);
+}
+
+/* ------------------------------------------------------------ elementos */
+
+/* Sobre el acento luminoso el texto se lee mejor oscuro que blanco. */
+html[data-tema="oscuro"] button.primario,
+html[data-tema="oscuro"] .badge.activo,
+html[data-tema="oscuro"] button.dia.activo,
+html[data-tema="oscuro"] .sidebar-item.activo .sidebar-insignia,
+html[data-tema="oscuro"] .boton-ayuda { color: #0b1020; }
+
+html[data-tema="oscuro"] .lista-eleccion label:hover { background: rgba(255,255,255,.06); }
+
+/* Miniaturas y fotos: el marco se oscurece; el fondo de la imagen se deja
+   blanco a propósito, porque las fotos de producto se recortan sobre blanco
+   y sobre gris oscuro se verían con un halo. */
+html[data-tema="oscuro"] .tira-miniaturas img { border-color: var(--borde-fuerte); }
+html[data-tema="oscuro"] .celda-mini { border-color: var(--borde); background: var(--surface-2); }
+html[data-tema="oscuro"] .celda-mini .pie { border-top-color: var(--borde); }
+
+/* Editor de fotos. */
+html[data-tema="oscuro"] .editor-lienzo { background: var(--surface-4); }
+html[data-tema="oscuro"] .recorte-asa { background: var(--surface-1); }
+html[data-tema="oscuro"] .editor-resultado { background: var(--surface-3); }
+html[data-tema="oscuro"] .editor-resultado canvas { border-color: var(--borde-fuerte); }
+
+/* Edición masiva: grupos de ajustes y lista de productos. */
+html[data-tema="oscuro"] .grupo-ajustes { border-color: var(--borde); background: var(--surface-1); }
+html[data-tema="oscuro"] .grupo-ajustes.abierto { background: var(--surface-2); }
+html[data-tema="oscuro"] .lista-productos { border-color: var(--borde); }
+html[data-tema="oscuro"] .fila-producto { border-bottom-color: var(--borde); }
+
+/* Guía y centro de ayuda: llevaban una paleta gris fija (#fff, #1f2937…). */
+html[data-tema="oscuro"] .guia-globo { background: var(--surface-3); color: var(--texto); box-shadow: 0 18px 50px rgba(0,0,0,.6); }
+html[data-tema="oscuro"] .guia-globo::before { background: var(--surface-3); }
+html[data-tema="oscuro"] .guia-texto code { background: var(--surface-4); }
+html[data-tema="oscuro"] .guia-progreso { color: var(--texto-terciario); }
+html[data-tema="oscuro"] .guia-puntos i,
+html[data-tema="oscuro"] .guia-barra { background: var(--borde-fuerte); }
+html[data-tema="oscuro"] .guia-puntos i.hecho { background: var(--acento-activo); }
+html[data-tema="oscuro"] .guia-globo.hoja::after { background: var(--borde-fuerte); }
+html[data-tema="oscuro"] .fila-recorrido,
+html[data-tema="oscuro"] .fila-resultado { background: var(--surface-2); border-color: var(--borde); }
+html[data-tema="oscuro"] .fila-recorrido.actual { background: rgba(91,141,255,.10); }
+html[data-tema="oscuro"] .fila-resultado:hover { background: rgba(91,141,255,.12); }
+html[data-tema="oscuro"] .fila-recorrido.visto strong { color: var(--texto-tenue); }
+html[data-tema="oscuro"] .manual-capitulo { border-top-color: var(--borde); }
+
+/* Tarjetas, paneles, hojas y notas ya usan variables y se oscurecen solos;
+   aquí solo se ajustan sombras y tintes, que en oscuro tienen que ser más
+   densos para notarse. */
+html[data-tema="oscuro"] .hoja { box-shadow: 0 24px 60px rgba(0,0,0,.5); }
+html[data-tema="oscuro"] .nota-previa.ok-caja { background: rgba(60,207,106,.10); border-color: rgba(60,207,106,.35); }
+html[data-tema="oscuro"] .nota-previa.aviso-previa { background: rgba(242,169,59,.10); border-color: rgba(242,169,59,.35); }
+html[data-tema="oscuro"] .tabla-ofertas tr:has(.pastilla.ok) { background: rgba(60,207,106,.07); }
+html[data-tema="oscuro"] .pastilla.ok { background: rgba(60,207,106,.16); }
+html[data-tema="oscuro"] .pastilla.aviso,
+html[data-tema="oscuro"] .pastilla.dudosa { background: rgba(242,169,59,.16); }
+html[data-tema="oscuro"] .pastilla.bloqueante { background: rgba(242,107,107,.16); }
+html[data-tema="oscuro"] .logo-sub { color: #8fb0e6; }
+
+/* Las maquetas por tienda (.mk-*) no se tocan: imitan la ficha real de cada
+   marketplace y sus colores son de marca, no del tema. */
+
+/* -------------------------------------------------------- texto grande */
+
+/* body fija 14px, así que no basta con escalar <html>: se sube body y los
+   elementos que también llevan tamaño fijo (botones, campos, tablas). */
+html[data-texto="grande"] { font-size: 17px; }
+html[data-texto="grande"] body { font-size: 17px; }
+html[data-texto="grande"] button { font-size: 15px; min-height: 38px; }
+html[data-texto="grande"] input,
+html[data-texto="grande"] select,
+html[data-texto="grande"] textarea { font-size: 17px; }
+html[data-texto="grande"] table { font-size: 16px; }
+html[data-texto="grande"] td.sku,
+html[data-texto="grande"] .guia-texto code { font-size: 14px; }
+html[data-texto="grande"] .tarjeta .etiqueta,
+html[data-texto="grande"] .tarjeta .pie,
+html[data-texto="grande"] .hoja-cabecera .sub,
+html[data-texto="grande"] .nota-previa { font-size: 14px; }
+html[data-texto="grande"] .guia-texto { font-size: 16px; }

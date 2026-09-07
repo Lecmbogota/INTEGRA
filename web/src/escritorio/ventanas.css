@@ -1,0 +1,132 @@
+/* Marco de las ventanas del escritorio (Ventana.tsx). Solo variables de
+   color: el tema oscuro las redefine y aquí no hay nada que cambiar. Las
+   sombras son la única señal de elevación que el estilo general no usa; van
+   en variables con valor por defecto para que el tema pueda ajustarlas. */
+
+:root {
+  --alto-barra: 52px;
+  --ventana-titulo-alto: 40px;
+  --ventana-sombra: 0 12px 32px rgba(0, 0, 0, .14), 0 1px 3px rgba(0, 0, 0, .08);
+  --ventana-sombra-tenue: 0 4px 14px rgba(0, 0, 0, .08);
+}
+
+.ventana {
+  position: absolute;
+  display: flex; flex-direction: column;
+  border: 1px solid var(--borde); border-radius: 12px;
+  background: var(--surface-1); color: var(--texto);
+  box-shadow: var(--ventana-sombra-tenue);
+  overflow: hidden;
+  outline: none;
+  animation: ventana-abrir .16s ease-out;
+}
+/* `.ventana` tiene display propio, así que el atributo hidden del marco
+   (ventana minimizada, que sigue montada para no perder su estado) necesita
+   esta regla para ganar. */
+.ventana[hidden] { display: none; }
+
+.ventana.activa {
+  box-shadow: var(--ventana-sombra);
+  border-color: var(--borde-fuerte);
+}
+
+/* Maximizada, ajustada a una mitad o en móvil: pegada a los bordes del área,
+   sin esquinas redondeadas ni sombra que se salga. */
+.ventana.maximizada, .ventana.izquierda, .ventana.derecha, .ventana.movil {
+  border-radius: 0;
+  box-shadow: none;
+}
+.ventana.maximizada, .ventana.movil { border: none; }
+
+/* ---- barra de título */
+
+.ventana-titulo {
+  flex: 0 0 var(--ventana-titulo-alto); height: var(--ventana-titulo-alto);
+  display: flex; align-items: center; gap: 10px;
+  padding: 0 6px 0 12px;
+  background: var(--surface-3); border-bottom: 1px solid var(--borde);
+  color: var(--texto); font-size: 13px; font-weight: 500;
+  user-select: none; -webkit-user-select: none;
+  touch-action: none; cursor: default;
+}
+/* Las ventanas que no tienen el foco se atenúan en la barra, no en el
+   contenido: se sigue pudiendo leer lo que enseñan. */
+.ventana:not(.activa) .ventana-titulo { color: var(--texto-terciario); }
+.ventana:not(.activa) .ventana-icono { opacity: .55; }
+.ventana.maximizada .ventana-titulo, .ventana.movil .ventana-titulo { cursor: default; }
+
+.ventana-icono {
+  flex: 0 0 22px; width: 22px; height: 22px; border-radius: 6px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: #fff;
+}
+.ventana-icono > svg { width: 14px; height: 14px; }
+
+.ventana-nombre {
+  flex: 1; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.ventana-botones { display: flex; align-items: center; gap: 2px; flex: 0 0 auto; }
+.ventana-botones button {
+  width: 32px; height: 28px; min-height: 0; padding: 0;
+  border: none; border-radius: 6px; background: none;
+  color: var(--texto-tenue);
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: background .12s, color .12s;
+}
+.ventana-botones button:hover:not(:disabled) { background: var(--surface-4); color: var(--texto); }
+.ventana-botones button.cerrar:hover:not(:disabled) { background: var(--error); color: #fff; }
+.ventana.movil .ventana-botones button { width: 44px; height: 40px; }
+.ventana.movil .ventana-botones button > svg { width: 16px; height: 16px; }
+
+/* ---- contenido */
+
+.ventana-cuerpo {
+  flex: 1; min-height: 0;
+  position: relative; /* las capas modales de la app se colocan respecto a la ventana */
+  overflow: auto;
+  background: var(--surface-1);
+}
+
+/* ---- asas de redimensionado (8 px, dentro del marco por el overflow) */
+
+.ventana-asa { position: absolute; z-index: 2; touch-action: none; }
+.ventana-asa.n  { top: 0; left: 12px; right: 12px; height: 8px; cursor: ns-resize; }
+.ventana-asa.s  { bottom: 0; left: 12px; right: 12px; height: 8px; cursor: ns-resize; }
+.ventana-asa.e  { right: 0; top: 12px; bottom: 12px; width: 8px; cursor: ew-resize; }
+.ventana-asa.o  { left: 0; top: 12px; bottom: 12px; width: 8px; cursor: ew-resize; }
+.ventana-asa.ne { top: 0; right: 0; width: 12px; height: 12px; cursor: nesw-resize; }
+.ventana-asa.nw { top: 0; left: 0; width: 12px; height: 12px; cursor: nwse-resize; }
+.ventana-asa.se { bottom: 0; right: 0; width: 12px; height: 12px; cursor: nwse-resize; }
+.ventana-asa.sw { bottom: 0; left: 0; width: 12px; height: 12px; cursor: nesw-resize; }
+
+/* ---- previsualización al arrastrar hasta un borde */
+
+.ventana-previa {
+  position: absolute;
+  background: var(--acento); opacity: .18;
+  border-radius: 12px;
+  pointer-events: none;
+  transition: left .12s ease-out, top .12s ease-out, width .12s ease-out, height .12s ease-out;
+}
+
+/* ---- animaciones */
+
+@keyframes ventana-abrir {
+  from { transform: scale(.96); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+@keyframes ventana-cerrar {
+  to { transform: scale(.96); opacity: 0; }
+}
+@keyframes ventana-minimizar {
+  to { transform: translateY(40px) scale(.92); opacity: 0; }
+}
+.ventana.cerrando { animation: ventana-cerrar .12s ease-in forwards; pointer-events: none; }
+.ventana.minimizando { animation: ventana-minimizar .12s ease-in forwards; pointer-events: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ventana, .ventana.cerrando, .ventana.minimizando { animation: none; }
+  .ventana-previa { transition: none; }
+}

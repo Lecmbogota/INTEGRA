@@ -3,6 +3,7 @@ import { api, fecha, num, type FiltroMediateca, type ImagenBanco, type OrdenMedi
 import { EditorFoto } from './EditorFoto'
 import { Guia } from './Guia'
 import { PASOS_ASIGNAR } from './guias/mediateca'
+import { useEvento, useSistemaOpcional } from './escritorio/sistema'
 
 // El banco de imágenes visto entero, no producto a producto.
 //
@@ -69,6 +70,30 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
   // Lo que se va a asignar: una foto desde su botón, o todas las marcadas.
   const [asignando, setAsignando] = useState<ImagenBanco[] | null>(null)
   const [editando, setEditando] = useState<ImagenBanco | null>(null)
+
+  // Dentro del escritorio, editar y asignar se abren en su propia ventana y
+  // el resultado vuelve por el bus. Fuera (sistema null) siguen siendo
+  // modales de esta pantalla, sin cambios.
+  const sistema = useSistemaOpcional()
+  useEvento('fotos-cambiadas', () => setVersion((v) => v + 1))
+  function editarFoto(i: ImagenBanco) {
+    if (sistema) {
+      // Solo lo que el editor necesita: las props de una ventana viajan
+      // sueltas, sin la lista de productos ni el origen.
+      const foto = { id: i.id, sha256: i.sha256, ancho: i.ancho, alto: i.alto, formato: i.formato }
+      sistema.abrir('editor-foto', { foto }, { titulo: `Editar foto · ${i.ancho}×${i.alto}` })
+    } else {
+      setEditando(i)
+    }
+  }
+  function asignarFotos(lista: ImagenBanco[]) {
+    if (sistema) {
+      sistema.abrir('asignar-foto', { imagenIds: lista.map((i) => i.id) },
+        { titulo: lista.length === 1 ? 'Asignar la foto' : `Asignar ${num(lista.length)} fotos` })
+    } else {
+      setAsignando(lista)
+    }
+  }
 
   // Subida masiva. Cada fichero sale en su propia petición: así el informe
   // avanza línea a línea y un fichero corrupto no tumba la tanda entera.
@@ -293,7 +318,7 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
                 {seleccionadas.length === 0 ? 'Nada marcado' : `${num(seleccionadas.length)} marcadas`}
               </span>
               <button className="primario" disabled={seleccionadas.length === 0 || ocupada}
-                onClick={() => setAsignando(seleccionadas)}
+                onClick={() => asignarFotos(seleccionadas)}
                 title="Enlaza todas las marcadas al mismo producto, en este orden">
                 Asignar {seleccionadas.length > 0 ? num(seleccionadas.length) : ''} marcadas a un producto
               </button>
@@ -350,11 +375,11 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
                           ))}
                       </div>
                       <div className="acciones" data-guia="med-acciones">
-                        <button onClick={() => setEditando(i)} disabled={ocupada}
+                        <button onClick={() => editarFoto(i)} disabled={ocupada}
                           title="Recortar, girar, encajar en cuadrado, cambiar formato">
                           Editar
                         </button>
-                        <button onClick={() => setAsignando([i])} disabled={ocupada}
+                        <button onClick={() => asignarFotos([i])} disabled={ocupada}
                           title="Enlazarla a un producto sin volver a subirla">
                           Asignar a producto
                         </button>
@@ -402,8 +427,8 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
               {visor.origen_ref && <> · <a href={visor.origen_ref} target="_blank" rel="noreferrer">{dominio(visor.origen_ref)}</a></>}
             </div>
             <div className="grupo-acciones">
-              <button onClick={() => { setEditando(visor); setVisor(null) }}>Editar</button>
-              <button onClick={() => { setAsignando([visor]); setVisor(null) }}>Asignar a producto</button>
+              <button onClick={() => { editarFoto(visor); setVisor(null) }}>Editar</button>
+              <button onClick={() => { asignarFotos([visor]); setVisor(null) }}>Asignar a producto</button>
               <button onClick={() => setVisor(null)}>Cerrar ✕</button>
             </div>
           </div>
@@ -433,7 +458,8 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
 // referencia o el nombre— y enlaza las fotos. Con «como portada», la primera
 // pasa a ser la cara del producto en los cuatro canales. Se maneja entero
 // con el teclado: escribir, flechas para elegir, Enter para asignar.
-function DialogoAsignar({ imagenes, ocupada, onCerrar, onConfirmar }: {
+// Exportado porque en el escritorio se abre como ventana propia (apps.tsx).
+export function DialogoAsignar({ imagenes, ocupada, onCerrar, onConfirmar }: {
   imagenes: ImagenBanco[]
   ocupada: boolean
   onCerrar: () => void

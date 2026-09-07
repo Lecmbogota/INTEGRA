@@ -1,0 +1,28 @@
+/* Las pantallas y los diálogos de siempre, vistos desde dentro de una
+   ventana. Los componentes no cambian: es el marco el que los adapta. */
+
+/* Una pantalla de sección dentro de su ventana: el relleno que antes ponía
+   .contenido, más corto porque el espacio es de la ventana, no de la página. */
+.ventana-cuerpo > .app-seccion { padding: 14px 18px 18px; }
+.ventana-cuerpo header.principal { margin-bottom: 14px; }
+.ventana-cuerpo header.principal h1 { font-size: 22px; }
+
+/* Los modales que una app sigue abriendo dentro de su ventana (el visor de
+   la mediateca, despublicar, la ayuda «?» de un diálogo) tapan solo esa
+   ventana, no el escritorio entero. El cuerpo de la ventana ya es el
+   contenedor posicionado (ventanas.css). */
+.ventana-cuerpo .capa { position: absolute; inset: 0; padding: 16px; }
+
+/* Un diálogo que ahora ES la ventana: su .capa deja de ser un velo sobre la
+   página y su .hoja deja de ser una tarjeta flotante. Se pintan como
+   contenido corriente, a todo el ancho, y el desplazamiento lo pone la
+   ventana. Más específico que la regla anterior para ganarle. */
+.ventana-cuerpo .app-dialogo > .capa {
+  position: static; background: none; padding: 0; display: block;
+  overflow: visible; z-index: auto; inset: auto;
+}
+.ventana-cuerpo .app-dialogo > .capa > .hoja {
+  width: 100%; max-width: none; max-height: none; box-shadow: none;
+  border-radius: 0; border: none; margin: 0;
+}
+.app-dialogo .nota-carga { padding: 24px; color: var(--texto-tenue); }

@@ -1,0 +1,26 @@
+/* La pantalla del escritorio: fondo, capa de ventanas y barra. Las piezas
+   ponen sus propios estilos; aquí solo se apilan. */
+.pantalla {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  background: var(--surface-0);
+  color: var(--texto);
+  font-family: var(--fuente-cuerpo);
+}
+
+/* Las ventanas se posicionan en coordenadas del área de trabajo: la capa
+   ocupa toda la pantalla menos la barra, y solo las ventanas reciben clics
+   (el fondo del escritorio queda debajo y sigue siendo interactivo). */
+.ventanas {
+  position: absolute;
+  inset: 0 0 var(--alto-barra, 52px) 0;
+  pointer-events: none;
+  z-index: 10;
+}
+.ventanas > * { pointer-events: auto; }
+
+/* Dentro de una ventana la pantalla ya no es la página entera: las cabeceras
+   grandes y los márgenes pensados para un lienzo ancho se recortan. */
+.ventana-cuerpo .contenido { padding: 0; }
+.ventana-cuerpo > * { min-width: 0; }

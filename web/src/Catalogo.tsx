@@ -3,6 +3,7 @@ import { api, money, motivo, num, type Categoria, type Marca, type PaginaProduct
 import { Editar, type Pestana } from './Editar'
 import { EdicionMasiva } from './EdicionMasiva'
 import { PlantillaMasiva } from './PlantillaMasiva'
+import { useEvento, useSistemaOpcional } from './escritorio/sistema'
 
 const POR_PAGINA = 50
 // Motivos que impiden publicar. Un producto con cualquiera de ellos no sale al
@@ -78,6 +79,34 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = nul
   // El resultado de publicar tiene su propio aviso: el banner de error de la
   // pantalla dice «no se pudo cargar la lista», que no es lo que pasó.
   const [aviso, setAviso] = useState<{ texto: string; malo: boolean } | null>(null)
+
+  // Dentro del escritorio, los diálogos se abren en su propia ventana y el
+  // resultado vuelve por el bus (la ventana no sabe quién la abrió). Fuera
+  // (sistema null) siguen siendo modales de esta pantalla, sin cambios.
+  const sistema = useSistemaOpcional()
+  useEvento('producto-cambiado', () => setVersion((v) => v + 1))
+  useEvento('fotos-cambiadas', () => setVersion((v) => v + 1))
+  function abrirEditor(p: Producto, pestana: Pestana) {
+    if (sistema) {
+      sistema.abrir('editar', { varianteId: p.id, sku: p.sku, pestana }, { titulo: `Editar · ${p.sku || p.nombre}` })
+    } else {
+      setPestanaEditor(pestana)
+      setEditando(p)
+    }
+  }
+  function abrirPlantilla() {
+    if (sistema) sistema.abrir('plantilla', {})
+    else setPlantilla(true)
+  }
+  function abrirMasiva() {
+    if (sistema) {
+      const cuantos = pagina?.total ?? 0
+      sistema.abrir('edicion-masiva', { seleccion: { ids: [...marcados], filtro: filtroActual }, cuantos },
+        { titulo: marcados.size > 0 ? `Editar en masa · ${num(marcados.size)} marcados` : `Editar en masa · ${num(cuantos)} del filtro` })
+    } else {
+      setMasiva(true)
+    }
+  }
 
   // Publicar lo seleccionado. Planificar la cuenta entera es lo correcto para
   // la corrida nocturna, pero quien acaba de arreglar tres fichas quiere
@@ -213,8 +242,7 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = nul
             pendiente.current = null
             const item = p.items.find((x) => x.id === a.id)
             if (item) {
-              setPestanaEditor(a.pestana)
-              setEditando(item)
+              abrirEditor(item, a.pestana)
             } else {
               setAviso({ texto: `${a.sku} no aparece en la lista con los filtros actuales.`, malo: true })
             }
@@ -342,11 +370,11 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = nul
                 Despublicar
               </button>
             )}
-            <button onClick={() => setPlantilla(true)} data-guia="plantilla"
+            <button onClick={abrirPlantilla} data-guia="plantilla"
               title="Descarga el catálogo como hoja de Excel, edítalo y súbelo para actualizar precios y promociones de muchos productos a la vez.">
               Actualizar por plantilla
             </button>
-            <button className="primario" onClick={() => setMasiva(true)} data-guia="cat-editar-masa">
+            <button className="primario" onClick={abrirMasiva} data-guia="cat-editar-masa">
               Editar en masa
             </button>
           </div>
@@ -442,7 +470,7 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = nul
                       onClick={(e) => { e.stopPropagation(); onVer(p.id) }}>
                       Ver en canales
                     </button>
-                    <button onClick={(e) => { e.stopPropagation(); setPestanaEditor('venta'); setEditando(p) }} data-guia="editar"
+                    <button onClick={(e) => { e.stopPropagation(); abrirEditor(p, 'venta') }} data-guia="editar"
                       title="Editar precio, marca y descripción">
                       Editar
                     </button>

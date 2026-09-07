@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { EditorFoto, type FotoEditable } from './EditorFoto'
 import { SelectorMediateca } from './SelectorMediateca'
 import { api, type ImagenProducto } from './api'
+import { useEvento, useSistemaOpcional } from './escritorio/sistema'
 
 const CANALES = ['woocommerce', 'shopify', 'mercadolibre', 'falabella'] as const
 const NOMBRE_CORTO: Record<string, string> = {
@@ -37,6 +38,25 @@ export function Imagenes({ varianteId, onCambio }: { varianteId: number; onCambi
   }, [varianteId])
 
   useEffect(() => { cargar() }, [cargar])
+
+  // Dentro del escritorio, el editor de fotos y el selector de la mediateca
+  // se abren en su propia ventana y avisan por el bus; aquí solo se recarga
+  // la galería (no se llama a onCambio: quien emitió ya avisó a todos).
+  // Fuera (sistema null) siguen siendo modales de este bloque, sin cambios.
+  const sistema = useSistemaOpcional()
+  useEvento('fotos-cambiadas', () => cargar())
+  function elegirDeMediateca() {
+    if (sistema) sistema.abrir('selector-mediateca', { varianteId })
+    else setEligiendo(true)
+  }
+  function editarFoto(i: FotoEditable) {
+    if (sistema) {
+      const foto = { id: i.id, sha256: i.sha256, ancho: i.ancho, alto: i.alto, formato: i.formato }
+      sistema.abrir('editor-foto', { foto }, { titulo: `Editar foto · ${i.ancho}×${i.alto}` })
+    } else {
+      setEditando(i)
+    }
+  }
 
   async function subir(archivos: FileList | null) {
     if (!archivos || archivos.length === 0) return
@@ -142,7 +162,7 @@ export function Imagenes({ varianteId, onCambio }: { varianteId: number; onCambi
             data-guia="img-subir">
             Subir desde el PC
           </button>
-          <button onClick={() => setEligiendo(true)} disabled={subiendo}
+          <button onClick={elegirDeMediateca} disabled={subiendo}
             title="Fotos que ya están en el banco de Integra: de otras variantes o huérfanas"
             data-guia="img-mediateca">
             Elegir de la mediateca
@@ -236,7 +256,7 @@ export function Imagenes({ varianteId, onCambio }: { varianteId: number; onCambi
                     : <button onClick={() => void principal(i.id)} disabled={ocupada === i.id}>
                         {ocupada === i.id ? 'Guardando…' : 'Hacer portada'}
                       </button>}
-                  <button onClick={() => setEditando(i)} disabled={ocupada === i.id}
+                  <button onClick={() => editarFoto(i)} disabled={ocupada === i.id}
                     title="Recortar, girar, encajar en cuadrado, cambiar formato">Editar</button>
                   <button onClick={() => void quitar(i)} disabled={ocupada === i.id}>Quitar</button>
                 </div>

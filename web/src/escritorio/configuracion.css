@@ -1,0 +1,276 @@
+/* Estilos de la app de Configuración, del centro de notificaciones y de los
+   avisos emergentes. Todo con variables del tema (styles.css / tema.css):
+   así sirven en claro y en oscuro sin duplicar reglas. El cristal se hace
+   con color-mix + backdrop-filter sobre la superficie del tema. */
+
+:root {
+  /* La altura de la barra de tareas (--alto-barra) la define ventanas.css;
+     el fallback de 52 px coincide con ALTO_BARRA de sistema.tsx. */
+  --cristal: color-mix(in srgb, var(--surface-1) 80%, transparent);
+  --cristal-borde: color-mix(in srgb, var(--borde) 70%, transparent);
+  --sombra-flotante: 0 18px 50px rgba(0, 0, 0, .28);
+}
+html[data-tema="oscuro"] {
+  --cristal: color-mix(in srgb, var(--surface-2) 78%, transparent);
+  --sombra-flotante: 0 18px 50px rgba(0, 0, 0, .6);
+}
+
+/* ------------------------------------------------------- configuración */
+
+.configuracion {
+  display: flex; height: 100%; min-height: 0;
+  container-type: inline-size;
+  background: var(--surface-0); color: var(--texto);
+}
+.config-nav {
+  flex: none; width: 180px; padding: 12px 8px;
+  display: flex; flex-direction: column; gap: 2px;
+  border-right: 1px solid var(--borde); background: var(--surface-1);
+}
+.config-nav button {
+  text-align: left; background: transparent; border-color: transparent;
+  padding: 8px 12px; min-height: 0; border-radius: var(--radio);
+  color: var(--texto-tenue); font-weight: 500;
+}
+.config-nav button:hover:not(:disabled) { background: var(--surface-3); color: var(--texto); }
+.config-nav button.activo { background: var(--surface-3); color: var(--acento); }
+.config-seccion {
+  flex: 1; min-width: 0; overflow: auto; padding: 18px 22px 28px;
+  display: flex; flex-direction: column; gap: 22px;
+}
+.config-grupo { display: flex; flex-direction: column; gap: 10px; }
+.config-titulo {
+  margin: 0; font-size: 12px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: .06em; color: var(--texto-tenue);
+}
+.config-nota { margin: -4px 0 0; font-size: 12px; color: var(--texto-terciario); }
+
+/* Ventana estrecha (o móvil): la navegación pasa a pestañas arriba. */
+@container (max-width: 560px) {
+  .configuracion { flex-direction: column; }
+  .config-nav {
+    width: auto; flex-direction: row; overflow-x: auto; gap: 4px;
+    border-right: 0; border-bottom: 1px solid var(--borde); padding: 8px;
+  }
+  .config-nav button { white-space: nowrap; }
+  .config-seccion { padding: 14px 14px 24px; }
+}
+
+/* Botonera de opciones excluyentes. */
+.segmentado {
+  display: inline-flex; padding: 3px; gap: 2px; border-radius: var(--radio);
+  background: var(--surface-3); border: 1px solid var(--borde);
+}
+.segmentado button {
+  background: transparent; border-color: transparent; min-height: 30px;
+  padding: 4px 14px; color: var(--texto-tenue); border-radius: calc(var(--radio) - 2px);
+}
+.segmentado button.activo { background: var(--surface-2); color: var(--texto); box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+
+/* Muestras de tema: tres pantallitas. Los colores de cada muestra son fijos
+   a propósito: enseñan cómo es ese tema, no el tema que está activo. */
+.muestras-tema { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; max-width: 560px; }
+.muestra-tema {
+  display: flex; flex-direction: column; align-items: stretch; gap: 6px;
+  padding: 8px; text-align: left; min-height: 0;
+  background: var(--surface-2); border: 2px solid var(--borde);
+}
+.muestra-tema:hover:not(:disabled) { background: var(--surface-2); border-color: var(--borde-fuerte); }
+.muestra-tema.activo { border-color: var(--acento); }
+.muestra-tema[data-muestra="claro"] { --m-fondo: linear-gradient(160deg, #dbeafe, #fce7f3); --m-ventana: #ffffff; --m-borde: #d4d4d8; --m-barra: rgba(255,255,255,.75); }
+.muestra-tema[data-muestra="oscuro"] { --m-fondo: linear-gradient(160deg, #0f172a, #1e3a8a); --m-ventana: #1e2430; --m-borde: #3b4456; --m-barra: rgba(30,36,48,.8); }
+.muestra-tema[data-muestra="sistema"] { --m-fondo: linear-gradient(110deg, #dbeafe 50%, #0f172a 50%); --m-ventana: linear-gradient(110deg, #ffffff 50%, #1e2430 50%); --m-borde: #71717a; --m-barra: linear-gradient(110deg, rgba(255,255,255,.75) 50%, rgba(30,36,48,.8) 50%); }
+.muestra-pantalla {
+  position: relative; display: block; aspect-ratio: 16 / 10; border-radius: 6px; overflow: hidden;
+  background: var(--m-fondo); border: 1px solid var(--m-borde);
+}
+.muestra-ventana {
+  position: absolute; left: 18%; top: 16%; width: 58%; height: 52%;
+  border-radius: 4px; background: var(--m-ventana); border: 1px solid var(--m-borde);
+}
+.muestra-barra { position: absolute; left: 0; right: 0; bottom: 0; height: 16%; background: var(--m-barra); }
+.muestra-nombre { font-weight: 600; font-size: 13px; }
+.muestra-nota { font-size: 11px; color: var(--texto-terciario); }
+
+/* Fondos: cuadrícula de vistas previas. */
+.fondos { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 10px; }
+.fondo-muestra, .fondo-personalizado {
+  display: flex; flex-direction: column; gap: 5px; padding: 0; min-height: 0;
+  background: transparent; border: 0; text-align: left; color: var(--texto); font: inherit;
+}
+.fondo-vista {
+  display: block; width: 100%; aspect-ratio: 16 / 10; border-radius: var(--radio);
+  border: 2px solid var(--borde); box-shadow: inset 0 0 0 1px rgba(255,255,255,.15);
+  padding: 0; min-height: 0; cursor: pointer; transition: border-color .15s, transform .15s;
+}
+.fondo-muestra:hover .fondo-vista, .fondo-personalizado:hover .fondo-vista { border-color: var(--borde-fuerte); transform: translateY(-1px); }
+.fondo-muestra.activo .fondo-vista, .fondo-personalizado.activo .fondo-vista { border-color: var(--acento); box-shadow: 0 0 0 2px color-mix(in srgb, var(--acento) 35%, transparent); }
+.fondo-nombre { font-size: 12px; color: var(--texto-tenue); }
+.fondo-muestra.activo .fondo-nombre, .fondo-personalizado.activo .fondo-nombre { color: var(--texto); font-weight: 600; }
+.fondos-personalizados { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 10px; margin-top: 4px; max-width: 360px; }
+.fondo-personalizado { position: relative; cursor: pointer; }
+.fondo-colores { display: flex; gap: 6px; }
+.fondo-personalizado input[type="color"] {
+  width: 100%; height: 26px; padding: 2px; border-radius: var(--radio-sm);
+  border: 1px solid var(--borde); background: var(--surface-1); cursor: pointer;
+}
+
+/* Listas de apps con casilla y orden. */
+.lista-apps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; max-width: 520px; }
+.fila-app {
+  display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+  border: 1px solid var(--borde); border-radius: var(--radio); background: var(--surface-2);
+}
+.fila-app.marcada { border-color: var(--borde-fuerte); }
+.fila-app label { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; cursor: pointer; }
+.fila-app input[type="checkbox"] { flex: none; margin: 0; }
+.app-icono {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; border-radius: 7px; color: #fff;
+}
+.app-icono svg { width: 16px; height: 16px; }
+.app-icono.grande { width: 40px; height: 40px; border-radius: 10px; }
+.app-icono.grande svg { width: 22px; height: 22px; }
+.app-nombre { display: flex; flex-direction: column; min-width: 0; font-size: 13px; }
+.app-nombre small { font-size: 11px; color: var(--texto-terciario); }
+.fila-app-orden { display: flex; gap: 2px; }
+.fila-app-orden button { min-height: 0; padding: 2px 8px; font-size: 12px; line-height: 1.4; }
+
+/* Accesos a las apps de ajuste de Integra. */
+.accesos { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
+.acceso {
+  display: flex; align-items: center; gap: 12px; padding: 12px; text-align: left; min-height: 0;
+  background: var(--surface-2); border: 1px solid var(--borde);
+}
+.acceso:hover:not(:disabled) { border-color: var(--acento); background: var(--surface-2); }
+.acceso-texto { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.acceso-texto strong { font-size: 14px; }
+.acceso-texto span { font-size: 12px; color: var(--texto-tenue); line-height: 1.4; }
+
+/* Acerca de. */
+.acerca { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; font-size: 13px; max-width: 560px; }
+.acerca dt { color: var(--texto-tenue); }
+.acerca dd { margin: 0; }
+.atajos { width: auto; font-size: 13px; }
+.atajos td { padding: 6px 12px 6px 0; border-bottom: 1px solid var(--borde); }
+.atajo-teclas { white-space: nowrap; }
+.atajo-mas { margin: 0 3px; color: var(--texto-terciario); }
+kbd {
+  display: inline-block; font-family: var(--fuente-mono); font-size: 11px; line-height: 1;
+  padding: 4px 6px; border-radius: var(--radio-sm); background: var(--surface-3);
+  border: 1px solid var(--borde-fuerte); box-shadow: inset 0 -1px 0 var(--borde-fuerte);
+  color: var(--texto);
+}
+
+/* ----------------------------------------------- centro de notificaciones */
+
+.centro-notif-velo { position: fixed; inset: 0; z-index: 1190; }
+.centro-notif {
+  position: fixed; top: 12px; right: 12px; bottom: calc(var(--alto-barra, 52px) + 12px);
+  width: min(380px, calc(100vw - 24px)); z-index: 1200;
+  display: flex; flex-direction: column; overflow: hidden;
+  background: var(--cristal); border: 1px solid var(--cristal-borde);
+  border-radius: var(--radio-lg); box-shadow: var(--sombra-flotante);
+  backdrop-filter: blur(22px) saturate(1.5); -webkit-backdrop-filter: blur(22px) saturate(1.5);
+  color: var(--texto);
+  transform: translateX(calc(100% + 24px)); opacity: 0; visibility: hidden;
+  transition: transform .22s ease, opacity .18s ease, visibility 0s linear .22s;
+}
+.centro-notif.abierto { transform: none; opacity: 1; visibility: visible; transition-delay: 0s; }
+.centro-notif-cabecera {
+  flex: none; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 12px 12px 10px 16px; border-bottom: 1px solid var(--cristal-borde);
+}
+.centro-notif-cabecera h2 { margin: 0; font-size: 15px; display: flex; align-items: center; gap: 8px; }
+.centro-notif-cuenta {
+  font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: var(--radio-pill);
+  background: var(--acento); color: #fff;
+}
+.centro-notif-acciones { display: flex; align-items: center; gap: 2px; }
+.centro-notif-acciones .enlace {
+  background: transparent; border-color: transparent; min-height: 0; padding: 4px 8px;
+  font-size: 12px; color: var(--acento);
+}
+.centro-notif-acciones .enlace:hover:not(:disabled) { background: var(--surface-3); }
+.centro-notif-cerrar {
+  background: transparent; border-color: transparent; min-height: 0; width: 28px; height: 28px;
+  padding: 0; border-radius: 50%; color: var(--texto-tenue); font-size: 13px;
+}
+.centro-notif-lista { flex: 1; min-height: 0; overflow: auto; padding: 8px 10px 12px; overscroll-behavior: contain; }
+.centro-notif-vacio { margin: 24px 12px; text-align: center; font-size: 13px; color: var(--texto-terciario); }
+.notif-grupo h3 {
+  margin: 8px 6px 6px; font-size: 11px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: .06em; color: var(--texto-terciario);
+}
+
+/* Una notificación (misma anatomía en el centro y en las emergentes). */
+.notif, .emergente {
+  display: flex; align-items: flex-start; gap: 10px; padding: 10px 10px 10px 12px;
+  border-radius: var(--radio); cursor: pointer; position: relative;
+}
+.notif { margin-bottom: 4px; border: 1px solid transparent; }
+.notif:hover { background: var(--surface-3); border-color: var(--borde); }
+.notif:focus-visible, .emergente:focus-visible { outline: 1px solid var(--acento); outline-offset: 1px; }
+/* Punto azul de no leída, a la izquierda del icono. */
+.notif.no-leida::before {
+  content: ''; position: absolute; left: 4px; top: 50%; width: 5px; height: 5px;
+  border-radius: 50%; background: var(--acento); transform: translateY(-50%);
+}
+.notif-icono {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; border-radius: 8px; margin-top: 1px;
+  background: color-mix(in srgb, var(--acento) 14%, transparent); color: var(--acento);
+}
+.sev-warning .notif-icono { background: color-mix(in srgb, var(--aviso) 16%, transparent); color: var(--aviso); }
+.sev-error .notif-icono, .sev-critical .notif-icono { background: color-mix(in srgb, var(--error) 16%, transparent); color: var(--error); }
+.sev-critical { border-color: color-mix(in srgb, var(--error) 40%, transparent); }
+.notif-cuerpo { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.notif-titulo { font-size: 13px; font-weight: 600; line-height: 1.35; }
+.notif.no-leida .notif-titulo { color: var(--texto); }
+.notif:not(.no-leida) .notif-titulo { font-weight: 500; }
+.notif-texto {
+  font-size: 12px; color: var(--texto-tenue); line-height: 1.4;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.notif-hora { font-size: 11px; color: var(--texto-terciario); }
+.notif-quitar {
+  flex: none; background: transparent; border-color: transparent; min-height: 0;
+  width: 24px; height: 24px; padding: 0; border-radius: 50%; font-size: 12px;
+  color: var(--texto-terciario); opacity: 0; transition: opacity .15s;
+}
+.notif:hover .notif-quitar, .notif:focus-within .notif-quitar,
+.emergente .notif-quitar { opacity: 1; }
+.notif-quitar:hover:not(:disabled) { background: var(--surface-4); color: var(--texto); }
+
+/* ------------------------------------------------------------ emergentes */
+
+.emergentes {
+  position: fixed; right: 12px; bottom: calc(var(--alto-barra, 52px) + 12px);
+  width: min(360px, calc(100vw - 24px)); z-index: 1180;
+  display: flex; flex-direction: column; gap: 8px; pointer-events: none;
+}
+.emergente {
+  pointer-events: auto;
+  background: var(--cristal); border: 1px solid var(--cristal-borde);
+  box-shadow: var(--sombra-flotante);
+  backdrop-filter: blur(22px) saturate(1.5); -webkit-backdrop-filter: blur(22px) saturate(1.5);
+  color: var(--texto);
+  animation: emergente-entra .24s ease;
+}
+.emergente:hover { border-color: var(--borde-fuerte); }
+@keyframes emergente-entra {
+  from { transform: translateX(24px); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+
+/* En pantallas táctiles no hay hover: el botón de quitar siempre visible. */
+@media (hover: none) { .notif-quitar { opacity: 1; } }
+
+/* Menos movimiento: sin deslizamientos ni animaciones, solo aparecer. */
+@media (prefers-reduced-motion: reduce) {
+  .centro-notif { transition: opacity .1s, visibility 0s linear .1s; transform: none; }
+  .centro-notif.abierto { transition-delay: 0s; }
+  .emergente { animation: none; }
+  .fondo-vista, .notif-quitar, .segmentado button { transition: none; }
+  .fondo-muestra:hover .fondo-vista, .fondo-personalizado:hover .fondo-vista { transform: none; }
+}
