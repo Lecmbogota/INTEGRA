@@ -171,26 +171,30 @@ function Pantalla({ sesion, entrando }: { sesion: Sesion; entrando: boolean }) {
         <Escritorio />
         <div className="ventanas">
           {sis.ventanas.map((v) => {
-            // Todas las páginas del historial de la ventana, montadas; solo
-            // la actual se ve. Así ← vuelve a Productos con sus filtros, su
-            // selección y su scroll, en vez de recargarlo.
+            // Todas las páginas de todas las pestañas de la ventana,
+            // montadas; solo la actual de la pestaña activa se ve. Así ←
+            // vuelve a Productos con sus filtros, su selección y su scroll,
+            // y cambiar de pestaña no recarga nada. Van aplanadas en una
+            // sola lista con la clave de la página: reordenar pestañas no
+            // debe desmontar (y vaciar) lo que enseñan.
             return (
               <Ventana key={v.id} ventana={v}>
-                {v.historial.map((p, i) => {
+                {v.pestanas.flatMap((t) => t.historial.map((p, i) => {
                   const app = APPS[p.app]
                   if (!app) return null
-                  // Cerrar la página base cierra la ventana; cerrar una
-                  // página navegada la termina (vuelve atrás y la olvida):
-                  // un editor que ya guardó no tiene sentido «adelante».
-                  const cerrar = i === 0 ? () => sis.cerrar(v.id) : () => sis.cerrarPagina(v.id, p.clave)
+                  // Cerrar la página base cierra la pestaña (y la ventana si
+                  // era la última); cerrar una página navegada la termina
+                  // (vuelve atrás y la olvida): un editor que ya guardó no
+                  // tiene sentido «adelante».
+                  const cerrar = i === 0 ? () => sis.cerrarPestana(v.id, t.id) : () => sis.cerrarPagina(v.id, p.clave)
                   return (
-                    <Pagina key={p.clave} visible={i === v.indice}>
+                    <Pagina key={p.clave} visible={t.id === v.pestanaActiva && i === t.indice}>
                       <ContextoVentana.Provider value={v.id}>
                         {app.render({ ventanaId: v.id, props: p.props, cerrar })}
                       </ContextoVentana.Provider>
                     </Pagina>
                   )
-                })}
+                }))}
               </Ventana>
             )
           })}

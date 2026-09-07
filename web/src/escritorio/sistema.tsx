@@ -1,7 +1,7 @@
 import {
   createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode,
 } from 'react'
-import type { AppId, EstadoVentana, Evento, Pagina, Sistema, Ventana } from './tipos'
+import type { AppDef, AppId, EstadoVentana, Evento, Pagina, Pestana, Sistema, Ventana } from './tipos'
 import { APPS } from './apps'
 import { useSesion } from './sesion'
 
@@ -9,9 +9,12 @@ import { useSesion } from './sesion'
 // y delante de quién. Es el único sitio que toca la lista de ventanas; el
 // marco (Ventana.tsx), la barra y el menú de inicio solo piden cambios.
 //
-// Cada ventana lleva un historial de páginas (ver Pagina en tipos.ts): abrir
-// un producto desde Productos no abre otra ventana, navega dentro de la
-// misma, y ← / → se mueven por lo visitado como en un navegador.
+// Cada ventana tiene pestañas (ver Pestana en tipos.ts) y cada pestaña un
+// historial de páginas (ver Pagina): abrir un producto desde Productos no
+// abre otra ventana, navega dentro de la pestaña, y ← / → se mueven por lo
+// visitado como en un navegador. La ventana copia `historial`, `indice`,
+// `app`, `props` y `titulo` de la pestaña activa para que quien no sabe de
+// pestañas (barra de tareas, inicio, guía) siga leyendo lo de siempre.
 //
 // Toda acción pasa por `actualizar`, que trabaja sobre un espejo en ref de la
 // lista y no sobre el estado de React: así dos acciones seguidas en el mismo
@@ -95,32 +98,61 @@ function claveDe(usuarioId: number): string {
   return `integra.escritorio.ventanas.${usuarioId}`
 }
 
-// La ventana con `historial` e `indice` puestos y la página actual copiada a
-// `app`, `props` y `titulo`. Toda mutación del historial pasa por aquí para
-// que la copia nunca se desincronice.
-function conPagina(v: Ventana, historial: Pagina[], indice: number): Ventana {
-  const p = historial[indice]
-  return { ...v, historial, indice, app: p.app, props: p.props, titulo: p.titulo }
+// La pestaña que se ve. Si `pestanaActiva` no apunta a ninguna (no debería
+// pasar) se toma la primera, para que la ventana nunca se quede sin página.
+export function pestanaActivaDe(v: Ventana): Pestana {
+  return v.pestanas.find(t => t.id === v.pestanaActiva) ?? v.pestanas[0]
+}
+
+// La ventana con sus pestañas puestas y la página actual de la activa
+// copiada a `historial`, `indice`, `app`, `props` y `titulo`. Toda mutación
+// de pestañas o historiales pasa por aquí para que las copias nunca se
+// desincronicen.
+function conPestanas(v: Ventana, pestanas: Pestana[], pestanaActiva: string): Ventana {
+  const t = pestanas.find(x => x.id === pestanaActiva) ?? pestanas[0]
+  const p = t.historial[t.indice]
+  return {
+    ...v, pestanas, pestanaActiva: t.id, historial: t.historial, indice: t.indice, app: p.app, props: p.props, titulo: p.titulo,
+  }
+}
+
+// Cambia el historial de una pestaña concreta (la activa si no se dice).
+function conHistorial(v: Ventana, historial: Pagina[], indice: number, pestanaId = v.pestanaActiva): Ventana {
+  const pestanas = v.pestanas.map(t => (t.id === pestanaId ? { ...t, historial, indice } : t))
+  return conPestanas(v, pestanas, v.pestanaActiva)
 }
 
 // Índice de la última página del historial que enseña `app`, o -1.
-function indiceDe(v: Ventana, app: AppId): number {
-  for (let i = v.historial.length - 1; i >= 0; i--) if (v.historial[i].app === app) return i
+function indiceDe(t: Pestana, app: AppId): number {
+  for (let i = t.historial.length - 1; i >= 0; i--) if (t.historial[i].app === app) return i
   return -1
 }
 
-// Lo que va a localStorage: solo la página base de cada ventana (la app de
-// sección con la que se abrió). Lo navegado desde ahí (un editor, una
-// previa) apunta a cosas que pueden haber cambiado y no se restaura; el
-// historial vuelve a empezar con una sola página.
+// Del id de pestaña `${ventana}/t${n}` saca n (ver numeroDeId).
+function numeroDePestana(id: string): number {
+  const m = /\/t(\d+)$/.exec(id)
+  return m ? Number(m[1]) : 0
+}
+
+// Lo que va a localStorage: por cada ventana, la página base de cada
+// pestaña cuya base sea una app única (Productos, Pedidos, Publicación…).
+// Lo navegado desde ahí (un editor, una previa) apunta a cosas que pueden
+// haber cambiado y no se restaura; cada pestaña vuelve a empezar con una
+// sola página, y las pestañas de diálogos desaparecen. `app`, `props` y
+// `titulo` de la primera se repiten arriba por compatibilidad con lo
+// guardado antes de haber pestañas (ver `cargar`).
 function paraGuardar(lista: Ventana[]): Record<string, unknown>[] {
-  return lista
-    .filter(v => APPS[v.historial[0]?.app]?.unica)
-    .map(v => {
-      const base = v.historial[0]
-      const { historial: _h, indice: _i, ...resto } = v
-      return { ...resto, app: base.app, props: base.props, titulo: base.titulo }
-    })
+  const salida: Record<string, unknown>[] = []
+  for (const v of lista) {
+    const pestanas = v.pestanas
+      .filter(t => APPS[t.historial[0]?.app]?.unica)
+      .map(t => ({ app: t.historial[0].app, props: t.historial[0].props, titulo: t.historial[0].titulo }))
+    if (pestanas.length === 0) continue
+    const activa = v.pestanas.filter(t => APPS[t.historial[0]?.app]?.unica).findIndex(t => t.id === v.pestanaActiva)
+    const { historial: _h, indice: _i, pestanas: _p, pestanaActiva: _a, ...resto } = v
+    salida.push({ ...resto, ...pestanas[0], pestanas, activa: Math.max(0, activa) })
+  }
+  return salida
 }
 
 // Lee las ventanas guardadas y descarta lo que ya no tenga sentido: apps que
@@ -144,16 +176,38 @@ function cargar(clave: string, area: Area): Ventana[] {
   if (!Array.isArray(lista)) return []
 
   const salida: Ventana[] = []
-  const vistas = new Set<string>()
+  const ids = new Set<string>()
+  // Apps ya restauradas en otras ventanas: una app única no va en dos
+  // ventanas. Dentro de la misma ventana sí puede repetirse (Ctrl+T en
+  // Productos abre otro Productos), así que se comprueba por ventana.
+  const enOtras = new Set<AppId>()
   for (const cruda of lista as unknown[]) {
     if (!cruda || typeof cruda !== 'object') continue
     const v = cruda as Record<string, unknown>
-    const app = v.app as AppId
-    const def = APPS[app]
-    if (!def || !def.unica) continue
-    if (typeof v.id !== 'string' || vistas.has(v.id) || vistas.has(app)) continue
-    vistas.add(v.id)
-    vistas.add(app)
+    if (typeof v.id !== 'string' || ids.has(v.id)) continue
+
+    // Formato con pestañas, o el anterior (una sola página arriba).
+    const crudas = Array.isArray(v.pestanas) ? (v.pestanas as unknown[]) : [v]
+    const bases: { app: AppId; def: AppDef; props: Record<string, unknown>; titulo: string }[] = []
+    for (const c of crudas) {
+      if (!c || typeof c !== 'object') continue
+      const t = c as Record<string, unknown>
+      const app = t.app as AppId
+      const def = APPS[app]
+      if (!def || !def.unica || enOtras.has(app)) continue
+      bases.push({
+        app,
+        def,
+        titulo: typeof t.titulo === 'string' && t.titulo ? t.titulo : def.nombre,
+        props: t.props && typeof t.props === 'object' ? (t.props as Record<string, unknown>) : {},
+      })
+    }
+    if (bases.length === 0) continue
+    ids.add(v.id)
+    for (const b of bases) enOtras.add(b.app)
+    // La geometría mínima y por defecto es la de la primera pestaña, que
+    // es la app con la que se abrió la ventana.
+    const def = bases[0].def
 
     const estado = ESTADOS.includes(v.estado as EstadoVentana) ? (v.estado as EstadoVentana) : 'normal'
     const numero = (n: unknown, sino: number) => (typeof n === 'number' && Number.isFinite(n) ? n : sino)
@@ -172,27 +226,29 @@ function cargar(clave: string, area: Area): Ventana[] {
       : undefined
     const fija = geometriaEstado(estado, area)
 
-    // Se restaura con una sola página: la base (ver paraGuardar).
-    const pagina: Pagina = {
-      clave: `${v.id}/0`,
-      app,
-      titulo: typeof v.titulo === 'string' && v.titulo ? v.titulo : def.nombre,
-      props: v.props && typeof v.props === 'object' ? (v.props as Record<string, unknown>) : {},
-    }
-    salida.push({
+    // Cada pestaña se restaura con una sola página: su base (ver
+    // paraGuardar). Los ids de pestaña se numeran de nuevo desde 1.
+    const pestanas: Pestana[] = bases.map((b, k) => {
+      const id = `${v.id}/t${k + 1}`
+      return { id, historial: [{ clave: `${id}/0`, app: b.app, props: b.props, titulo: b.titulo }], indice: 0 }
+    })
+    const activa = typeof v.activa === 'number' && pestanas[v.activa] ? pestanas[v.activa] : pestanas[0]
+    salida.push(conPestanas({
       id: v.id,
-      app: pagina.app,
-      titulo: pagina.titulo,
-      props: pagina.props,
-      historial: [pagina],
+      app: activa.historial[0].app,
+      titulo: activa.historial[0].titulo,
+      props: activa.historial[0].props,
+      historial: activa.historial,
       indice: 0,
+      pestanas,
+      pestanaActiva: activa.id,
       ...(fija ?? libre),
       estado,
       z: numero(v.z, 0),
       // Una ventana que se guardó fuera de `normal` sin geometría a la que
       // volver la recupera del tamaño por defecto para que restaurar funcione.
       anterior: anterior ?? (estado === 'normal' ? undefined : libre),
-    })
+    }, pestanas, activa.id))
   }
   return salida
 }
@@ -217,8 +273,10 @@ export function ProveedorSistema({ children }: { children: ReactNode }) {
   // enfocada), número de ventana para los ids y posición en la cascada.
   const zRef = useRef(ventanas.reduce((m, v) => Math.max(m, v.z), 0))
   const contadorRef = useRef(ventanas.reduce((m, v) => Math.max(m, numeroDeId(v.id)), 0))
-  // Claves de las páginas navegadas: `${ventana}/${n}`. La base es `/0`
-  // (única por ventana); las demás llevan un número que solo crece, para que
+  // Número de pestaña para los ids `${ventana}/t${n}`; sigue tras restaurar.
+  const pestanasRef = useRef(ventanas.reduce((m, v) => v.pestanas.reduce((n, t) => Math.max(n, numeroDePestana(t.id)), m), 0))
+  // Claves de las páginas navegadas: `${pestaña}/${n}`. La base es `/0`
+  // (única por pestaña); las demás llevan un número que solo crece, para que
   // volver a abrir el mismo editor sea otra página con su estado a cero.
   const paginasRef = useRef(0)
   const cascadaRef = useRef(ventanas.length)
@@ -275,14 +333,20 @@ export function ProveedorSistema({ children }: { children: ReactNode }) {
     if (!def) throw new Error(`App desconocida: ${app}`)
 
     if (def.unica) {
-      // Cuenta tanto si es la página que se ve como si es la base de una
-      // ventana que ahora enseña otra cosa (Productos con un editor delante):
-      // se vuelve a esa página en vez de abrir un segundo Productos.
-      const existente = ventanasRef.current.find(v => v.app === app || v.historial[0].app === app)
+      // Cuenta tanto si es la página que se ve en alguna pestaña como si es
+      // la base de una pestaña que ahora enseña otra cosa (Productos con un
+      // editor delante): se vuelve a esa pestaña y a esa página en vez de
+      // abrir un segundo Productos. Se prefiere la pestaña activa si vale.
+      const tiene = (t: Pestana) => t.historial[t.indice].app === app || t.historial[0].app === app
+      const existente = ventanasRef.current.find(v => v.pestanas.some(tiene))
       if (existente) {
         if (existente.estado === 'minimizada') restaurar(existente.id)
-        const i = indiceDe(existente, app)
-        if (i >= 0 && i !== existente.indice) cambiar(existente.id, v => conPagina(v, v.historial, i))
+        const activa = pestanaActivaDe(existente)
+        const t = tiene(activa) ? activa : existente.pestanas.find(tiene)!
+        const i = indiceDe(t, app)
+        if (t.id !== existente.pestanaActiva || (i >= 0 && i !== t.indice)) {
+          cambiar(existente.id, v => conHistorial(conPestanas(v, v.pestanas, t.id), t.historial, i >= 0 ? i : t.indice, t.id))
+        }
         enfocar(existente.id)
         return existente.id
       }
@@ -303,14 +367,18 @@ export function ProveedorSistema({ children }: { children: ReactNode }) {
     cascadaRef.current = n + 1
 
     const id = `${app}-${++contadorRef.current}`
-    const pagina: Pagina = { clave: `${id}/0`, app, props: props ?? {}, titulo: opciones?.titulo ?? def.nombre }
+    const pestanaId = `${id}/t${++pestanasRef.current}`
+    const pagina: Pagina = { clave: `${pestanaId}/0`, app, props: props ?? {}, titulo: opciones?.titulo ?? def.nombre }
+    const pestana: Pestana = { id: pestanaId, historial: [pagina], indice: 0 }
     const nueva: Ventana = {
       id,
       app: pagina.app,
       titulo: pagina.titulo,
       props: pagina.props,
-      historial: [pagina],
+      historial: pestana.historial,
       indice: 0,
+      pestanas: [pestana],
+      pestanaActiva: pestanaId,
       ...encajar({ x, y, ...tamano }, area),
       estado: 'normal',
       z: ++zRef.current,
@@ -323,41 +391,116 @@ export function ProveedorSistema({ children }: { children: ReactNode }) {
     actualizar(lista => (lista.some(v => v.id === id) ? lista.filter(v => v.id !== id) : lista))
   }, [actualizar])
 
-  // ---- historial de la ventana
+  // ---- historial de la pestaña activa
+
+  // La ventana se queda con su tamaño (es del usuario, no de la app), salvo
+  // que no llegue al mínimo de la página que va a enseñar: entonces crece lo
+  // justo. Maximizada o ajustada ya ocupa lo que hay.
+  const crecerHasta = useCallback((v: Ventana, def: AppDef): Ventana => {
+    if (v.estado !== 'normal') return v
+    const area = areaRef.current
+    const t = acotarTamano(v, def.minimo, area)
+    return t.w === v.w && t.h === v.h ? v : { ...v, ...encajar({ x: v.x, y: v.y, ...t }, area) }
+  }, [])
 
   const navegar = useCallback((id: string, app: AppId, props?: Record<string, unknown>, titulo?: string) => {
     const def = APPS[app]
     if (!def) throw new Error(`App desconocida: ${app}`)
     cambiar(id, v => {
-      const pagina: Pagina = { clave: `${id}/${++paginasRef.current}`, app, props: props ?? {}, titulo: titulo ?? def.nombre }
+      const pagina: Pagina = {
+        clave: `${v.pestanaActiva}/${++paginasRef.current}`, app, props: props ?? {}, titulo: titulo ?? def.nombre,
+      }
       const historial = [...v.historial.slice(0, v.indice + 1), pagina]
-      const nueva = conPagina(v, historial, historial.length - 1)
-      // La ventana se queda con su tamaño (es del usuario, no de la app),
-      // salvo que no llegue al mínimo de la página nueva: entonces crece lo
-      // justo. Maximizada o ajustada ya ocupa lo que hay.
-      if (nueva.estado !== 'normal') return nueva
-      const area = areaRef.current
-      const t = acotarTamano(nueva, def.minimo, area)
-      return t.w === nueva.w && t.h === nueva.h ? nueva : { ...nueva, ...encajar({ x: nueva.x, y: nueva.y, ...t }, area) }
+      return crecerHasta(conHistorial(v, historial, historial.length - 1), def)
     })
-  }, [cambiar])
+  }, [cambiar, crecerHasta])
+
+  const irAPagina = useCallback((id: string, indice: number) => {
+    cambiar(id, v => (indice !== v.indice && indice >= 0 && indice < v.historial.length
+      ? crecerHasta(conHistorial(v, v.historial, indice), APPS[v.historial[indice].app])
+      : v))
+  }, [cambiar, crecerHasta])
 
   const atras = useCallback((id: string) => {
-    cambiar(id, v => (v.indice > 0 ? conPagina(v, v.historial, v.indice - 1) : v))
+    cambiar(id, v => (v.indice > 0 ? conHistorial(v, v.historial, v.indice - 1) : v))
   }, [cambiar])
 
   const adelante = useCallback((id: string) => {
-    cambiar(id, v => (v.indice < v.historial.length - 1 ? conPagina(v, v.historial, v.indice + 1) : v))
+    cambiar(id, v => (v.indice < v.historial.length - 1 ? conHistorial(v, v.historial, v.indice + 1) : v))
   }, [cambiar])
 
   // Se identifica la página por su clave y no por «la actual»: quien llama
   // es la propia página, que puede haber quedado detrás (el usuario pulsó ←
-  // mientras guardaba) y aun así tiene que desaparecer ella, no otra.
+  // mientras guardaba) o en otra pestaña, y aun así tiene que desaparecer
+  // ella, no otra.
   const cerrarPagina = useCallback((id: string, clave: string) => {
     cambiar(id, v => {
-      const i = v.historial.findIndex(p => p.clave === clave)
-      if (i <= 0) return v
-      return conPagina(v, v.historial.slice(0, i), Math.min(v.indice, i - 1))
+      for (const t of v.pestanas) {
+        const i = t.historial.findIndex(p => p.clave === clave)
+        if (i < 0) continue
+        if (i === 0) return v
+        return conHistorial(v, t.historial.slice(0, i), Math.min(t.indice, i - 1), t.id)
+      }
+      return v
+    })
+  }, [cambiar])
+
+  // ---- pestañas
+
+  const nuevaPestana = useCallback((id: string, app?: AppId, props?: Record<string, unknown>, titulo?: string) => {
+    cambiar(id, v => {
+      // Sin app: la base de la ventana (la de la primera pestaña), que es lo
+      // que el usuario entiende por «otra pestaña de esta ventana».
+      const appReal = app ?? v.pestanas[0].historial[0].app
+      const def = APPS[appReal]
+      if (!def) throw new Error(`App desconocida: ${appReal}`)
+      const pestanaId = `${id}/t${++pestanasRef.current}`
+      const pagina: Pagina = { clave: `${pestanaId}/0`, app: appReal, props: props ?? {}, titulo: titulo ?? def.nombre }
+      const pestana: Pestana = { id: pestanaId, historial: [pagina], indice: 0 }
+      return crecerHasta(conPestanas(v, [...v.pestanas, pestana], pestanaId), def)
+    })
+  }, [cambiar, crecerHasta])
+
+  const abrirEnPestana = useCallback((id: string, app: AppId, props?: Record<string, unknown>, titulo?: string) => {
+    nuevaPestana(id, app, props, titulo)
+  }, [nuevaPestana])
+
+  const cerrarPestana = useCallback((id: string, pestanaId: string) => {
+    const v = ventanasRef.current.find(x => x.id === id)
+    if (!v || !v.pestanas.some(t => t.id === pestanaId)) return
+    // La última pestaña es la ventana: se cierra entera.
+    if (v.pestanas.length <= 1) {
+      cerrar(id)
+      return
+    }
+    cambiar(id, w => {
+      const i = w.pestanas.findIndex(t => t.id === pestanaId)
+      const pestanas = w.pestanas.filter(t => t.id !== pestanaId)
+      // Al cerrar la activa pasa a verse la de su derecha (la que ocupa su
+      // sitio), o la última si era la del final: como en un navegador.
+      const activa = w.pestanaActiva === pestanaId ? pestanas[Math.min(i, pestanas.length - 1)].id : w.pestanaActiva
+      return conPestanas(w, pestanas, activa)
+    })
+  }, [cambiar, cerrar])
+
+  const activarPestana = useCallback((id: string, pestanaId: string) => {
+    cambiar(id, v => {
+      if (v.pestanaActiva === pestanaId) return v
+      const t = v.pestanas.find(x => x.id === pestanaId)
+      if (!t) return v
+      return crecerHasta(conPestanas(v, v.pestanas, pestanaId), APPS[t.historial[t.indice].app])
+    })
+  }, [cambiar, crecerHasta])
+
+  const moverPestana = useCallback((id: string, pestanaId: string, aIndice: number) => {
+    cambiar(id, v => {
+      const desde = v.pestanas.findIndex(t => t.id === pestanaId)
+      const hasta = Math.max(0, Math.min(aIndice, v.pestanas.length - 1))
+      if (desde < 0 || desde === hasta) return v
+      const pestanas = v.pestanas.slice()
+      const [t] = pestanas.splice(desde, 1)
+      pestanas.splice(hasta, 0, t)
+      return { ...v, pestanas }
     })
   }, [cambiar])
 
@@ -407,7 +550,7 @@ export function ProveedorSistema({ children }: { children: ReactNode }) {
       // También en el historial: al volver a esta página tiene que reaparecer.
       const historial = v.historial.slice()
       historial[v.indice] = { ...historial[v.indice], titulo }
-      return conPagina(v, historial, v.indice)
+      return conHistorial(v, historial, v.indice)
     })
   }, [cambiar])
 
@@ -541,13 +684,15 @@ export function ProveedorSistema({ children }: { children: ReactNode }) {
     ventanas,
     activa,
     abrir, cerrar, enfocar, minimizar, maximizar, restaurar, ajustar, mover, redimensionar, retitular, minimizarTodas,
-    navegar, atras, adelante, cerrarPagina,
+    navegar, atras, adelante, irAPagina, cerrarPagina,
+    nuevaPestana, abrirEnPestana, cerrarPestana, activarPestana, moverPestana,
     emitir, suscribir,
     area: pantalla.area,
     movil: pantalla.movil,
   }), [
     ventanas, activa, abrir, cerrar, enfocar, minimizar, maximizar, restaurar, ajustar, mover, redimensionar,
-    retitular, minimizarTodas, navegar, atras, adelante, cerrarPagina, emitir, suscribir, pantalla,
+    retitular, minimizarTodas, navegar, atras, adelante, irAPagina, cerrarPagina,
+    nuevaPestana, abrirEnPestana, cerrarPestana, activarPestana, moverPestana, emitir, suscribir, pantalla,
   ])
 
   return <Contexto.Provider value={valor}>{children}</Contexto.Provider>

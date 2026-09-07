@@ -6,6 +6,8 @@
 :root {
   --alto-barra: 52px;
   --ventana-titulo-alto: 40px;
+  --ventana-direccion-alto: 36px;
+  --ventana-pestana-alto: 32px;
   --ventana-sombra: 0 12px 32px rgba(0, 0, 0, .14), 0 1px 3px rgba(0, 0, 0, .08);
   --ventana-sombra-tenue: 0 4px 14px rgba(0, 0, 0, .08);
 }
@@ -54,21 +56,8 @@
 .ventana:not(.activa) .ventana-titulo { color: var(--texto-terciario); }
 .ventana:not(.activa) .ventana-icono { opacity: .55; }
 .ventana.maximizada .ventana-titulo, .ventana.movil .ventana-titulo { cursor: default; }
-
-/* Atrás / adelante por el historial de la ventana, a la izquierda del icono
-   como en un navegador. Deshabilitados se quedan, atenuados, para que la
-   barra no baile al navegar. */
-.ventana-historial { display: flex; align-items: center; gap: 0; flex: 0 0 auto; margin-left: -6px; }
-.ventana-historial button {
-  width: 26px; height: 26px; min-height: 0; padding: 0;
-  border: none; border-radius: 6px; background: none;
-  color: var(--texto-tenue);
-  display: inline-flex; align-items: center; justify-content: center;
-  transition: background .12s, color .12s;
-}
-.ventana-historial button:hover:not(:disabled) { background: var(--surface-4); color: var(--texto); }
-.ventana-historial button:disabled { opacity: .35; cursor: default; }
-.ventana.movil .ventana-historial button { width: 40px; height: 40px; }
+/* Con las pestañas dentro, la tira arranca casi en el borde. */
+.ventana-titulo.con-pestanas { padding-left: 6px; gap: 6px; }
 
 .ventana-icono {
   flex: 0 0 22px; width: 22px; height: 22px; border-radius: 6px;
@@ -96,6 +85,115 @@
 .ventana-botones button.ayuda:hover:not(:disabled) { background: color-mix(in srgb, var(--acento) 14%, transparent); color: var(--acento); }
 .ventana.movil .ventana-botones button { width: 44px; height: 40px; }
 .ventana.movil .ventana-botones button > svg { width: 16px; height: 16px; }
+
+/* Botones pequeños del marco (nueva pestaña, ← → ↑, abrir en pestaña):
+   28 px, sin borde, con el mismo hover que los controles. */
+.ventana-mas, .ventana-direccion > button, .ventana-pestana-cerrar {
+  width: 28px; height: 28px; min-height: 0; padding: 0; flex: 0 0 auto;
+  border: none; border-radius: 6px; background: none;
+  color: var(--texto-tenue);
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: background .12s, color .12s;
+}
+.ventana-mas:hover, .ventana-direccion > button:hover:not(:disabled), .ventana-pestana-cerrar:hover {
+  background: var(--surface-4); color: var(--texto);
+}
+.ventana-direccion > button:disabled { opacity: .35; cursor: default; }
+
+/* ---- pestañas (Windows 11: dentro de la barra de título si la ventana es
+   ancha, en una fila propia si no; con una sola pestaña no se pintan) */
+
+.ventana-pestanas {
+  flex: 1 1 auto; min-width: 0; align-self: flex-end;
+  height: var(--ventana-pestana-alto);
+  display: flex; align-items: stretch; gap: 2px;
+  padding: 0 2px;
+  /* El borde inferior de la barra queda 1 px por debajo; la pestaña activa
+     se pinta encima de él (margin-bottom negativo) para fundirse con la
+     barra de dirección. */
+  margin-bottom: -1px;
+}
+.ventana-pestanas-fila {
+  flex: 0 0 auto;
+  display: flex; align-items: flex-end;
+  padding: 4px 6px 0;
+  background: var(--surface-3); border-bottom: 1px solid var(--borde);
+  user-select: none; -webkit-user-select: none;
+  touch-action: none;
+}
+.ventana-pestanas-fila .ventana-pestanas { align-self: auto; }
+
+/* Todas las pestañas del mismo ancho (encogen juntas si no caben): así el
+   arrastre para reordenar no baila cuando dos títulos miden distinto. */
+.ventana-pestana {
+  flex: 1 1 0; min-width: 44px; max-width: 200px;
+  display: flex; align-items: center; gap: 8px;
+  padding: 0 4px 0 8px;
+  border: 1px solid transparent; border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  color: var(--texto-tenue); font-size: 13px; font-weight: 500;
+  background: transparent;
+  cursor: default; touch-action: none;
+  transition: background .12s, color .12s;
+}
+.ventana-pestana:hover { background: color-mix(in srgb, var(--surface-4) 70%, transparent); color: var(--texto); }
+/* La activa lleva el fondo de la barra de dirección y tapa el borde de la
+   barra de título: pestaña y contenido son una sola pieza. */
+.ventana-pestana.activa {
+  background: var(--surface-2); color: var(--texto);
+  border-color: var(--borde);
+  box-shadow: 0 1px 0 var(--surface-2);
+}
+.ventana:not(.activa) .ventana-pestana.activa { color: var(--texto-tenue); }
+.ventana-pestana.arrastrando { opacity: .7; }
+.ventana-pestana .ventana-icono { flex: 0 0 18px; width: 18px; height: 18px; border-radius: 5px; }
+.ventana-pestana .ventana-icono > svg { width: 12px; height: 12px; }
+.ventana-pestana-nombre {
+  flex: 1; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* El × solo al pasar el ratón (y siempre en la activa y con teclado o
+   táctil, donde no hay «pasar el ratón»). */
+.ventana-pestana-cerrar { width: 22px; height: 22px; opacity: 0; }
+.ventana-pestana:hover .ventana-pestana-cerrar,
+.ventana-pestana.activa .ventana-pestana-cerrar,
+.ventana-pestana-cerrar:focus-visible { opacity: 1; }
+@media (hover: none) { .ventana-pestana-cerrar { opacity: 1; } }
+.ventana-pestanas .ventana-mas { align-self: center; }
+.ventana.movil .ventana-pestana { min-width: 56px; }
+
+/* ---- barra de dirección: ← → ↑, migas del historial, abrir en pestaña */
+
+.ventana-direccion {
+  flex: 0 0 var(--ventana-direccion-alto); height: var(--ventana-direccion-alto);
+  display: flex; align-items: center; gap: 2px;
+  padding: 0 6px;
+  background: var(--surface-2); border-bottom: 1px solid var(--borde);
+  color: var(--texto); font-size: 13px;
+  user-select: none; -webkit-user-select: none;
+}
+.ventana-migas {
+  flex: 1; min-width: 0; align-self: stretch;
+  display: flex; align-items: center;
+  margin: 0 4px;
+  overflow: hidden; white-space: nowrap;
+}
+/* Las migas anteriores encogen (con puntos suspensivos) antes que la
+   actual, que se lee siempre entera. Las de «adelante» van atenuadas. */
+.ventana-miga {
+  flex: 0 1 auto; min-width: 28px; max-width: 240px;
+  height: 28px; min-height: 0; padding: 0 6px;
+  border: none; border-radius: 6px; background: none;
+  color: var(--texto-tenue); font: inherit;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  transition: background .12s, color .12s;
+}
+.ventana-miga:hover { background: var(--surface-4); color: var(--texto); }
+.ventana-miga.actual { flex-shrink: 0; color: var(--texto); font-weight: 500; }
+.ventana-miga.adelante { opacity: .5; }
+.ventana-miga-sep { flex: 0 0 auto; padding: 0 2px; color: var(--texto-terciario); }
+.ventana.movil .ventana-direccion > button { width: 36px; height: 32px; }
+.ventana.movil .ventana-miga.actual { max-width: none; flex-shrink: 1; min-width: 0; }
 
 /* ---- contenido */
 
@@ -155,5 +253,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .ventana, .ventana.cerrando, .ventana.minimizando { animation: none; }
-  .ventana-previa { transition: none; }
+  .ventana-previa, .ventana-pestana, .ventana-miga, .ventana-mas, .ventana-direccion > button, .ventana-pestana-cerrar {
+    transition: none;
+  }
 }

@@ -3,7 +3,10 @@ import type {
   Atencion, BusquedaMasiva, Categoria, Marca, Resumen, ResumenOrdenes, StockAlmacen, Producto,
 } from '../api'
 import type { FotoEditable } from '../EditorFoto'
-import type { Pestana } from '../Editar'
+// La pestaña del editor de producto (Datos, Fotos…) se llama igual que la
+// pestaña de ventana de aquí abajo; se renombra al importar para que
+// `Pestana` en el escritorio signifique siempre pestaña de ventana.
+import type { Pestana as PestanaEditor } from '../Editar'
 
 // Contrato del escritorio: lo que cada pieza ofrece y lo que espera de las
 // demás. Las piezas viven en ficheros distintos y las escriben personas
@@ -38,7 +41,7 @@ export type AppId =
 // resultados se comunican por el bus de eventos (ver Evento).
 // `sku` porque no hay GET de producto por id: el editor lo localiza buscando
 // por referencia en la lista y quedándose con la variante pedida.
-export type PropsEditar = { varianteId: number; pestana?: Pestana; sku?: string }
+export type PropsEditar = { varianteId: number; pestana?: PestanaEditor; sku?: string }
 export type PropsPreview = { varianteId: number }
 export type PropsEditorFoto = { foto: FotoEditable }
 export type PropsPlantilla = Record<string, never>
@@ -89,16 +92,26 @@ export type EstadoVentana = 'normal' | 'minimizada' | 'maximizada' | 'izquierda'
 // del mismo producto son páginas distintas, con su estado cada una.
 export type Pagina = { clave: string; app: AppId; props: Record<string, unknown>; titulo: string }
 
+// Una pestaña de una ventana, como en el explorador de Windows 11: cada una
+// lleva su propio historial y su página actual (`historial[indice]`). Una
+// ventana tiene siempre al menos una; cerrar la última cierra la ventana.
+export type Pestana = { id: string; historial: Pagina[]; indice: number }
+
 export type Ventana = {
   id: string
-  // Página actual (siempre `historial[indice]`, copiada aquí para que todo lo
-  // que ya lee `v.app`, `v.props` o `v.titulo` siga funcionando sin saber
-  // que hay historial).
+  // Página actual de la pestaña activa (siempre `pestañaActiva.historial[indice]`,
+  // copiada aquí para que todo lo que ya lee `v.app`, `v.props`, `v.titulo`,
+  // `v.historial` o `v.indice` siga funcionando sin saber que hay pestañas).
   app: AppId
   titulo: string
   props: Record<string, unknown>
   historial: Pagina[]
   indice: number
+  // Las pestañas en su orden y cuál se ve. `historial` e `indice` de arriba
+  // son copias de la activa: toda mutación pasa por el gestor, que las
+  // mantiene sincronizadas.
+  pestanas: Pestana[]
+  pestanaActiva: string
   x: number
   y: number
   w: number
@@ -129,18 +142,34 @@ export type Sistema = {
   // (y restaura si estaba minimizada). Devuelve el id de la ventana.
   abrir: (app: AppId, props?: Record<string, unknown>, opciones?: { titulo?: string }) => string
   cerrar: (id: string) => void
-  // Historial de la ventana. `navegar` añade una página tras la actual —
-  // descartando lo que hubiera «adelante», como un navegador— y la hace
-  // actual; `atras`/`adelante` se mueven por él sin perder nada. Si se puede
-  // ir atrás o adelante se deduce de `indice` y `historial.length`.
+  // Historial de la pestaña activa de la ventana. `navegar` añade una página
+  // tras la actual —descartando lo que hubiera «adelante», como un
+  // navegador— y la hace actual; `atras`/`adelante` se mueven por él sin
+  // perder nada; `irAPagina` salta a la página k (las migas de la barra de
+  // dirección). Si se puede ir atrás o adelante se deduce de `indice` y
+  // `historial.length`.
   navegar: (id: string, app: AppId, props?: Record<string, unknown>, titulo?: string) => void
   atras: (id: string) => void
   adelante: (id: string) => void
+  irAPagina: (id: string, indice: number) => void
   // Una página terminó (el diálogo guardó o se canceló): se quita del
   // historial con las que hubiera después y se vuelve a la anterior. No es
   // `atras`: un editor que ya guardó no debe seguir «adelante» con datos
-  // viejos. Con la página 0 no hace nada: esa se cierra con `cerrar`.
+  // viejos. Se busca por clave en todas las pestañas (la página puede haber
+  // quedado en una de fondo). Con la página base de una pestaña no hace
+  // nada: esa se cierra con `cerrarPestana`.
   cerrarPagina: (id: string, clave: string) => void
+  // Pestañas. `nuevaPestana` abre una al final con la app pedida (por
+  // defecto la app base de la ventana: Ctrl+T en Productos da otro
+  // Productos) y la activa; `abrirEnPestana` es lo mismo con una página
+  // concreta («abrir en pestaña nueva»). `cerrarPestana` con la última
+  // pestaña cierra la ventana. `moverPestana` la reordena a la posición
+  // pedida (arrastre).
+  nuevaPestana: (id: string, app?: AppId, props?: Record<string, unknown>, titulo?: string) => void
+  abrirEnPestana: (id: string, app: AppId, props?: Record<string, unknown>, titulo?: string) => void
+  cerrarPestana: (id: string, pestanaId: string) => void
+  activarPestana: (id: string, pestanaId: string) => void
+  moverPestana: (id: string, pestanaId: string, aIndice: number) => void
   enfocar: (id: string) => void
   minimizar: (id: string) => void
   maximizar: (id: string) => void
@@ -149,7 +178,8 @@ export type Sistema = {
   ajustar: (id: string, lado: 'izquierda' | 'derecha') => void
   mover: (id: string, x: number, y: number) => void
   redimensionar: (id: string, geometria: { x: number; y: number; w: number; h: number }) => void
-  // Cambia el título de la página actual de la ventana (queda en el historial).
+  // Cambia el título de la página actual de la pestaña activa (queda en el
+  // historial).
   retitular: (id: string, titulo: string) => void
   minimizarTodas: () => void
   // Bus de eventos.
