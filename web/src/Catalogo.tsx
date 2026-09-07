@@ -8,6 +8,17 @@ const POR_PAGINA = 50
 // Motivos que impiden publicar. Un producto con cualquiera de ellos no sale al
 // canal, así que la pantalla los marca distinto de los que solo empeoran la
 // ficha.
+// Los canales por su nombre y los estados por lo que significan, para que la
+// pastilla se lea sin conocer las claves internas.
+const NOMBRE_CANAL: Record<string, string> = {
+  mercadolibre: 'MercadoLibre', falabella: 'Falabella',
+  woocommerce: 'WooCommerce', shopify: 'Shopify',
+}
+const ESTADO_CANAL: Record<string, string> = {
+  published: 'publicado', paused: 'retirado de la venta',
+  error: 'falló el último envío', pending: 'en cola',
+}
+
 const BLOQUEANTES = new Set([
   'missing_sku', 'duplicate_sku', 'missing_description', 'missing_price', 'price_below_cost',
 ])
@@ -26,6 +37,11 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio }: {
   const [soloProblemas, setSoloProblemas] = useState(false)
   const [verExcluidos, setVerExcluidos] = useState(false)
   const [sinPrecio, setSinPrecio] = useState(false)
+  // Lo que aún no está en ningún canal. Es el filtro que contesta «¿qué me
+  // falta por subir?», que antes obligaba a comparar dos pantallas a ojo.
+  const [sinPublicar, setSinPublicar] = useState(false)
+  const [orden, setOrden] = useState('nombre')
+  const [ordenDesc, setOrdenDesc] = useState(false)
   const [offset, setOffset] = useState(0)
   const [editando, setEditando] = useState<Producto | null>(null)
   const [version, setVersion] = useState(0)
@@ -78,9 +94,21 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio }: {
 
   const filtroActual = {
     q: busqueda, marca, categoria, problemas: soloProblemas,
-    excluidos: verExcluidos, sin_precio: sinPrecio,
+    excluidos: verExcluidos, sin_precio: sinPrecio, sin_publicar: sinPublicar,
+    orden, desc: ordenDesc,
   }
-  const hayFiltro = !!(busqueda || marca || categoria || soloProblemas || verExcluidos || sinPrecio)
+  const hayFiltro = !!(busqueda || marca || categoria || soloProblemas || verExcluidos || sinPrecio || sinPublicar)
+
+  // Pulsar una cabecera ordena por ella; volver a pulsarla invierte el
+  // sentido. Se vuelve a la primera página porque, si no, se sigue viendo la
+  // página 3 de un orden que ya no existe.
+  const ordenarPor = (col: string) => {
+    if (orden === col) setOrdenDesc(!ordenDesc)
+    else { setOrden(col); setOrdenDesc(false) }
+    setOffset(0)
+  }
+  const flecha = (col: string) => orden === col ? (ordenDesc ? ' ↓' : ' ↑') : ''
+
   const alternar = (id: number) => {
     const s = new Set(marcados)
     s.has(id) ? s.delete(id) : s.add(id)
@@ -106,7 +134,8 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio }: {
     const t = setTimeout(() => {
       api.productos({
         q: busqueda, marca, categoria, problemas: soloProblemas,
-        excluidos: verExcluidos, sin_precio: sinPrecio,
+        excluidos: verExcluidos, sin_precio: sinPrecio, sin_publicar: sinPublicar,
+        orden, desc: ordenDesc,
         limite: POR_PAGINA, offset,
       })
         .then((p) => {
@@ -123,14 +152,15 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio }: {
         .finally(() => { if (vigente) setCargando(false) })
     }, 300)
     return () => { vigente = false; clearTimeout(t) }
-  }, [busqueda, marca, categoria, soloProblemas, verExcluidos, sinPrecio, offset, version])
+  }, [busqueda, marca, categoria, soloProblemas, verExcluidos, sinPrecio, sinPublicar,
+    orden, ordenDesc, offset, version])
 
   // Al cambiar un filtro se vuelve a la primera página: quedarse en la página 7
   // de un resultado que ahora tiene 2 muestra una tabla vacía sin explicación.
   // Cambiar de filtro limpia la selección: aplicar una operación a productos
   // que ya no se ven en pantalla sería una sorpresa desagradable.
   useEffect(() => { setOffset(0); setMarcados(new Set()) },
-    [busqueda, marca, categoria, soloProblemas, verExcluidos, sinPrecio])
+    [busqueda, marca, categoria, soloProblemas, verExcluidos, sinPrecio, sinPublicar])
 
   return (
     <>
@@ -187,8 +217,13 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio }: {
             </label>
             <label className="casilla">
               <input type="checkbox" checked={sinPrecio}
-                onChange={(e) => setSinPrecio(e.target.checked)} />
+                onChange={(e) => { setSinPrecio(e.target.checked); setOffset(0) }} />
               Sin precio
+            </label>
+            <label className="casilla" title="Los que no tienen ficha en ningún canal">
+              <input type="checkbox" checked={sinPublicar}
+                onChange={(e) => { setSinPublicar(e.target.checked); setOffset(0) }} />
+              Pendientes por publicar
             </label>
             <label className="casilla">
               <input type="checkbox" checked={verExcluidos}
@@ -243,9 +278,12 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio }: {
                     title="Seleccionar los de esta página"
                     onChange={alternarPagina} />
                 </th>
-                <th className="oculto-movil">Referencia</th><th>Producto</th>
-                <th className="oculto-movil">Marca</th>
-                <th className="num">Precio</th><th className="num">Stock</th>
+                <th className="oculto-movil ordenable" onClick={() => ordenarPor('sku')}>Referencia{flecha('sku')}</th>
+                <th className="ordenable" onClick={() => ordenarPor('nombre')}>Producto{flecha('nombre')}</th>
+                <th className="oculto-movil ordenable" onClick={() => ordenarPor('marca')}>Marca{flecha('marca')}</th>
+                <th className="num ordenable" onClick={() => ordenarPor('precio')}>Precio{flecha('precio')}</th>
+                <th className="num ordenable" onClick={() => ordenarPor('stock')}>Stock{flecha('stock')}</th>
+                <th>Publicación</th>
                 <th>Estado</th><th></th>
               </tr>
             </thead>
@@ -284,6 +322,21 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio }: {
                         : <span className="tenue">Sin precio</span>}
                   </td>
                   <td className="num" data-etiqueta="Stock">{num(p.stock)}</td>
+                  {/* Dónde vive la ficha. Sin esto había que ir canal por canal
+                      a adivinar si el producto estaba subido y a cuál. */}
+                  <td className="apilada" data-etiqueta="Publicación">
+                    <div className="etiquetas">
+                      {!p.publicado || p.publicado.length === 0
+                        ? <span className="pastilla dudosa">Sin publicar</span>
+                        : p.publicado.map((c) => (
+                          <span key={c.canal}
+                            className={`pastilla ${c.estado === 'published' ? 'ok' : c.estado === 'error' ? 'bloqueante' : 'aviso'}`}
+                            title={ESTADO_CANAL[c.estado] ?? c.estado}>
+                            {NOMBRE_CANAL[c.canal] ?? c.canal}
+                          </span>
+                        ))}
+                    </div>
+                  </td>
                   <td className="apilada" data-etiqueta="Estado">
                     <div className="etiquetas">
                       {p.problemas.length === 0

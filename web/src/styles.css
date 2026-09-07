@@ -974,3 +974,13 @@ button.enlace:hover:not(:disabled) { background: none; color: var(--acento-hover
   .fila-evento { flex-wrap: wrap; }
   .no-encoge { flex: 1 1 100%; }
 }
+
+/* Cabecera de tabla que ordena al pulsarla. El cursor y el subrayado al pasar
+   por encima son lo único que dice que se puede pulsar: sin eso, nadie
+   descubre que la columna ordena. */
+th.ordenable {
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+th.ordenable:hover { text-decoration: underline; }

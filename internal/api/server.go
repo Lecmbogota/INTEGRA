@@ -222,8 +222,13 @@ func (s *Server) productos(w http.ResponseWriter, r *http.Request) {
 		SoloProblemas: q.Get("problemas") == "1",
 		VerExcluidos:  q.Get("excluidos") == "1",
 		SoloSinPrecio: q.Get("sin_precio") == "1",
-		Limite:        entero(q.Get("limite"), 100),
-		Offset:        entero(q.Get("offset"), 0),
+		// Lo que aún no está en ningún canal: contesta «¿qué me falta por
+		// subir?» sin comparar dos pantallas a ojo.
+		SoloSinPublicar: q.Get("sin_publicar") == "1",
+		Orden:           q.Get("orden"),
+		Desc:            q.Get("desc") == "1",
+		Limite:          entero(q.Get("limite"), 100),
+		Offset:          entero(q.Get("offset"), 0),
 	}
 	filas, total, err := s.st.ListarProductos(r.Context(), f)
 	if err != nil {

@@ -96,6 +96,11 @@ type FilaProducto struct {
 	Stock          float64  `json:"stock"`
 	Problemas      []string `json:"problemas"`
 
+	// Canales donde el producto tiene ficha, con su estado. Vacío significa
+	// que está pendiente de publicar, que es lo que no se podía ver en la
+	// lista: había que ir canal por canal a adivinarlo.
+	Publicado []PublicadoEn `json:"publicado"`
+
 	// Ficha comercial completa.
 	Titulos       map[string]string `json:"titulos"`
 	LargoCm       float64           `json:"largo_cm"`
@@ -109,6 +114,12 @@ type FilaProducto struct {
 }
 
 // FiltroProductos acota la consulta del catálogo.
+// PublicadoEn dice en qué canal vive una ficha y cómo está.
+type PublicadoEn struct {
+	Canal  string `json:"canal"`
+	Estado string `json:"estado"`
+}
+
 type FiltroProductos struct {
 	Busqueda      string
 	Marca         string
@@ -119,8 +130,28 @@ type FiltroProductos struct {
 	// la edición masiva: aplicar «precio = coste × factor» a una selección
 	// que incluya productos ya tarifados los sobrescribiría en silencio.
 	SoloSinPrecio bool
-	Limite        int
-	Offset        int
+	// SoloSinPublicar acota a lo que no tiene ficha en ningún canal. Es el
+	// filtro que contesta «¿qué me falta por subir?», que antes obligaba a
+	// comparar dos pantallas a ojo.
+	SoloSinPublicar bool
+	// Orden es la columna por la que se ordena y en qué sentido. Sin esto la
+	// lista salía siempre por nombre y no había forma de ver, por ejemplo, lo
+	// más caro o lo que se quedó sin stock.
+	Orden  string
+	Desc   bool
+	Limite int
+	Offset int
+}
+
+// ordenes traduce lo que pide la pantalla a SQL. Es una lista cerrada: el
+// nombre de columna se concatena en la consulta y aceptar texto libre sería
+// abrir una inyección por la puerta de atrás.
+var ordenes = map[string]string{
+	"nombre": "p.name",
+	"sku":    "v.sku",
+	"marca":  "b.name",
+	"precio": "v.price",
+	"stock":  "(SELECT sum(st.qty_on_hand) FROM variant_stock st WHERE st.variant_id = v.id)",
 }
 
 func (s *Store) ListarProductos(ctx context.Context, f FiltroProductos) ([]FilaProducto, int, error) {
@@ -144,6 +175,12 @@ func (s *Store) ListarProductos(ctx context.Context, f FiltroProductos) ([]FilaP
 	if m := strings.TrimSpace(f.Marca); m != "" {
 		args = append(args, m)
 		cond = append(cond, fmt.Sprintf("b.code = $%d", len(args)))
+	}
+	if f.SoloSinPublicar {
+		cond = append(cond, `NOT EXISTS (
+			SELECT 1 FROM variant_channel_listings vcl
+			JOIN channel_accounts ca ON ca.id = vcl.channel_account_id AND ca.active
+			WHERE vcl.variant_id = v.id)`)
 	}
 	if c := strings.TrimSpace(f.Categoria); c != "" {
 		args = append(args, c)
@@ -180,12 +217,19 @@ func (s *Store) ListarProductos(ctx context.Context, f FiltroProductos) ([]FilaP
 		       COALESCE(c.titulos, '{}'::jsonb),
 		       COALESCE(v.largo_cm,0), COALESCE(v.ancho_cm,0), COALESCE(v.alto_cm,0),
 		       p.condicion, p.garantia_meses, COALESCE(p.garantia_tipo,''),
-		       COALESCE(p.video_url,''), COALESCE(p.nota_interna,'')
+		       COALESCE(p.video_url,''), COALESCE(p.nota_interna,''),
+		       COALESCE(ARRAY(
+		           SELECT ch.code || ':' || vcl.status::text
+		           FROM variant_channel_listings vcl
+		           JOIN channel_accounts ca ON ca.id = vcl.channel_account_id AND ca.active
+		           JOIN channels ch ON ch.id = ca.channel_id
+		           WHERE vcl.variant_id = v.id
+		           ORDER BY ch.code), '{}')
 		FROM product_variants v
 		JOIN products p ON p.id = v.product_id
 		LEFT JOIN brands b ON b.id = p.brand_id
 		LEFT JOIN product_content c ON c.product_id = p.id ` + where + `
-		ORDER BY p.name
+		ORDER BY ` + ordenar(f) + `
 		LIMIT $` + fmt.Sprint(len(args)-1) + ` OFFSET $` + fmt.Sprint(len(args))
 
 	filas, err := s.pool.Query(ctx, sql, args...)
@@ -198,16 +242,25 @@ func (s *Store) ListarProductos(ctx context.Context, f FiltroProductos) ([]FilaP
 	for filas.Next() {
 		var r FilaProducto
 		var titulos []byte
+		var publicado []string
 		if err := filas.Scan(&r.ID, &r.SKU, &r.Nombre, &r.Marca, &r.Categoria,
 			&r.Precio, &r.PrecioSugerido, &r.Barcode, &r.Peso, &r.Descripcion,
 			&r.Excluido, &r.Stock, &r.Problemas,
 			&titulos, &r.LargoCm, &r.AnchoCm, &r.AltoCm,
 			&r.Condicion, &r.GarantiaMeses, &r.GarantiaTipo,
-			&r.VideoURL, &r.NotaInterna); err != nil {
+			&r.VideoURL, &r.NotaInterna, &publicado); err != nil {
 			return nil, 0, err
 		}
 		if err := json.Unmarshal(titulos, &r.Titulos); err != nil {
 			return nil, 0, err
+		}
+		// Llegan como «canal:estado» para traerlos en un solo array; el canal
+		// nunca lleva dos puntos, así que partir por el primero es seguro.
+		r.Publicado = []PublicadoEn{}
+		for _, v := range publicado {
+			if i := strings.Index(v, ":"); i > 0 {
+				r.Publicado = append(r.Publicado, PublicadoEn{Canal: v[:i], Estado: v[i+1:]})
+			}
 		}
 		out = append(out, r)
 	}
@@ -395,4 +448,27 @@ func (s *Store) StockPorAlmacen(ctx context.Context) ([]StockAlmacen, error) {
 		out = append(out, a)
 	}
 	return out, filas.Err()
+}
+
+// ordenar construye el ORDER BY a partir de lo que pidió la pantalla.
+//
+// El nombre va siempre de segundo criterio: sin él, ordenar por marca o por
+// precio deja las filas empatadas en un orden que cambia entre páginas, y el
+// mismo producto aparece dos veces al pasar de página o no aparece nunca.
+func ordenar(f FiltroProductos) string {
+	col, ok := ordenes[f.Orden]
+	if !ok {
+		return "p.name"
+	}
+	dir := "ASC"
+	if f.Desc {
+		dir = "DESC"
+	}
+	// NULLS LAST en los dos sentidos: un producto sin precio no es «el más
+	// barato», es uno al que le falta el dato, y encabezar la lista con ellos
+	// esconde justo lo que se buscaba al ordenar.
+	if col == "p.name" {
+		return "p.name " + dir
+	}
+	return col + " " + dir + " NULLS LAST, p.name ASC"
 }

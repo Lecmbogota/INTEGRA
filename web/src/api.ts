@@ -15,6 +15,11 @@ export interface Resumen {
   excluidos: number
 }
 
+export interface PublicadoEn {
+  canal: string
+  estado: string
+}
+
 export interface Producto {
   id: number
   sku: string
@@ -38,6 +43,8 @@ export interface Producto {
   garantia_tipo: string
   video_url: string
   nota_interna: string
+  // Canales donde tiene ficha. Vacío = pendiente de publicar.
+  publicado: PublicadoEn[] | null
 }
 
 // EdicionProducto son los campos propiedad de Integra. Solo se envían las
@@ -166,6 +173,8 @@ export interface FiltroCatalogo {
   problemas?: boolean
   excluidos?: boolean
   sin_precio?: boolean
+  // Lo que aún no está en ningún canal.
+  sin_publicar?: boolean
 }
 
 export interface ProblemaPlantilla {
@@ -638,7 +647,7 @@ export const api = {
   atencion: () => pedir<Atencion[]>('/api/atencion'),
   stock: () => pedir<StockAlmacen[]>('/api/stock'),
 
-  productos: (p: { q?: string; marca?: string; categoria?: string; problemas?: boolean; excluidos?: boolean; sin_precio?: boolean; limite?: number; offset?: number }) => {
+  productos: (p: { q?: string; marca?: string; categoria?: string; problemas?: boolean; excluidos?: boolean; sin_precio?: boolean; sin_publicar?: boolean; orden?: string; desc?: boolean; limite?: number; offset?: number }) => {
     const qs = new URLSearchParams()
     if (p.q) qs.set('q', p.q)
     if (p.marca) qs.set('marca', p.marca)
@@ -646,6 +655,9 @@ export const api = {
     if (p.problemas) qs.set('problemas', '1')
     if (p.excluidos) qs.set('excluidos', '1')
     if (p.sin_precio) qs.set('sin_precio', '1')
+    if (p.sin_publicar) qs.set('sin_publicar', '1')
+    if (p.orden) qs.set('orden', p.orden)
+    if (p.desc) qs.set('desc', '1')
     qs.set('limite', String(p.limite ?? 50))
     qs.set('offset', String(p.offset ?? 0))
     return pedir<PaginaProductos>(`/api/productos?${qs}`)
