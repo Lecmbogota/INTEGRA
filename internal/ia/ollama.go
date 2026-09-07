@@ -3,7 +3,6 @@ package ia
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -39,25 +38,19 @@ import (
 // noche; publicar cuatrocientas fichas malas sale mucho más caro.
 const (
 	modeloTextoPorDefecto = "qwen2.5:7b"
-	// El de visión sí puede ser un 3B: distinguir «esta foto es el producto o
-	// no» es bastante más fácil que redactar, y en la prueba acertó al vuelo
-	// que una foto era una Cricut y no el anillo que se buscaba.
-	modeloVisionPorDefecto = "qwen2.5vl:3b"
-	servidorPorDefecto     = "http://localhost:11434"
+	servidorPorDefecto    = "http://localhost:11434"
 )
 
 type Ollama struct {
-	base         string
-	modelo       string
-	modeloVision string
-	cli          *http.Client
+	base   string
+	modelo string
+	cli    *http.Client
 }
 
 func NuevoOllama() *Ollama {
 	return &Ollama{
-		base:         entorno("OLLAMA_HOST", servidorPorDefecto),
-		modelo:       entorno("IA_MODELO", modeloTextoPorDefecto),
-		modeloVision: entorno("IA_MODELO_VISION", modeloVisionPorDefecto),
+		base:   entorno("OLLAMA_HOST", servidorPorDefecto),
+		modelo: entorno("IA_MODELO", modeloTextoPorDefecto),
 		// Sin tiempo límite corto: en una portátil con la GPU justa, la
 		// primera petición carga el modelo en memoria y puede tardar un
 		// minuto largo. Cortarla a los 30 s haría fallar precisamente el
@@ -67,19 +60,14 @@ func NuevoOllama() *Ollama {
 }
 
 func (o *Ollama) Descripcion() string {
-	if o.modelo == o.modeloVision {
-		return fmt.Sprintf("modelo local %s en %s", o.modelo, o.base)
-	}
-	return fmt.Sprintf("modelos locales %s (texto) y %s (visión) en %s",
-		o.modelo, o.modeloVision, o.base)
+	return fmt.Sprintf("modelo local %s en %s", o.modelo, o.base)
 }
 
 // --------------------------------------------------------------- protocolo
 
 type mensajeOllama struct {
-	Role   string   `json:"role"`
-	Content string   `json:"content"`
-	Images  []string `json:"images,omitempty"`
+	Role    string `json:"role"`
+	Content string `json:"content"`
 }
 
 type peticionOllama struct {
@@ -125,18 +113,6 @@ var esquemaFicha = json.RawMessage(`{
     }
   },
   "required": ["titulos", "descripcion", "specs"]
-}`)
-
-// esquemaVeredicto obliga a que el resultado sea uno de los tres valores. Sin
-// esto, un modelo pequeño contesta «sí, corresponde» o «Corresponde.» y el
-// veredicto se descarta por no encajar en el enum.
-var esquemaVeredicto = json.RawMessage(`{
-  "type": "object",
-  "properties": {
-    "resultado": {"type": "string", "enum": ["corresponde", "dudosa", "no_corresponde"]},
-    "nota":      {"type": "string"}
-  },
-  "required": ["resultado", "nota"]
 }`)
 
 func (o *Ollama) chat(ctx context.Context, p peticionOllama) (string, error) {
@@ -232,32 +208,6 @@ func (o *Ollama) GenerarFicha(ctx context.Context, nombre, marca, categoria, sku
 	return &f, nil
 }
 
-func (o *Ollama) VerificarImagen(ctx context.Context, jpeg []byte, nombre, marca, sku string) (*Veredicto, error) {
-	texto, err := o.chat(ctx, peticionOllama{
-		Model:  o.modeloVision,
-		Stream: false,
-		Format: esquemaVeredicto,
-		Messages: []mensajeOllama{{
-			Role:    "user",
-			Content: promptImagen(nombre, marca, sku),
-			Images:  []string{base64.StdEncoding.EncodeToString(jpeg)},
-		}},
-		Options: map[string]any{"temperature": 0.1, "num_predict": 256},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("verificando imagen de %q: %w", sku, err)
-	}
-
-	var v Veredicto
-	if err := json.Unmarshal([]byte(extraerJSON(texto)), &v); err != nil {
-		return nil, fmt.Errorf("veredicto ilegible para %q: %w", sku, err)
-	}
-	if err := validarVeredicto(&v, sku); err != nil {
-		return nil, err
-	}
-	return &v, nil
-}
-
 // --------------------------------------------------------------- comprobación
 
 type etiquetasOllama struct {
@@ -293,24 +243,19 @@ func (o *Ollama) Comprobar(ctx context.Context) error {
 	}
 	sort.Strings(instalados)
 
-	// El de visión solo se exige si es distinto: hay modelos que hacen las dos
-	// cosas, y obligar a descargar dos sería pedir 6 GB por gusto.
 	falta := []string{}
 	if !tieneModelo(instalados, o.modelo) {
 		falta = append(falta, o.modelo)
 	}
-	if o.modeloVision != o.modelo && !tieneModelo(instalados, o.modeloVision) {
-		falta = append(falta, o.modeloVision)
-	}
 	if len(falta) > 0 {
 		var b strings.Builder
-		fmt.Fprintf(&b, "faltan modelos por descargar. Ejecuta:\n")
+		fmt.Fprintf(&b, "falta el modelo por descargar. Ejecuta:\n")
 		for _, m := range falta {
 			fmt.Fprintf(&b, "\n    ollama pull %s", m)
 		}
 		if len(instalados) > 0 {
 			fmt.Fprintf(&b, "\n\nInstalados ahora mismo: %s", strings.Join(instalados, ", "))
-			fmt.Fprintf(&b, "\nSi prefieres usar uno de esos, ponlo en IA_MODELO / IA_MODELO_VISION.")
+			fmt.Fprintf(&b, "\nSi prefieres usar uno de esos, ponlo en IA_MODELO.")
 		} else {
 			fmt.Fprintf(&b, "\n\nNo hay ningún modelo instalado todavía.")
 		}

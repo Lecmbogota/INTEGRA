@@ -447,7 +447,6 @@ export interface ImagenBanco {
   // Productos a los que está vinculada. Vacío = huérfana: ocupa disco y no
   // la publica nadie.
   productos: { variante_id: number; sku: string; nombre: string; principal: boolean }[]
-  verificacion: '' | 'ok' | 'dudosa' | 'sin_verificar'
 }
 
 export interface PaginaImagenes {
@@ -464,7 +463,7 @@ export interface PaginaImagenes {
   bytes_huerfanos: number
 }
 
-export type FiltroMediateca = 'todas' | 'aptas' | 'pequenas' | 'huerfanas' | 'duplicadas' | 'dudosas'
+export type FiltroMediateca = 'todas' | 'aptas' | 'pequenas' | 'huerfanas' | 'duplicadas'
 
 // ----------------------------------------------------- destinos de avisos
 
@@ -598,8 +597,6 @@ export interface ImagenProducto {
   origen: string
   posicion: number
   principal: boolean
-  verificacion: '' | 'corresponde' | 'dudosa' | 'no_corresponde'
-  verificacion_nota: string
   url: string
   url_publicable: string
   publicable: Record<string, boolean> | null
@@ -808,10 +805,6 @@ export const api = {
     pedir<{ estado: string }>(`/api/productos/${varianteId}/imagenes/${imagenId}/principal`, {
       method: 'POST',
     }),
-
-  // Una persona contradice al modelo de visión: la foto sí es el producto.
-  confirmarImagen: (varianteId: number, imagenId: number) =>
-    pedir<{ estado: string }>(`/api/productos/${varianteId}/imagenes/${imagenId}/confirmar`, { method: 'POST' }),
 
   editarMasivo: (
     seleccion: { ids?: number[]; filtro?: Record<string, unknown> },
@@ -1085,10 +1078,6 @@ export const MOTIVOS: Record<string, string> = {
   missing_brand: 'Sin marca',
   no_stock: 'Sin existencias',
   missing_image: 'Sin fotos',
-  // «Portada dudosa» no dice quién lo decidió: lo hizo la verificación visual
-  // con IA, y su motivo llega en `detalles`, que la pantalla enseña al pasar
-  // el ratón.
-  image_mismatch: 'La portada no cuadra',
   sku_renombrado: 'SKU renombrado en Odoo',
 }
 

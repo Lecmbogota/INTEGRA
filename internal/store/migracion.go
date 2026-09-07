@@ -144,10 +144,9 @@ func (s *Store) MigrarTrabajo(ctx context.Context, origenID, destinoID int64, si
 	// 4. Imágenes: se comparten, no se copian. La misma foto vale para el
 	// producto viejo y el nuevo porque es el mismo producto.
 	ct, err = tx.Exec(ctx, `
-		INSERT INTO producto_imagenes (product_id, imagen_id, posicion, principal, verificacion, verificacion_nota, verificada_at)
+		INSERT INTO producto_imagenes (product_id, imagen_id, posicion, principal)
 		SELECT DISTINCT ON (pd.id, pi.imagen_id)
-		       pd.id, pi.imagen_id, pi.posicion, pi.principal,
-		       pi.verificacion, pi.verificacion_nota, pi.verificada_at
+		       pd.id, pi.imagen_id, pi.posicion, pi.principal
 		FROM producto_imagenes pi
 		JOIN products po ON po.id = pi.product_id AND po.odoo_connection_id = $1
 		JOIN product_variants vo ON vo.product_id = po.id AND vo.sku IS NOT NULL

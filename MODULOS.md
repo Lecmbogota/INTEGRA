@@ -22,7 +22,7 @@ principio; lo que falta es implementación, no rediseño.
 | `sync` | ✅ | Trae de Odoo SKU, nombre y stock por bodega. Nada más, por diseño. |
 | `store` | ✅ | Catálogo propiedad de Integra: precio, marca, descripción, exclusión. |
 | `imagen` + `webimagenes` | ✅ | Banco propio, derivadas, búsqueda por SKU, 1.365 fotos aptas para los 4 canales. |
-| `content` + `ia` | ✅ | Fichas por reglas y redacción con modelo. El proveedor por defecto es un modelo local sobre Ollama (`qwen2.5:3b` texto, `qwen2.5vl:3b` visión), con la API de Claude disponible en `IA_PROVEEDOR=anthropic`. El JSON se pide con esquema, no rogando. Falta ejecutar el lote de las fichas que quedan. |
+| `content` + `ia` | ✅ | Fichas por reglas y redacción con modelo. El proveedor por defecto es un modelo local sobre Ollama (`qwen2.5:7b`), con la API de Claude disponible en `IA_PROVEEDOR=anthropic`. El JSON se pide con esquema, no rogando. Falta ejecutar el lote de las fichas que quedan. |
 | `pricing` | ✅ | Motor de tarifas de Odoo. Congelado: solo sembró el precio inicial. |
 | `channel` | ✅ | Contrato `Adapter` + `Capabilities`. Bien diseñado, no necesita cambios. |
 | `publicar` | ✅ | Motor de diff por 3 hashes: encola solo lo que cambió, con prioridades. Lo que un canal asíncrono deja sin confirmar no se sella hasta que el trabajo `verificar_feed` trae el veredicto. |

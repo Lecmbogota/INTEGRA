@@ -21,7 +21,6 @@ func (s *Server) registrarImagenes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/productos/{id}/imagenes/buscar", s.buscarImagenesWeb)
 	mux.HandleFunc("DELETE /api/productos/{id}/imagenes/{imagenID}", s.quitarImagen)
 	mux.HandleFunc("POST /api/productos/{id}/imagenes/{imagenID}/principal", s.principalImagen)
-	mux.HandleFunc("POST /api/productos/{id}/imagenes/{imagenID}/confirmar", s.confirmarImagen)
 	// El fichero se sirve por hash, no por identificador: así la URL es
 	// inmutable y se puede cachear para siempre.
 	mux.HandleFunc("GET /imagenes/{sha}", s.servirImagen)
@@ -359,7 +358,6 @@ func decorar(imgs []store.ImagenGuardada) []map[string]any {
 			"id": i.ID, "sha256": i.SHA256,
 			"formato": i.Formato, "ancho": i.Ancho, "alto": i.Alto, "bytes": i.Bytes,
 			"origen": i.Origen, "posicion": i.Posicion, "principal": i.Principal,
-			"verificacion": i.Verificacion, "verificacion_nota": i.VerifNota,
 			"url":            "/imagenes/" + i.SHA256 + "/miniatura_300",
 			"url_publicable": "/imagenes/" + i.SHA256 + "/cuadrada_1200",
 			"publicable":     imagen.Publicable(inf),
@@ -381,38 +379,4 @@ func recortarExtension(s string) string {
 		}
 	}
 	return s
-}
-
-// confirmarImagen deja por escrito que la foto sí es el producto.
-//
-// El veredicto lo da un modelo de visión local de tres mil millones de
-// parámetros, que acierta mucho y se equivoca a veces —cuatro fotos de la
-// misma impresora y una marcada como «otro dispositivo»—. Sin esto no había
-// forma de contradecirlo: el aviso se quedaba para siempre sobre una foto que
-// cualquiera, mirándola, veía correcta. Lo que confirma una persona pesa más
-// que lo que opina el modelo, y la nota dice quién fue.
-func (s *Server) confirmarImagen(w http.ResponseWriter, r *http.Request) {
-	prodID, err := s.productoDesdeRuta(r)
-	if err != nil {
-		escribir(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	imgID, err := strconv.ParseInt(r.PathValue("imagenID"), 10, 64)
-	if err != nil {
-		escribir(w, http.StatusBadRequest, map[string]string{"error": "identificador inválido"})
-		return
-	}
-	quien := "alguien"
-	var usuario *int64
-	if c := ClaimsDeContext(r.Context()); c != nil {
-		quien, usuario = c.Email, &c.UserID
-	}
-	if err := s.st.ConfirmarImagen(r.Context(), prodID, imgID, quien); err != nil {
-		escribir(w, http.StatusConflict, map[string]string{"error": err.Error()})
-		return
-	}
-	_ = s.st.RegistrarAuditoria(r.Context(), usuario, "confirm", "producto_imagenes",
-		fmt.Sprintf("%d:%d", prodID, imgID), nil, map[string]any{"veredicto": "corresponde"}, r.RemoteAddr)
-	_ = s.st.RecalcularAtencion(r.Context())
-	escribir(w, http.StatusOK, map[string]string{"estado": "confirmada"})
 }

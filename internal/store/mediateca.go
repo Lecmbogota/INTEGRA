@@ -21,16 +21,13 @@ const LadoMinimoCanales = 600
 
 // ImagenBanco es una imagen del banco con los productos que la usan.
 type ImagenBanco struct {
-	ID        int64             `json:"id"`
-	SHA256    string            `json:"sha256"`
-	Ancho     int               `json:"ancho"`
-	Alto      int               `json:"alto"`
-	Bytes     int64             `json:"bytes"`
-	Formato   string            `json:"formato"`
+	ID        int64              `json:"id"`
+	SHA256    string             `json:"sha256"`
+	Ancho     int                `json:"ancho"`
+	Alto      int                `json:"alto"`
+	Bytes     int64              `json:"bytes"`
+	Formato   string             `json:"formato"`
 	Productos []ProductoDeImagen `json:"productos"`
-	// Verificacion es el veredicto de la comprobación con IA de que la portada
-	// muestra el producto. Vacío si esa imagen no es portada de nada.
-	Verificacion string `json:"verificacion"`
 }
 
 type ProductoDeImagen struct {
@@ -57,8 +54,8 @@ type PaginaImagenes struct {
 //
 // Los filtros son los que responden a una pregunta que alguien se hace de
 // verdad: «¿qué puedo publicar?», «¿qué está demasiado pequeño?», «¿qué ocupa
-// disco sin usarse?», «¿qué subí dos veces?», «¿qué portada no se parece a su
-// producto?». Un listado sin ellos son mil miniaturas iguales.
+// disco sin usarse?», «¿qué subí dos veces?». Un listado sin ellos son mil
+// miniaturas iguales.
 func (s *Store) Banco(ctx context.Context, filtro, busca string, limite, offset int) (*PaginaImagenes, error) {
 	if limite <= 0 || limite > 200 {
 		limite = 60
@@ -88,9 +85,6 @@ func (s *Store) Banco(ctx context.Context, filtro, busca string, limite, offset 
 		// recomprimida, y ocupan disco dos veces.
 		cond = append(cond, `EXISTS (SELECT 1 FROM imagenes o
 			WHERE o.id <> i.id AND o.bytes = i.bytes AND o.ancho = i.ancho AND o.alto = i.alto)`)
-	case "dudosas":
-		cond = append(cond, `EXISTS (SELECT 1 FROM producto_imagenes pi
-			WHERE pi.imagen_id = i.id AND pi.verificacion = 'dudosa')`)
 	}
 	if b := strings.TrimSpace(busca); b != "" {
 		// Se busca por lo que el operador tiene a mano: el SKU o el nombre del
@@ -117,9 +111,7 @@ func (s *Store) Banco(ctx context.Context, filtro, busca string, limite, offset 
 	}
 
 	filas, err := s.pool.Query(ctx, `
-		SELECT i.id, i.sha256, i.ancho, i.alto, i.bytes, i.formato,
-		       COALESCE((SELECT pi.verificacion FROM producto_imagenes pi
-		                 WHERE pi.imagen_id = i.id AND pi.principal LIMIT 1), '')
+		SELECT i.id, i.sha256, i.ancho, i.alto, i.bytes, i.formato
 		FROM imagenes i `+donde+`
 		ORDER BY i.created_at DESC, i.id DESC
 		LIMIT $1 OFFSET $2`, args...)
@@ -133,7 +125,7 @@ func (s *Store) Banco(ctx context.Context, filtro, busca string, limite, offset 
 	for filas.Next() {
 		var im ImagenBanco
 		if err := filas.Scan(&im.ID, &im.SHA256, &im.Ancho, &im.Alto, &im.Bytes,
-			&im.Formato, &im.Verificacion); err != nil {
+			&im.Formato); err != nil {
 			return nil, err
 		}
 		im.Productos = []ProductoDeImagen{}

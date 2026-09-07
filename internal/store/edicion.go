@@ -262,19 +262,6 @@ func (s *Store) RecalcularAtencion(ctx context.Context) error {
 		   'warning',
 		   NOT EXISTS (SELECT 1 FROM variant_stock st
 		               WHERE st.variant_id = v.id AND st.qty_on_hand > 0)),
-		  -- El detalle es lo que escribió la verificación visual. Sin él, «la
-		  -- portada no parece mostrar este producto» no dice quién lo decidió
-		  -- ni por qué, y no hay forma de juzgar si tiene razón.
-		  ('image_mismatch',
-		   COALESCE((SELECT NULLIF(TRIM(pi.verificacion_nota), '')
-		             FROM producto_imagenes pi
-		             WHERE pi.product_id = p.id AND pi.principal
-		               AND pi.verificacion = 'no_corresponde' LIMIT 1),
-		            'la portada no parece mostrar este producto (verificación visual)'),
-		   'warning',
-		   EXISTS (SELECT 1 FROM producto_imagenes pi
-		           WHERE pi.product_id = p.id AND pi.principal
-		             AND pi.verificacion = 'no_corresponde')),
 		  -- El canal se queda con el SKU con el que se publicó: ningún Update
 		  -- se lo cambia y en Falabella no se puede. Pedidos y envíos siguen
 		  -- funcionando por el SKU publicado; lo que queda es una ficha en el

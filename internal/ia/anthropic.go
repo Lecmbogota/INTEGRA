@@ -2,7 +2,6 @@ package ia
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -59,34 +58,6 @@ func (a *Anthropic) GenerarFicha(ctx context.Context, nombre, marca, categoria, 
 		return nil, err
 	}
 	return &f, nil
-}
-
-func (a *Anthropic) VerificarImagen(ctx context.Context, jpeg []byte, nombre, marca, sku string) (*Veredicto, error) {
-	resp, err := a.cli.Messages.New(ctx, anthropic.MessageNewParams{
-		Model:     modeloAnthropic,
-		MaxTokens: 256,
-		Messages: []anthropic.MessageParam{
-			anthropic.NewUserMessage(
-				anthropic.NewImageBlockBase64("image/jpeg", base64.StdEncoding.EncodeToString(jpeg)),
-				anthropic.NewTextBlock(promptImagen(nombre, marca, sku)),
-			),
-		},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("verificando imagen de %q: %w", sku, err)
-	}
-	if resp.StopReason == anthropic.StopReasonRefusal {
-		return nil, fmt.Errorf("la verificación fue rechazada por el modelo para %q", sku)
-	}
-
-	var v Veredicto
-	if err := json.Unmarshal([]byte(extraerJSON(textoDe(resp))), &v); err != nil {
-		return nil, fmt.Errorf("veredicto ilegible para %q: %w", sku, err)
-	}
-	if err := validarVeredicto(&v, sku); err != nil {
-		return nil, err
-	}
-	return &v, nil
 }
 
 // Comprobar gasta el mínimo posible en verificar que la credencial sirve.

@@ -96,9 +96,8 @@ fichas no compensa.
 # 1. Instalar Ollama (https://ollama.com/download) y arrancarlo
 ollama serve
 
-# 2. Traer los modelos: uno de texto y uno multimodal para las imágenes
+# 2. Traer el modelo de texto
 ollama pull qwen2.5:7b
-ollama pull qwen2.5vl:3b
 
 # 3. Comprobar la instalación antes de lanzar el lote
 integra ia-probar
@@ -112,7 +111,6 @@ cabe en una tarde o en una noche.
 |---|---|---|
 | `IA_PROVEEDOR` | `ollama` | `ollama`, `anthropic` o `auto` (local si responde, si no la API) |
 | `IA_MODELO` | `qwen2.5:7b` | Modelo de texto |
-| `IA_MODELO_VISION` | `qwen2.5vl:3b` | Modelo multimodal para verificar fotos |
 | `OLLAMA_HOST` | `http://localhost:11434` | Si Ollama corre en otra máquina |
 | `ANTHROPIC_API_KEY` | — | Solo con `IA_PROVEEDOR=anthropic` |
 

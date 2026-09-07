@@ -19,8 +19,6 @@ type ImagenGuardada struct {
 	Origen       string `json:"origen"`
 	Posicion     int    `json:"posicion"`
 	Principal    bool   `json:"principal"`
-	Verificacion string `json:"verificacion"` // '' | corresponde | dudosa | no_corresponde
-	VerifNota    string `json:"verificacion_nota"`
 }
 
 // RegistrarImagen da de alta una imagen y sus derivadas.
@@ -103,8 +101,7 @@ func (s *Store) AsociarImagen(ctx context.Context, productoID, imagenID int64) e
 func (s *Store) ImagenesDeProducto(ctx context.Context, productoID int64) ([]ImagenGuardada, error) {
 	filas, err := s.pool.Query(ctx, `
 		SELECT i.id, i.sha256, i.ruta, i.formato, i.ancho, i.alto, i.bytes, i.origen,
-		       pi.posicion, pi.principal,
-		       COALESCE(pi.verificacion, ''), COALESCE(pi.verificacion_nota, '')
+		       pi.posicion, pi.principal
 		FROM producto_imagenes pi
 		JOIN imagenes i ON i.id = pi.imagen_id
 		WHERE pi.product_id = $1
@@ -118,7 +115,7 @@ func (s *Store) ImagenesDeProducto(ctx context.Context, productoID int64) ([]Ima
 	for filas.Next() {
 		var i ImagenGuardada
 		if err := filas.Scan(&i.ID, &i.SHA256, &i.Ruta, &i.Formato, &i.Ancho, &i.Alto,
-			&i.Bytes, &i.Origen, &i.Posicion, &i.Principal, &i.Verificacion, &i.VerifNota); err != nil {
+			&i.Bytes, &i.Origen, &i.Posicion, &i.Principal); err != nil {
 			return nil, err
 		}
 		out = append(out, i)
@@ -382,63 +379,6 @@ func (s *Store) SustituirImagen(ctx context.Context, viejaID, nuevaID int64) ([]
 	return rutas, tx.Commit(ctx)
 }
 
-// ImagenAVerificar es una asociación producto-imagen pendiente del juicio
-// visual: ¿la foto muestra de verdad ese producto?
-type ImagenAVerificar struct {
-	ProductoID int64
-	ImagenID   int64
-	Ruta       string // derivada web_800: suficiente para juzgar y barata de enviar
-	Nombre     string
-	Marca      string
-	SKU        string
-}
-
-// ImagenesParaVerificar lista las portadas sin verificar (o todas las
-// asociaciones con todas=true). Se prioriza la portada porque es la cara del
-// producto en los cuatro canales.
-func (s *Store) ImagenesParaVerificar(ctx context.Context, todas bool) ([]ImagenAVerificar, error) {
-	cond := "pi.principal AND pi.verificacion IS NULL"
-	if todas {
-		cond = "pi.verificacion IS NULL"
-	}
-	filas, err := s.pool.Query(ctx, `
-		SELECT pi.product_id, pi.imagen_id, COALESCE(d.ruta, i.ruta),
-		       p.name, COALESCE(b.name,''),
-		       COALESCE((SELECT v.sku FROM product_variants v
-		                 WHERE v.product_id = p.id AND v.active ORDER BY v.id LIMIT 1), '')
-		FROM producto_imagenes pi
-		JOIN imagenes i ON i.id = pi.imagen_id
-		JOIN products p ON p.id = pi.product_id
-		LEFT JOIN brands b ON b.id = p.brand_id
-		LEFT JOIN imagen_derivadas d ON d.imagen_id = i.id AND d.variante = 'web_800'
-		WHERE p.active AND p.excluded_reason IS NULL AND `+cond+`
-		ORDER BY p.name, pi.posicion`)
-	if err != nil {
-		return nil, fmt.Errorf("listando imágenes para verificar: %w", err)
-	}
-	defer filas.Close()
-
-	var out []ImagenAVerificar
-	for filas.Next() {
-		var i ImagenAVerificar
-		if err := filas.Scan(&i.ProductoID, &i.ImagenID, &i.Ruta, &i.Nombre, &i.Marca, &i.SKU); err != nil {
-			return nil, err
-		}
-		out = append(out, i)
-	}
-	return out, filas.Err()
-}
-
-// GuardarVerificacion anota el veredicto visual de una asociación.
-func (s *Store) GuardarVerificacion(ctx context.Context, productoID, imagenID int64, resultado, nota string) error {
-	_, err := s.pool.Exec(ctx, `
-		UPDATE producto_imagenes
-		SET verificacion = $3, verificacion_nota = $4, verificada_at = now()
-		WHERE product_id = $1 AND imagen_id = $2`,
-		productoID, imagenID, resultado, nulo(nota))
-	return err
-}
-
 // ResumenImagenes cuenta el estado del banco.
 type ResumenImagenes struct {
 	Total            int `json:"total"`
@@ -463,23 +403,4 @@ func (s *Store) ResumenImagenes(ctx context.Context) (*ResumenImagenes, error) {
 		return nil, fmt.Errorf("resumen de imágenes: %w", err)
 	}
 	return &r, nil
-}
-
-// ConfirmarImagen anota que una persona miró la foto y dice que sí es el
-// producto. Pisa el veredicto del modelo: lo que confirma alguien mirando
-// pesa más que lo que opina un modelo de tres mil millones de parámetros.
-func (s *Store) ConfirmarImagen(ctx context.Context, productoID, imagenID int64, quien string) error {
-	tag, err := s.pool.Exec(ctx, `
-		UPDATE producto_imagenes
-		SET verificacion = 'corresponde',
-		    verificacion_nota = 'confirmada a mano por ' || $3,
-		    verificada_at = now()
-		WHERE product_id = $1 AND imagen_id = $2`, productoID, imagenID, quien)
-	if err != nil {
-		return fmt.Errorf("confirmando la imagen %d del producto %d: %w", imagenID, productoID, err)
-	}
-	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("la imagen %d no está vinculada al producto %d", imagenID, productoID)
-	}
-	return nil
 }

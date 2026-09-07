@@ -42,7 +42,6 @@ func servidorFalso(t *testing.T, modelos []string, responder func(peticionOllama
 	o := NuevoOllama()
 	o.base = srv.URL
 	o.modelo = "modelo-texto"
-	o.modeloVision = "modelo-vision"
 	return o
 }
 
@@ -63,7 +62,7 @@ const fichaValida = `{
 
 func TestGenerarFichaLeeLaRespuestaYMandaElEsquema(t *testing.T) {
 	var vistas peticionOllama
-	o := servidorFalso(t, []string{"modelo-texto", "modelo-vision"},
+	o := servidorFalso(t, []string{"modelo-texto"},
 		func(p peticionOllama) (string, string) {
 			vistas = p
 			return fichaValida, ""
@@ -91,29 +90,6 @@ func TestGenerarFichaLeeLaRespuestaYMandaElEsquema(t *testing.T) {
 	}
 }
 
-func TestVerificarImagenMandaLaFotoAlModeloDeVision(t *testing.T) {
-	var vistas peticionOllama
-	o := servidorFalso(t, []string{"modelo-texto", "modelo-vision"},
-		func(p peticionOllama) (string, string) {
-			vistas = p
-			return `{"resultado":"corresponde","nota":"es el disco"}`, ""
-		})
-
-	v, err := o.VerificarImagen(context.Background(), []byte("jpeg-de-mentira"), "N300", "TOSHIBA", "ABC")
-	if err != nil {
-		t.Fatalf("verificando: %v", err)
-	}
-	if v.Resultado != "corresponde" {
-		t.Errorf("resultado = %q", v.Resultado)
-	}
-	if vistas.Model != "modelo-vision" {
-		t.Errorf("modelo = %q; la visión tiene que usar el modelo multimodal", vistas.Model)
-	}
-	if len(vistas.Messages) != 1 || len(vistas.Messages[0].Images) != 1 {
-		t.Fatalf("la imagen no viajó en el mensaje: %+v", vistas.Messages)
-	}
-}
-
 // Los modelos locales envuelven el JSON en cercas o lo preceden de charla, y
 // algunos de razonamiento anteponen un bloque <think>. Descartar esas
 // respuestas sería tirar fichas perfectamente buenas.
@@ -126,7 +102,7 @@ func TestSeToleraLaCharlaAlrededorDelJSON(t *testing.T) {
 	}
 	for nombre, respuesta := range casos {
 		t.Run(nombre, func(t *testing.T) {
-			o := servidorFalso(t, []string{"modelo-texto", "modelo-vision"},
+			o := servidorFalso(t, []string{"modelo-texto"},
 				func(peticionOllama) (string, string) { return respuesta, "" })
 			f, err := o.GenerarFicha(context.Background(), "n", "m", "c", "SKU", "")
 			if err != nil {
@@ -149,7 +125,7 @@ func TestFichaIncompletaSeRechaza(t *testing.T) {
 	}
 	for nombre, respuesta := range casos {
 		t.Run(nombre, func(t *testing.T) {
-			o := servidorFalso(t, []string{"modelo-texto", "modelo-vision"},
+			o := servidorFalso(t, []string{"modelo-texto"},
 				func(peticionOllama) (string, string) { return respuesta, "" })
 			if f, err := o.GenerarFicha(context.Background(), "n", "m", "c", "SKU", ""); err == nil {
 				t.Errorf("se aceptó una ficha inservible: %+v", f)
@@ -163,7 +139,7 @@ func TestFichaIncompletaSeRechaza(t *testing.T) {
 // ficha en vez de descartarla.
 func TestTituloLargoSeRecortaPorPalabra(t *testing.T) {
 	largo := "Disco Duro Interno Toshiba N300 de 8TB para NAS 7200rpm con caché de 256MB"
-	o := servidorFalso(t, []string{"modelo-texto", "modelo-vision"},
+	o := servidorFalso(t, []string{"modelo-texto"},
 		func(peticionOllama) (string, string) {
 			b, _ := json.Marshal(Ficha{
 				Titulos:     map[string]string{"mercadolibre": largo},
@@ -188,16 +164,6 @@ func TestTituloLargoSeRecortaPorPalabra(t *testing.T) {
 	}
 }
 
-func TestVeredictoDesconocidoSeRechaza(t *testing.T) {
-	o := servidorFalso(t, []string{"modelo-texto", "modelo-vision"},
-		func(peticionOllama) (string, string) {
-			return `{"resultado":"si claro","nota":"x"}`, ""
-		})
-	if _, err := o.VerificarImagen(context.Background(), []byte("x"), "n", "m", "SKU"); err == nil {
-		t.Error("se aceptó un veredicto que no es ninguno de los tres válidos")
-	}
-}
-
 // Comprobar existe para dar el diagnóstico ANTES del lote; si el mensaje no
 // dice qué hacer, no sirve de nada.
 func TestComprobarDiceQueModeloFaltaYComoTraerlo(t *testing.T) {
@@ -209,7 +175,7 @@ func TestComprobarDiceQueModeloFaltaYComoTraerlo(t *testing.T) {
 		t.Fatal("no detectó que faltan los modelos configurados")
 	}
 	msg := err.Error()
-	for _, quiero := range []string{"ollama pull modelo-texto", "ollama pull modelo-vision", "otro-modelo:7b"} {
+	for _, quiero := range []string{"ollama pull modelo-texto", "otro-modelo:7b"} {
 		if !strings.Contains(msg, quiero) {
 			t.Errorf("el mensaje no menciona %q:\n%s", quiero, msg)
 		}
@@ -241,7 +207,7 @@ func TestServicioApagadoDaInstrucciones(t *testing.T) {
 }
 
 func TestModeloNoDescargadoSeExplicaConElPull(t *testing.T) {
-	o := servidorFalso(t, []string{"modelo-texto", "modelo-vision"},
+	o := servidorFalso(t, []string{"modelo-texto"},
 		func(peticionOllama) (string, string) {
 			return "", `model "modelo-texto" not found, try pulling it first`
 		})
@@ -267,7 +233,7 @@ func TestNuevoRechazaProveedorDesconocido(t *testing.T) {
 // de un modelo pequeño. Al comprador el código no le dice nada y en
 // MercadoLibre hunde la búsqueda, así que la ficha se rechaza y se reintenta.
 func TestTituloQueEmpiezaPorElSKUSeRechaza(t *testing.T) {
-	o := servidorFalso(t, []string{"modelo-texto", "modelo-vision"},
+	o := servidorFalso(t, []string{"modelo-texto"},
 		func(peticionOllama) (string, string) {
 			b, _ := json.Marshal(Ficha{
 				Titulos:     map[string]string{"mercadolibre": "HDWG780XZSTA 8TB N300 NAS"},
@@ -288,7 +254,7 @@ func TestTituloQueEmpiezaPorElSKUSeRechaza(t *testing.T) {
 // «sin descripción», con lo que el producto queda peor que si no se hubiera
 // tocado, porque ya nadie lo revisa.
 func TestDescripcionDemasiadoCortaSeRechaza(t *testing.T) {
-	o := servidorFalso(t, []string{"modelo-texto", "modelo-vision"},
+	o := servidorFalso(t, []string{"modelo-texto"},
 		func(peticionOllama) (string, string) {
 			b, _ := json.Marshal(Ficha{
 				Titulos:     map[string]string{"mercadolibre": "Disco Duro Toshiba N300 8TB"},
@@ -304,7 +270,7 @@ func TestDescripcionDemasiadoCortaSeRechaza(t *testing.T) {
 // Una respuesta vacía tiene que decir que está vacía, no «unexpected end of
 // JSON input», que manda a buscar el fallo donde no está.
 func TestRespuestaVaciaSeExplica(t *testing.T) {
-	o := servidorFalso(t, []string{"modelo-texto", "modelo-vision"},
+	o := servidorFalso(t, []string{"modelo-texto"},
 		func(peticionOllama) (string, string) { return "   ", "" })
 	_, err := o.GenerarFicha(context.Background(), "n", "m", "c", "SKU", "")
 	if err == nil {

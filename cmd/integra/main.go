@@ -75,8 +75,6 @@ func main() {
 		err = cmdSugerirCategorias(ctx)
 	case "reprocesar-imagenes":
 		err = cmdReprocesarImagenes(ctx)
-	case "verificar-imagenes":
-		err = cmdVerificarImagenes(ctx, os.Args[2:])
 	case "atributos":
 		err = cmdAtributos(ctx)
 	case "ordenes":
@@ -130,8 +128,6 @@ Uso:
   integra sugerir-categorias sugiere la categoría de MercadoLibre de cada rama
   integra reprocesar-imagenes transcodifica a JPEG los WebP del banco
   integra generar-contenido --ia redacta las fichas con el modelo configurado
-  integra verificar-imagenes [--todas] [--limite N]
-                            comprueba con IA que cada portada muestre su producto
   integra ia-probar         redacta una ficha de prueba y mide cuánto tarda
   integra atributos         trae los atributos que exigen los marketplaces
   integra ordenes           monta en Odoo los pedidos pendientes
@@ -597,111 +593,6 @@ func generarConIA(ctx context.Context, st *store.Store, fuentes []store.FuenteCo
 	fmt.Printf("\n  Fichas redactadas  %d\n", hechas)
 	if fallos > 0 {
 		fmt.Printf("  Con fallo          %d  (se pueden reintentar relanzando el comando)\n", fallos)
-	}
-	return nil
-}
-
-// cmdVerificarImagenes pregunta a la IA, foto por foto, si la portada de cada
-// producto muestra de verdad ese producto. Los "no corresponde" aparecen en
-// la cola de atención para que una persona cambie la portada.
-func cmdVerificarImagenes(ctx context.Context, args []string) error {
-	todas := false
-	// El límite existe para poder mirar cómo va antes de comprometerse a
-	// varias horas de GPU, y para partir el lote en tandas: como cada
-	// veredicto se guarda al vuelo, cortar y retomar no repite trabajo.
-	limite := 0
-	for i, a := range args {
-		switch {
-		case a == "--todas" || a == "-todas":
-			todas = true
-		case a == "--limite" || a == "-limite":
-			if i+1 < len(args) {
-				n, err := strconv.Atoi(args[i+1])
-				if err != nil || n <= 0 {
-					return fmt.Errorf("--limite necesita un número positivo, no %q", args[i+1])
-				}
-				limite = n
-			}
-		}
-	}
-	cfg, err := config.Load()
-	if err != nil {
-		return err
-	}
-	st, err := store.New(ctx, cfg.DatabaseURL)
-	if err != nil {
-		return err
-	}
-	defer st.Close()
-	alm, err := imagen.NuevoAlmacen(cfg.ImageDir)
-	if err != nil {
-		return err
-	}
-
-	pendientes, err := st.ImagenesParaVerificar(ctx, todas)
-	if err != nil {
-		return err
-	}
-	if len(pendientes) == 0 {
-		fmt.Println("No hay imágenes pendientes de verificar.")
-		return nil
-	}
-	total := len(pendientes)
-	if limite > 0 && limite < total {
-		pendientes = pendientes[:limite]
-		fmt.Printf("Limitado a %d de %d pendientes.\n", limite, total)
-	}
-
-	cli, err := ia.Nuevo(ctx)
-	if err != nil {
-		return err
-	}
-	fmt.Printf("Verificando %d imágenes contra su producto con %s…\n\n",
-		len(pendientes), cli.Descripcion())
-
-	conteo := map[string]int{}
-	fallos := 0
-	for i, p := range pendientes {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		datos, err := alm.Leer(p.Ruta)
-		if err != nil {
-			fallos++
-			continue
-		}
-		v, err := cli.VerificarImagen(ctx, datos, p.Nombre, p.Marca, p.SKU)
-		if err != nil {
-			fallos++
-			fmt.Printf("  ✗ %-30s %v\n", recorta(p.SKU, 30), err)
-			if fallos >= 3 && i+1 == fallos {
-				return fmt.Errorf("las tres primeras imágenes fallaron con %s; "+
-					"revisa que el modelo de visión sea multimodal (IA_MODELO_VISION)", cli.Descripcion())
-			}
-			continue
-		}
-		if err := st.GuardarVerificacion(ctx, p.ProductoID, p.ImagenID, v.Resultado, v.Nota); err != nil {
-			return err
-		}
-		conteo[v.Resultado]++
-		if v.Resultado == "no_corresponde" {
-			fmt.Printf("  ⚠ %-30s %s\n", recorta(p.SKU, 30), v.Nota)
-		}
-		if (i+1)%50 == 0 {
-			fmt.Printf("  … %d/%d\n", i+1, len(pendientes))
-		}
-	}
-
-	// Los veredictos alimentan la cola de atención (portada equivocada).
-	if err := st.RecalcularAtencion(ctx); err != nil {
-		return err
-	}
-
-	fmt.Printf("\n  Corresponden    %d\n", conteo["corresponde"])
-	fmt.Printf("  Dudosas         %d\n", conteo["dudosa"])
-	fmt.Printf("  No corresponden %d  (en la cola de atención)\n", conteo["no_corresponde"])
-	if fallos > 0 {
-		fmt.Printf("  Con fallo       %d\n", fallos)
 	}
 	return nil
 }

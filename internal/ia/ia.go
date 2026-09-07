@@ -1,4 +1,4 @@
-// Package ia redacta fichas de producto y verifica imágenes.
+// Package ia redacta fichas de producto.
 //
 // Hay dos proveedores y el mismo contrato para ambos: un modelo local servido
 // por Ollama, que es el que se usa por defecto, y la API de Claude para cuando
@@ -21,8 +21,6 @@ import (
 type Proveedor interface {
 	// GenerarFicha redacta títulos por canal, descripción y especificaciones.
 	GenerarFicha(ctx context.Context, nombre, marca, categoria, sku, specsPrevias string) (*Ficha, error)
-	// VerificarImagen decide si una foto descargada muestra el producto.
-	VerificarImagen(ctx context.Context, jpeg []byte, nombre, marca, sku string) (*Veredicto, error)
 	// Comprobar valida la configuración ANTES de empezar un lote: que el
 	// servicio responda, que el modelo esté descargado y que sepa devolver
 	// JSON. Descubrir eso en el producto 300 de 450 es la peor forma de
@@ -42,12 +40,6 @@ type Ficha struct {
 type Spec struct {
 	Clave string `json:"clave"`
 	Valor string `json:"valor"`
-}
-
-// Veredicto es el resultado de comparar una foto con su producto.
-type Veredicto struct {
-	Resultado string `json:"resultado"` // corresponde | dudosa | no_corresponde
-	Nota      string `json:"nota"`
 }
 
 // Nuevo devuelve el proveedor configurado, ya comprobado.
@@ -148,21 +140,6 @@ Responde ÚNICAMENTE el objeto JSON, sin markdown ni explicación.`,
 		nombre, marca, categoria, sku, specsPrevias)
 }
 
-func promptImagen(nombre, marca, sku string) string {
-	return fmt.Sprintf(`Esta foto se descargó de internet buscando el producto:
-- Nombre: %s
-- Marca: %s
-- SKU: %s
-
-¿La imagen muestra ESE producto (o su caja/empaque)? Ten en cuenta que puede
-ser otro ángulo, otro color de la misma referencia, o el empaque.
-
-Responde ÚNICAMENTE JSON: {"resultado": "corresponde" | "dudosa" | "no_corresponde", "nota": "razón en una frase"}.
-"dudosa" = podría ser, pero algo no cuadra (modelo distinto de la misma línea, capacidad diferente, accesorio en vez del producto).
-"no_corresponde" = claramente es otra cosa (otro producto, logo de otra tienda, imagen genérica).`,
-		nombre, marca, sku)
-}
-
 // --------------------------------------------------------------- validación
 
 // validarFicha rechaza lo que no sirve para publicar.
@@ -225,15 +202,6 @@ func recortarTitulo(t string, max int) string {
 		corte = corte[:i]
 	}
 	return strings.TrimRight(strings.TrimSpace(corte), " -–—/,;:")
-}
-
-func validarVeredicto(v *Veredicto, sku string) error {
-	v.Resultado = strings.ToLower(strings.TrimSpace(v.Resultado))
-	switch v.Resultado {
-	case "corresponde", "dudosa", "no_corresponde":
-		return nil
-	}
-	return fmt.Errorf("veredicto desconocido %q para %q", v.Resultado, sku)
 }
 
 // extraerJSON tolera que el modelo envuelva el JSON en cercas de markdown o lo
