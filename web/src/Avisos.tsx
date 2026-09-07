@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
+import { confirmar } from './escritorio/Dialogos'
 import { api, fecha, type ConfigSMTP, type DestinoAviso } from './api'
+import { SelectorVista, useVista } from './Vista'
 
 const SEVERIDADES = [
   { valor: 'critical', nombre: 'Solo lo crítico', pie: 'canal caído, credencial vencida' },
@@ -27,6 +29,9 @@ export function Avisos() {
   // El resultado de la prueba se enseña junto a su destino, no en una alerta
   // global: con varios configurados hay que saber cuál respondió.
   const [resultado, setResultado] = useState<Record<number, { ok: boolean; mensaje: string }>>({})
+  // «Detalles» son las filas de siempre, con destinatarios, último envío y
+  // el resultado de la prueba; «lista» es una línea por destino.
+  const [vista, setVista] = useVista('avisos', 'detalles', ['detalles', 'lista'])
 
   const cargar = useCallback(() => {
     setError(null)
@@ -57,9 +62,9 @@ export function Avisos() {
     // Borrar el último destino devuelve a Integra al silencio, y eso no se
     // nota hasta que hace falta un aviso.
     const ultimo = destinos.length === 1
-    if (!window.confirm(ultimo
+    if (!(await confirmar(ultimo
       ? `«${d.nombre}» es el único destino configurado. Si lo borras, los avisos de Integra dejarán de salir a ninguna parte. ¿Continuar?`
-      : `Se borrará el destino «${d.nombre}». ¿Continuar?`)) return
+      : `Se borrará el destino «${d.nombre}». ¿Continuar?`))) return
     try {
       await api.borrarDestinoAviso(d.id)
       cargar()
@@ -94,11 +99,45 @@ export function Avisos() {
       <section className="panel" data-guia="avi-destinos">
         <h2>Destinos por correo</h2>
         <div className="cuerpo">
+          <div className="filtros">
+            <SelectorVista modo={vista} onCambiar={setVista} admitidos={['detalles', 'lista']} />
+          </div>
           {cargando && <div className="vacio">Cargando…</div>}
           {!cargando && destinos.length === 0 && (
             <div className="vacio">Sin destinos. Crea uno para que los avisos salgan por correo.</div>
           )}
-          {destinos.map((d) => {
+          {vista === 'lista' && destinos.length > 0 && (
+            <div className="vista-lista">
+              {destinos.map((d) => {
+                const res = resultado[d.id]
+                return (
+                  <div key={d.id} className="fila-lista">
+                    <span className="principal" title={d.destinatarios.join(', ')}>
+                      <strong>{d.nombre}</strong>
+                      <span className="tenue"> · {d.destinatarios.length > 0 ? d.destinatarios.join(', ') : 'sin destinatarios'}</span>
+                    </span>
+                    <span className="dato">{NOMBRE_SEVERIDAD[d.min_severidad] ?? d.min_severidad}</span>
+                    {d.ultimo_envio && <span className="dato">último: {fecha(d.ultimo_envio)}</span>}
+                    {d.activo
+                      ? <span className="pastilla ok">Activo</span>
+                      : <span className="pastilla dudosa">Pausado</span>}
+                    {/* Un fallo no puede quedarse escondido por compacta que
+                        sea la fila: sale como pastilla con el motivo en el title. */}
+                    {d.ultimo_error && <span className="pastilla bloqueante" title={d.ultimo_error}>falló</span>}
+                    {res && <span className={`pastilla ${res.ok ? 'ok' : 'bloqueante'}`} title={res.mensaje}>{res.ok ? 'prueba ok' : 'prueba falló'}</span>}
+                    <span className="vista-acciones">
+                      <button onClick={() => void probar(d)} disabled={probando === d.id} title="Manda un correo de prueba ahora mismo">
+                        {probando === d.id ? 'Enviando…' : 'Probar'}
+                      </button>
+                      <button onClick={() => setEditando(d)}>Editar</button>
+                      <button onClick={() => void borrar(d)}>Borrar</button>
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+          {vista === 'detalles' && destinos.map((d) => {
             const res = resultado[d.id]
             return (
               <div key={d.id} className="fila-cuenta fila-apilable">

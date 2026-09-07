@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
+import { confirmar } from './escritorio/Dialogos'
 import { api, fecha, num, type CuentaCanal, type ResumenPublicacion, type EstadoDeProducto, type Situacion } from './api'
+import { SelectorVista, useVista } from './Vista'
 
 // Cómo se nombra y se pinta cada situación. «Sin publicar» no es un problema
 // —es el estado natural de un producto nuevo— y por eso no sale en rojo; lo
@@ -64,6 +66,9 @@ export function Publicacion() {
   const [situacion, setSituacion] = useState<Situacion | ''>('')
   const [buscando, setBuscando] = useState('')
   const [cargandoEstado, setCargandoEstado] = useState(true)
+  // Tabla por producto y canal, filas compactas, o una tarjeta por producto
+  // con sus canales dentro.
+  const [vista, setVista] = useVista('publicacion', 'detalles', ['detalles', 'lista', 'mosaico'])
 
   useEffect(() => {
     setCargandoEstado(true)
@@ -79,9 +84,9 @@ export function Publicacion() {
   // producto.
   async function activar(c: CuentaCanal, encender: boolean) {
     const nombre = NOMBRES[c.canal] ?? c.canal
-    if (!window.confirm(encender
+    if (!(await confirmar(encender
       ? `Se pondrán a la venta en ${nombre} todas las fichas que Integra tiene publicadas allí. ¿Continuar?`
-      : `Se retirarán de la venta en ${nombre} todas las fichas publicadas. Dejan de verse y de venderse hasta que vuelvas a activarlas. ¿Continuar?`)) return
+      : `Se retirarán de la venta en ${nombre} todas las fichas publicadas. Dejan de verse y de venderse hasta que vuelvas a activarlas. ¿Continuar?`))) return
 
     setOcupado(c.id)
     setError(null)
@@ -106,7 +111,7 @@ export function Publicacion() {
       const aviso = c.probada_ok === false
         ? `La última prueba de conexión de ${nombre} falló. Si planificas ahora, los envíos encolados fallarán uno a uno. ¿Continuar igualmente?`
         : `La conexión de ${nombre} nunca se probó. Los envíos que se encolen pueden fallar todos. ¿Continuar igualmente?`
-      if (!window.confirm(aviso)) return
+      if (!(await confirmar(aviso))) return
     }
     setOcupado(c.id)
     setError(null)
@@ -235,6 +240,7 @@ export function Publicacion() {
               <option value="pausado">Retirados por nosotros</option>
               <option value="retirado">Retirados por el canal</option>
             </select>
+            <SelectorVista modo={vista} onCambiar={setVista} admitidos={['detalles', 'lista', 'mosaico']} />
           </div>
 
           {cargandoEstado && <div className="vacio">Cargando…</div>}
@@ -242,7 +248,7 @@ export function Publicacion() {
             <div className="vacio">Ningún producto en esa situación.</div>
           )}
 
-          {estados.length > 0 && (
+          {estados.length > 0 && vista === 'detalles' && (
             <div className="tabla-envoltorio" data-guia="pub-tabla">
               <table className="tabla-tarjetas">
                 <thead>
@@ -274,6 +280,63 @@ export function Publicacion() {
                   )))}
                 </tbody>
               </table>
+            </div>
+          )}
+
+          {estados.length > 0 && vista === 'lista' && (
+            <div className="vista-lista">
+              {estados.map((e) => e.canales.map((c) => (
+                <div key={`${e.variante_id}-${c.cuenta_id}`} className="fila-lista">
+                  <span className="sku">{e.sku}</span>
+                  <span className="principal" title={e.titulo}>{e.titulo}</span>
+                  <span className="dato">{NOMBRES[c.canal] ?? c.canal}</span>
+                  <span className={`pastilla ${TONO[c.situacion] ?? 'aviso'}`}>
+                    {ETIQUETA[c.situacion] ?? c.situacion}
+                  </span>
+                  {/* El detalle, recortado a lo que quepa; entero en el title. */}
+                  <span className={`dato recorta ${c.situacion === 'no_publicable' ? 'error' : ''}`}
+                    style={{ maxWidth: '40%' }}
+                    title={[c.cambios?.length ? `falta enviar: ${c.cambios.join(', ')}` : '', ...(c.falta ?? [])].filter(Boolean).join(' · ')}>
+                    {c.cambios && c.cambios.length > 0 && `falta enviar: ${c.cambios.join(', ')}`}
+                    {c.falta && c.falta.length > 0 && (c.cambios?.length ? ' · ' : '') + c.falta.join(' · ')}
+                  </span>
+                </div>
+              )))}
+            </div>
+          )}
+
+          {/* En mosaico la tarjeta es el producto y dentro van sus canales:
+              es la pregunta que se hace aquí («¿cómo está este producto?»). */}
+          {estados.length > 0 && vista === 'mosaico' && (
+            <div className="vista-mosaico">
+              {estados.map((e) => (
+                <div key={e.variante_id} className="tarjeta-vista">
+                  <div className="cuerpo-tarjeta">
+                    <div className="titulo" title={e.titulo}>{e.titulo}</div>
+                    <div className="sku">{e.sku}</div>
+                    <div className="datos">
+                      {e.canales.map((c) => (
+                        <div key={c.cuenta_id}>
+                          <div className="fila">
+                            <span className="crece">{NOMBRES[c.canal] ?? c.canal}</span>
+                            <span className={`pastilla ${TONO[c.situacion] ?? 'aviso'}`}>
+                              {ETIQUETA[c.situacion] ?? c.situacion}
+                            </span>
+                          </div>
+                          {c.cambios && c.cambios.length > 0 && (
+                            <div className="mini-texto">falta enviar: {c.cambios.join(', ')}</div>
+                          )}
+                          {c.falta && c.falta.length > 0 && (
+                            <div className={`mini-texto ${c.situacion === 'no_publicable' ? 'error' : ''}`}>
+                              {c.falta.join(' · ')}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </div>

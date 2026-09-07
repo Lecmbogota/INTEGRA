@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react'
+import { confirmar } from './escritorio/Dialogos'
 import { api, money, num, type Categoria, type FiltroCatalogo, type Marca, type ResultadoPlantilla } from './api'
 import { Guia } from './Guia'
 import { PASOS_PLANTILLA } from './guias/plantilla'
@@ -96,7 +97,7 @@ export function PlantillaMasiva({ filtro, total, marcas, categorias, onFiltrar, 
     const aviso = `Se van a guardar ${num(previa.precios)} precios` +
       (previa.promociones > 0 ? ` y ${num(previa.promociones)} promociones` : '') +
       '.\n\nEsta operación no se puede deshacer. ¿Continuar?'
-    if (!window.confirm(aviso)) return
+    if (!(await confirmar(aviso))) return
 
     setOcupado('aplicar')
     setError(null)
@@ -118,10 +119,10 @@ export function PlantillaMasiva({ filtro, total, marcas, categorias, onFiltrar, 
 
   // Cerrar con un archivo ya revisado y sin aplicar tira a la basura el trabajo
   // de revisión; con una carga en curso, además, deja la duda de si se guardó.
-  function cerrar() {
+  async function cerrar() {
     if (ocupado !== null) return
     if (previa && !previa.aplicado &&
-      !window.confirm('Se perderá la revisión del archivo y habrá que volver a subirlo. ¿Cerrar?')) return
+      !(await confirmar('Se perderá la revisión del archivo y habrá que volver a subirlo. ¿Cerrar?'))) return
     onCerrar()
   }
 

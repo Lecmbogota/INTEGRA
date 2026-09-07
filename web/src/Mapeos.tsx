@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
+import { confirmar as preguntar } from './escritorio/Dialogos'
 import { api, money, num, type Mapeo } from './api'
+import { SelectorVista, useVista } from './Vista'
 
 const NOMBRES: Record<string, string> = {
   mercadolibre: 'MercadoLibre',
@@ -18,6 +20,7 @@ export function Mapeos({ canalInicial }: { canalInicial?: string } = {}) {
   const [confirmando, setConfirmando] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [soloDudosos, setSoloDudosos] = useState(false)
+  const [vista, setVista] = useVista('mapeos', 'detalles', ['detalles', 'lista'])
 
   const cargar = useCallback(() => {
     setCargando(true)
@@ -35,9 +38,9 @@ export function Mapeos({ canalInicial }: { canalInicial?: string } = {}) {
     // Solo se pregunta en las dudosas: confirmar es la acción de todos los días
     // y no hay endpoint para deshacerla, así que la pregunta se reserva para
     // donde equivocarse cuesta —publicar el catálogo en otra categoría.
-    if (dudoso(m) && !window.confirm(
+    if (dudoso(m) && !(await preguntar(
       `«${m.categoria_odoo}» no comparte vocabulario con «${m.categoria_canal_nombre}», así que la sugerencia probablemente esté mal. ` +
-      `Confirmarla hará que ${num(m.productos)} productos se publiquen ahí y no se puede deshacer desde esta pantalla. ¿Continuar?`)) return
+      `Confirmarla hará que ${num(m.productos)} productos se publiquen ahí y no se puede deshacer desde esta pantalla. ¿Continuar?`))) return
 
     setConfirmando(m.id)
     setError(null)
@@ -99,12 +102,14 @@ export function Mapeos({ canalInicial }: { canalInicial?: string } = {}) {
               onChange={(e) => setSoloDudosos(e.target.checked)} />
             Solo dudosas
           </label>
+          <SelectorVista modo={vista} onCambiar={setVista} admitidos={['detalles', 'lista']} />
         </div>
       </div>
 
       {error && <div className="aviso-caja">Error: {error}</div>}
 
       <div className="tabla-envoltorio">
+        {vista === 'detalles' && (
         <table className="tabla-tarjetas" data-guia="catg-tabla">
           <thead>
             <tr>
@@ -153,6 +158,34 @@ export function Mapeos({ canalInicial }: { canalInicial?: string } = {}) {
             ))}
           </tbody>
         </table>
+        )}
+        {vista === 'lista' && visibles.length > 0 && (
+          <div className="vista-lista">
+            {visibles.map((m) => (
+              <div key={m.id} className="fila-lista">
+                <span className="principal" title={m.categoria_odoo}>
+                  {dudoso(m) && !m.confirmado && <span title="poca coherencia con el origen">⚠ </span>}
+                  {m.categoria_odoo}
+                </span>
+                <span className="dato">→</span>
+                <span className={`principal ${dudoso(m) ? 'tenue' : ''}`} title={`${m.categoria_canal_id} · ${m.categoria_canal_nombre}`}>
+                  {m.categoria_canal_nombre}
+                </span>
+                <span className="num">{num(m.productos)} prod.</span>
+                <span className="num">{money(m.valor_inventario)}</span>
+                <span className="vista-acciones">
+                  {m.confirmado
+                    ? <span className="pastilla ok">Confirmada</span>
+                    : (
+                      <button onClick={() => void confirmar(m)} disabled={confirmando === m.id}>
+                        {confirmando === m.id ? 'Confirmando…' : 'Confirmar'}
+                      </button>
+                    )}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
         {cargando && <div className="vacio">Cargando sugerencias…</div>}
         {!cargando && visibles.length === 0 && (
           <div className="vacio">

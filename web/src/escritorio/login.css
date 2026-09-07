@@ -1,0 +1,70 @@
+/* Pantalla de bloqueo: fondo del escritorio desenfocado, reloj arriba, el
+   usuario en el centro. Se funde con el escritorio al entrar. */
+.bloqueo {
+  position: fixed; inset: 0; overflow: hidden; color: #fff;
+  display: grid; grid-template-rows: auto 1fr auto; align-items: center; justify-items: center;
+  font-family: var(--fuente-cuerpo);
+  animation: bloqueo-entrar .5s ease-out both;
+}
+.bloqueo-fondo { position: absolute; inset: -24px; background-size: cover; background-position: center; filter: blur(14px) saturate(1.15); transform: scale(1.04); }
+.bloqueo-velo { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(10,14,24,.35), rgba(10,14,24,.55)); }
+.bloqueo > * { position: relative; }
+
+.bloqueo-reloj { margin-top: 8vh; text-align: center; text-shadow: 0 2px 18px rgba(0,0,0,.45); }
+.bloqueo-hora { font-family: var(--fuente-titular); font-size: clamp(56px, 9vw, 96px); font-weight: 600; line-height: 1; letter-spacing: -.02em; }
+.bloqueo-fecha { font-size: clamp(15px, 2vw, 20px); opacity: .9; margin-top: 8px; text-transform: capitalize; }
+
+.bloqueo-centro { display: flex; flex-direction: column; align-items: center; gap: 14px; width: min(92vw, 380px); }
+.bloqueo-avatar {
+  width: 112px; height: 112px; border-radius: 50%;
+  display: grid; place-items: center; font-family: var(--fuente-titular); font-size: 48px; font-weight: 600;
+  background: rgba(255,255,255,.18); border: 2px solid rgba(255,255,255,.45);
+  backdrop-filter: blur(10px); box-shadow: 0 10px 30px rgba(0,0,0,.35);
+}
+.bloqueo-avatar img { width: 62px; height: auto; filter: drop-shadow(0 2px 6px rgba(0,0,0,.35)); }
+.bloqueo-form { display: flex; flex-direction: column; align-items: center; gap: 10px; width: 100%; }
+.bloqueo-nombre { font-family: var(--fuente-titular); font-size: 26px; font-weight: 600; text-shadow: 0 2px 12px rgba(0,0,0,.4); }
+.bloqueo-sub { font-size: 14px; opacity: .85; margin-top: -6px; }
+.bloqueo-error { background: rgba(220,38,38,.85); color: #fff; padding: 6px 12px; border-radius: 8px; font-size: 13px; }
+.bloqueo-campo {
+  display: flex; align-items: center; width: 100%;
+  background: rgba(255,255,255,.16); border: 1px solid rgba(255,255,255,.35); border-radius: 10px;
+  backdrop-filter: blur(10px); overflow: hidden;
+}
+.bloqueo-campo:focus-within { border-color: rgba(255,255,255,.8); background: rgba(255,255,255,.22); }
+.bloqueo-campo input {
+  flex: 1; min-width: 0; background: none; border: none; color: #fff; font-size: 16px; padding: 12px 14px; outline: none;
+}
+.bloqueo-campo input::placeholder { color: rgba(255,255,255,.7); }
+.bloqueo-campo input:-webkit-autofill { -webkit-text-fill-color: #fff; -webkit-box-shadow: 0 0 0 100px rgba(60,70,90,.9) inset; }
+.bloqueo-campo button {
+  width: 46px; height: 46px; border: none; background: rgba(255,255,255,.22); color: #fff; font-size: 20px;
+  cursor: pointer; min-height: 0; padding: 0; border-radius: 0;
+}
+.bloqueo-campo button:hover:not(:disabled) { background: rgba(255,255,255,.35); }
+.bloqueo-enlace { background: none; border: none; color: rgba(255,255,255,.85); text-decoration: underline; cursor: pointer; font-size: 13px; min-height: 0; padding: 4px 8px; }
+.bloqueo-enlace:hover:not(:disabled) { color: #fff; background: none; }
+.bloqueo-espera { display: inline-block; width: 18px; height: 18px; border: 2px solid rgba(255,255,255,.4); border-top-color: #fff; border-radius: 50%; animation: bloqueo-girar .8s linear infinite; }
+
+.bloqueo-pie { margin-bottom: 4vh; display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; }
+.bloqueo-logo { height: 34px; width: auto; opacity: .9; filter: drop-shadow(0 2px 8px rgba(0,0,0,.4)); }
+.bloqueo-nota { font-size: 12px; opacity: .8; max-width: 92vw; }
+.bloqueo-nota code { font-family: var(--fuente-mono); background: rgba(0,0,0,.35); padding: 2px 6px; border-radius: 4px; }
+
+/* Al entrar: la pantalla se aleja y se funde; el escritorio llega detrás. */
+.bloqueo.saliendo { animation: bloqueo-salir .75s ease-in forwards; pointer-events: none; }
+.bloqueo.saliendo .bloqueo-fondo { filter: blur(0) saturate(1); transition: filter .7s ease; }
+.pantalla.entrando { animation: escritorio-entrar .9s ease-out both; }
+
+@keyframes bloqueo-entrar { from { opacity: 0 } to { opacity: 1 } }
+@keyframes bloqueo-salir { to { opacity: 0; transform: scale(1.06) } }
+@keyframes escritorio-entrar { from { opacity: 0; transform: scale(.985) } to { opacity: 1; transform: none } }
+@keyframes bloqueo-girar { to { transform: rotate(360deg) } }
+
+@media (max-width: 600px) {
+  .bloqueo-reloj { margin-top: 5vh; }
+  .bloqueo-avatar { width: 88px; height: 88px; font-size: 38px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bloqueo, .bloqueo.saliendo, .pantalla.entrando { animation-duration: .01s; }
+}

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { confirmar } from './escritorio/Dialogos'
 import { api, money, type EdicionProducto, type Marca, type Producto } from './api'
 import { Promocion } from './Promocion'
 import { Guia } from './Guia'
@@ -147,9 +148,9 @@ export function Editar({ producto, marcas, onCerrar, onGuardado, pestanaInicial 
   // Cerrar tira el formulario entero, y se cierra con Escape o tocando fuera
   // de la hoja —en un móvil eso pasa sin querer—, así que si hay algo escrito
   // se pregunta antes.
-  const intentarCerrar = useCallback(() => {
+  const intentarCerrar = useCallback(async () => {
     if (guardando) return
-    if (sucio && !window.confirm('Hay cambios sin guardar en esta ficha. ¿Cerrar y descartarlos?')) return
+    if (sucio && !(await confirmar('Hay cambios sin guardar en esta ficha. ¿Cerrar y descartarlos?'))) return
     onCerrar()
   }, [guardando, sucio, onCerrar])
 

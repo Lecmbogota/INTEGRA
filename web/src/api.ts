@@ -48,6 +48,9 @@ export interface Producto {
   // Qué explica cada problema, por su código. Un aviso sin motivo no se
   // puede juzgar ni resolver.
   detalles: Record<string, string> | null
+  // sha256 de la portada ('' si no tiene foto). Con él las vistas de mosaico
+  // e iconos pintan `/imagenes/<sha>/miniatura_300` sin pedir la galería.
+  portada_sha: string
 }
 
 // EdicionProducto son los campos propiedad de Integra. Solo se envían las

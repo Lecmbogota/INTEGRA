@@ -150,10 +150,49 @@ export type Preferencias = {
   // Iconos del escritorio, en orden de cuadrícula.
   escritorio: AppId[]
   tamanoTexto: 'normal' | 'grande'
-  // Widgets del escritorio visibles.
-  widgets: { atencion: boolean; pedidos: boolean; actividad: boolean }
   // Barra de tareas: centrada (estilo moderno) o a la izquierda.
   barraCentrada: boolean
+  // Dónde está cada cosa en el escritorio: posición libre de cada icono y
+  // la lista de widgets con su posición y tamaño. Todo en celdas de la
+  // cuadrícula invisible (CELDA px), para que al soltar quede alineado.
+  disposicion: Disposicion
+}
+
+// ------------------------------------------------------------- escritorio
+
+// Lado de la celda de la cuadrícula invisible del escritorio, en px.
+export const CELDA = 24
+
+// Tipos de widget. Cada bloque del Panel es uno, más los del sistema.
+export type WidgetTipo =
+  | 'cifras'          // las tarjetas del resumen (productos, marcas, con precio, con stock, publicables, atención, excluidos)
+  | 'cifra'           // una sola cifra grande, elegible (config.clave)
+  | 'bloqueos'        // qué bloquea la publicación
+  | 'bodegas'         // existencias por bodega
+  | 'prioridad'       // qué publicar primero
+  | 'pedidos'         // resumen de pedidos
+  | 'actividad'       // trabajos en marcha y última sincronización
+  | 'sincronizacion'  // botón Sincronizar ahora + última vez
+  | 'reloj'           // hora y fecha grandes
+  | 'atajos'          // accesos rápidos a apps elegidas (config.apps)
+
+export type WidgetInstancia = {
+  id: string
+  tipo: WidgetTipo
+  // Posición y tamaño en celdas.
+  x: number
+  y: number
+  w: number
+  h: number
+  // Ajustes propios del tipo (la cifra que enseña, las apps del atajo…).
+  config?: Record<string, unknown>
+}
+
+export type Disposicion = {
+  // Posición en celdas de cada icono del escritorio. Un icono sin posición
+  // se coloca en el primer hueco libre de la cuadrícula.
+  iconos: Partial<Record<AppId, { x: number; y: number }>>
+  widgets: WidgetInstancia[]
 }
 
 // ------------------------------------------------------------------ datos

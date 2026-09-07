@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { confirmar } from './escritorio/Dialogos'
 import { api, fecha, num, type Actividad as Datos, type Evento, type TareaEnCurso } from './api'
+import { SelectorVista, useVista } from './Vista'
 
 // Nombres de los tipos de trabajo. Los internos —publicar_producto,
 // confirmar_despacho— son claves del dominio y no cambian; aquí se traducen
@@ -33,6 +35,8 @@ export function Actividad() {
   const [error, setError] = useState<string | null>(null)
   const [cargando, setCargando] = useState(true)
   const temporizador = useRef<number | null>(null)
+  // La línea de tiempo: con detalle bajo cada línea, o una línea por evento.
+  const [vista, setVista] = useVista('actividad', 'detalles', ['detalles', 'lista'])
 
   const cargar = useCallback(() => {
     api.actividad()
@@ -56,8 +60,8 @@ export function Actividad() {
 
   async function gobernar(accion: 'cancelar' | 'reintentar', t: TareaEnCurso) {
     const nombre = (TAREAS[t.tipo] ?? t.tipo).toLowerCase()
-    if (accion === 'cancelar' && !window.confirm(
-      `Se retirarán de la cola ${num(t.pendientes)} trabajos de «${nombre}» que aún no han empezado. Lo que ya está enviándose al canal no se detiene. ¿Continuar?`)) return
+    if (accion === 'cancelar' && !(await confirmar(
+      `Se retirarán de la cola ${num(t.pendientes)} trabajos de «${nombre}» que aún no han empezado. Lo que ya está enviándose al canal no se detiene. ¿Continuar?`))) return
     setError(null)
     try {
       await api.gobernarCola(accion, t.tipo)
@@ -115,8 +119,27 @@ export function Actividad() {
       <section className="panel" data-guia="act-historia">
         <h2>Lo que ha pasado</h2>
         <div className="cuerpo">
+          <div className="filtros">
+            <SelectorVista modo={vista} onCambiar={setVista} admitidos={['detalles', 'lista']} />
+          </div>
           {datos && datos.historia.length === 0 && <div className="vacio">Todavía no hay nada anotado.</div>}
-          {(datos?.historia ?? []).map((e, i) => <FilaEvento key={`${e.cuando}-${i}`} e={e} />)}
+          {vista === 'detalles' && (datos?.historia ?? []).map((e, i) => <FilaEvento key={`${e.cuando}-${i}`} e={e} />)}
+          {vista === 'lista' && (datos?.historia ?? []).length > 0 && (
+            <div className="vista-lista">
+              {(datos?.historia ?? []).map((e, i) => (
+                <div key={`${e.cuando}-${i}`} className="fila-lista">
+                  <span className={`pastilla ${e.malo ? 'bloqueante' : e.clase === 'persona' ? 'dudosa' : 'aviso'}`}>
+                    {CLASES[e.clase] ?? e.clase}
+                  </span>
+                  <span className="principal" title={e.detalle || undefined}>
+                    {TAREAS[e.titulo] ?? e.titulo}
+                    {e.detalle && <span className="tenue"> — {e.detalle}</span>}
+                  </span>
+                  <span className="dato">{e.quien && `${e.quien} · `}{fecha(e.cuando)}</span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </section>
 

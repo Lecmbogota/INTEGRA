@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { confirmar } from './escritorio/Dialogos'
 import { api, fecha, money, type CuentaCanal, type Oferta } from './api'
 
 const ESTADOS: Record<string, { texto: string; clase: string }> = {
@@ -81,7 +82,7 @@ export function Promocion({ varianteId, precioBase }: {
     const aviso = o.estado === 'vigente'
       ? `Se cancela la promoción de ${money(o.precio)} en ${o.canal} y el producto vuelve al precio normal. ¿Cancelarla?`
       : `Se cancela la promoción de ${money(o.precio)} programada en ${o.canal}. ¿Cancelarla?`
-    if (!window.confirm(aviso)) return
+    if (!(await confirmar(aviso))) return
 
     setCancelando(o.id)
     setError(null)

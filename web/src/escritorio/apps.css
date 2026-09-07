@@ -26,3 +26,42 @@
   border-radius: 0; border: none; margin: 0;
 }
 .app-dialogo .nota-carga { padding: 24px; color: var(--texto-tenue); }
+
+/* Dentro de una ventana el título ya está en la barra de título: la
+   cabecera de la pantalla se queda solo con sus acciones, en una fila fina
+   alineada a la derecha; si no tiene ninguna, desaparece. */
+.ventana-cuerpo header.principal { margin: 0 0 10px; justify-content: flex-end; min-height: 0; }
+.ventana-cuerpo header.principal > div:first-child { display: none; }
+.ventana-cuerpo header.principal:not(:has(button, a, input, select)) { display: none; }
+.ventana-cuerpo header.principal button { min-height: 32px; padding: 4px 12px; font-size: 13px; }
+
+/* La fila de filtros pasa a ser la barra de herramientas de la pantalla:
+   una banda al inicio del panel, con controles compactos y los filtros de
+   sí/no como chips. Los componentes no cambian: es solo cómo se ven aquí. */
+.ventana-cuerpo .panel > .cuerpo > .filtros:first-child {
+  margin: -8px -16px 12px; padding: 8px 12px; gap: 8px;
+  background: var(--surface-3); border-bottom: 1px solid var(--borde);
+  border-radius: 12px 12px 0 0;
+}
+.ventana-cuerpo .panel > h2 + .cuerpo > .filtros:first-child { border-radius: 0; }
+.ventana-cuerpo .filtros input:not([type=checkbox]):not([type=radio]):not([type=color]),
+.ventana-cuerpo .filtros select {
+  min-height: 32px; padding: 4px 10px; font-size: 13px; border-radius: 8px;
+}
+.ventana-cuerpo .filtros select { max-width: 260px; }
+.ventana-cuerpo .filtros .casilla {
+  display: inline-flex; align-items: center; gap: 6px; margin: 0;
+  padding: 5px 11px; border: 1px solid var(--borde); border-radius: 999px;
+  background: var(--surface-1); font-size: 13px; line-height: 1; cursor: pointer;
+  user-select: none; white-space: nowrap;
+}
+.ventana-cuerpo .filtros .casilla:hover { border-color: var(--borde-fuerte); }
+.ventana-cuerpo .filtros .casilla input[type=checkbox] { display: none; }
+.ventana-cuerpo .filtros .casilla::before {
+  content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--borde-fuerte); flex: none;
+}
+.ventana-cuerpo .filtros .casilla:has(input:checked) {
+  background: color-mix(in srgb, var(--acento) 12%, transparent); border-color: var(--acento); color: var(--acento);
+}
+.ventana-cuerpo .filtros .casilla:has(input:checked)::before { background: var(--acento); }
+.ventana-cuerpo .filtros .grupo-badges .badge { min-height: 30px; }

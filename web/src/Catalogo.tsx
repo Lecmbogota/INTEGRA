@@ -4,6 +4,7 @@ import { Editar, type Pestana } from './Editar'
 import { EdicionMasiva } from './EdicionMasiva'
 import { PlantillaMasiva } from './PlantillaMasiva'
 import { useEvento, useSistemaOpcional } from './escritorio/sistema'
+import { Imagen, SelectorVista, useVista } from './Vista'
 
 const POR_PAGINA = 50
 // Motivos que impiden publicar. Un producto con cualquiera de ellos no sale al
@@ -79,6 +80,9 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = nul
   // El resultado de publicar tiene su propio aviso: el banner de error de la
   // pantalla dice «no se pudo cargar la lista», que no es lo que pasó.
   const [aviso, setAviso] = useState<{ texto: string; malo: boolean } | null>(null)
+  // Cómo se enseña la lista: la tabla de siempre o tarjetas/iconos con la
+  // portada, que es lo que permite reconocer un producto de un vistazo.
+  const [vista, setVista] = useVista('catalogo', 'detalles')
 
   // Dentro del escritorio, los diálogos se abren en su propia ventana y el
   // resultado vuelve por el bus (la ventana no sabe quién la abrió). Fuera
@@ -335,6 +339,7 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = nul
                 onChange={(e) => setVerExcluidos(e.target.checked)} />
               Ver excluidos
             </label>
+            <SelectorVista modo={vista} onCambiar={setVista} />
           </div>
         </div>
 
@@ -381,6 +386,7 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = nul
         )}
 
         <div className="tabla-envoltorio">
+          {vista === 'detalles' && (
           <table className="tabla-tarjetas">
             <thead>
               <tr data-guia="cat-cabecera">
@@ -479,6 +485,101 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = nul
               ))}
             </tbody>
           </table>
+          )}
+
+          {/* Los otros modos comparten las mismas acciones que la fila de la
+              tabla: casilla, vista previa al pulsar, Editar y Ver en canales. */}
+          {vista === 'lista' && items.length > 0 && (
+            <div className="vista-lista">
+              {items.map((p) => (
+                <div key={p.id} className={`fila-lista clicable ${marcados.has(p.id) ? 'marcada' : ''}`}
+                  onClick={() => onVer(p.id)} title="Ver cómo quedaría en cada canal">
+                  <input type="checkbox" checked={marcados.has(p.id)} aria-label="Seleccionar"
+                    onClick={(e) => e.stopPropagation()} onChange={() => alternar(p.id)} />
+                  <span className="sku">{p.sku || '—'}</span>
+                  <span className="principal" title={p.nombre}>
+                    {p.nombre}{p.marca && <span className="tenue"> · {p.marca}</span>}
+                  </span>
+                  <span className="num"><PrecioDe p={p} /></span>
+                  <span className="dato">{num(p.stock)} en stock</span>
+                  <span className="etiquetas">
+                    <Publicacion p={p} />
+                    <Estado p={p} resumen />
+                  </span>
+                  <span className="vista-acciones">
+                    <button onClick={(e) => { e.stopPropagation(); onVer(p.id) }}>Ver en canales</button>
+                    <button onClick={(e) => { e.stopPropagation(); abrirEditor(p, 'venta') }}
+                      title="Editar precio, marca y descripción">
+                      Editar
+                    </button>
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {vista === 'mosaico' && items.length > 0 && (
+            <div className="vista-mosaico">
+              {items.map((p) => (
+                <div key={p.id} className={`tarjeta-vista clicable ${marcados.has(p.id) ? 'marcada' : ''}`}
+                  onClick={() => onVer(p.id)} title="Ver cómo quedaría en cada canal">
+                  <Imagen sha={p.portada_sha}>
+                    <label className="marca-esquina" onClick={(e) => e.stopPropagation()}>
+                      <input type="checkbox" checked={marcados.has(p.id)} aria-label="Seleccionar"
+                        onChange={() => alternar(p.id)} />
+                    </label>
+                  </Imagen>
+                  <div className="cuerpo-tarjeta">
+                    <div className="titulo" title={p.nombre}>{p.nombre}</div>
+                    <div className="sku">{p.sku || '—'}{p.marca ? ` · ${p.marca}` : ''}</div>
+                    <div className="datos">
+                      <span className="num"><PrecioDe p={p} /></span>
+                      <span>{num(p.stock)} en stock</span>
+                      {p.categoria && <span className="recorta" title={p.categoria}>{p.categoria}</span>}
+                    </div>
+                    <div className="etiquetas">
+                      <Publicacion p={p} />
+                      <Estado p={p} />
+                    </div>
+                    <div className="vista-acciones">
+                      <button onClick={(e) => { e.stopPropagation(); onVer(p.id) }}>Ver en canales</button>
+                      <button onClick={(e) => { e.stopPropagation(); abrirEditor(p, 'venta') }}
+                        title="Editar precio, marca y descripción">
+                        Editar
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {vista === 'iconos' && items.length > 0 && (
+            <div className="vista-iconos">
+              {items.map((p) => (
+                <div key={p.id} className={`icono-vista clicable ${marcados.has(p.id) ? 'marcada' : ''}`}
+                  onClick={() => onVer(p.id)} title={`${p.nombre} — ver cómo quedaría en cada canal`}>
+                  <Imagen sha={p.portada_sha}>
+                    <label className="marca-esquina" onClick={(e) => e.stopPropagation()}>
+                      <input type="checkbox" checked={marcados.has(p.id)} aria-label="Seleccionar"
+                        onChange={() => alternar(p.id)} />
+                    </label>
+                  </Imagen>
+                  <div className="nombre">{p.nombre}</div>
+                  <div className="sku">{p.sku || '—'}</div>
+                  <div className="etiquetas">
+                    <Publicacion p={p} resumen />
+                    <Estado p={p} resumen />
+                  </div>
+                  <div className="vista-acciones">
+                    <button onClick={(e) => { e.stopPropagation(); onVer(p.id) }}>Ver</button>
+                    <button onClick={(e) => { e.stopPropagation(); abrirEditor(p, 'venta') }}>Editar</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
           {pagina === null && cargando && !error && (
             <div className="vacio">Cargando productos…</div>
           )}
@@ -565,6 +666,72 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = nul
             onCambio()
           }} />
       )}
+    </>
+  )
+}
+
+// Piezas que comparten lista, mosaico e iconos. La tabla de «detalles»
+// conserva su marcado propio: es la vista de siempre y no se toca.
+function PrecioDe({ p }: { p: Producto }) {
+  if (p.precio !== null) return <strong>{money(p.precio)}</strong>
+  if (p.precio_sugerido !== null) {
+    return (
+      <span className="tenue" title="Sugerencia según tarifas de Odoo; asígnalo al editar">
+        ({money(p.precio_sugerido)}) sugerido
+      </span>
+    )
+  }
+  return <span className="tenue">Sin precio</span>
+}
+
+// Dónde vive la ficha. Con `resumen`, una sola pastilla que cuenta canales,
+// para los sitios donde no cabe una por canal.
+function Publicacion({ p, resumen = false }: { p: Producto; resumen?: boolean }) {
+  const canales = p.publicado ?? []
+  if (canales.length === 0) return <span className="pastilla dudosa">Sin publicar</span>
+  if (resumen) {
+    const conError = canales.some((c) => c.estado === 'error')
+    return (
+      <span className={`pastilla ${conError ? 'bloqueante' : 'ok'}`}
+        title={canales.map((c) => `${NOMBRE_CANAL[c.canal] ?? c.canal}: ${ESTADO_CANAL[c.estado] ?? c.estado}`).join(' · ')}>
+        {canales.length === 1 ? (NOMBRE_CANAL[canales[0].canal] ?? canales[0].canal) : `${canales.length} canales`}
+      </span>
+    )
+  }
+  return (
+    <>
+      {canales.map((c) => (
+        <span key={c.canal}
+          className={`pastilla ${c.estado === 'published' ? 'ok' : c.estado === 'error' ? 'bloqueante' : 'aviso'}`}
+          title={ESTADO_CANAL[c.estado] ?? c.estado}>
+          {NOMBRE_CANAL[c.canal] ?? c.canal}
+        </span>
+      ))}
+    </>
+  )
+}
+
+// Los problemas de la ficha. Con `resumen`, una pastilla que los cuenta y
+// los enumera en el title, que es lo que cabe en una línea o bajo un icono.
+function Estado({ p, resumen = false }: { p: Producto; resumen?: boolean }) {
+  if (p.problemas.length === 0) return <span className="pastilla ok">Listo</span>
+  if (resumen) {
+    const grave = p.problemas.some(bloqueante)
+    return (
+      <span className={`pastilla ${grave ? 'bloqueante' : 'aviso'}`}
+        title={p.problemas.map((m) => p.detalles?.[m] || motivo(m)).join(' · ')}>
+        {p.problemas.length === 1 ? motivo(p.problemas[0]) : `${p.problemas.length} problemas`}
+      </span>
+    )
+  }
+  return (
+    <>
+      {p.problemas.map((m) => (
+        <span key={m} title={p.detalles?.[m] || motivo(m)}
+          className={`pastilla ${bloqueante(m) ? 'bloqueante' : 'aviso'}`}>
+          {motivo(m)}
+        </span>
+      ))}
     </>
   )
 }

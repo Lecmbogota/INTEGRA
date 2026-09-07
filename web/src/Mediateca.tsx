@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
+import { confirmar } from './escritorio/Dialogos'
 import { api, fecha, num, type FiltroMediateca, type ImagenBanco, type OrdenMediateca, type PaginaImagenes, type Producto } from './api'
 import { EditorFoto } from './EditorFoto'
 import { Guia } from './Guia'
 import { PASOS_ASIGNAR } from './guias/mediateca'
 import { useEvento, useSistemaOpcional } from './escritorio/sistema'
+import { Imagen, SelectorVista, useVista } from './Vista'
 
 // El banco de imágenes visto entero, no producto a producto.
 //
@@ -70,6 +72,10 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
   // Lo que se va a asignar: una foto desde su botón, o todas las marcadas.
   const [asignando, setAsignando] = useState<ImagenBanco[] | null>(null)
   const [editando, setEditando] = useState<ImagenBanco | null>(null)
+  // La galería de siempre es «mosaico»; «iconos» es la misma con celdas más
+  // grandes y solo la foto y el SKU; «detalles» y «lista» son para comparar
+  // medidas y pesos, que en una cuadrícula de fotos no se leen.
+  const [vista, setVista] = useVista('mediateca', 'mosaico')
 
   // Dentro del escritorio, editar y asignar se abren en su propia ventana y
   // el resultado vuelve por el bus. Fuera (sistema null) siguen siendo
@@ -193,7 +199,7 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
   async function borrar(ids: number[]) {
     if (ids.length === 0) return
     const cuantas = ids.length === 1 ? 'esta imagen' : `${num(ids.length)} imágenes`
-    if (!window.confirm(`Se borra del disco ${cuantas}. No las usa ningún producto, así que ninguna ficha se queda sin foto. ¿Continuar?`)) return
+    if (!(await confirmar(`Se borra del disco ${cuantas}. No las usa ningún producto, así que ninguna ficha se queda sin foto. ¿Continuar?`))) return
     setOcupada(true)
     setError(null)
     try {
@@ -303,6 +309,7 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
                   onClick={() => { setOrden(id); setOffset(0) }}>{nombre}</button>
               ))}
             </div>
+            <SelectorVista modo={vista} onCambiar={setVista} />
           </div>
 
           {/* Acciones sobre lo marcado. Asignar vale para cualquier foto;
@@ -341,7 +348,158 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
             </div>
           )}
 
-          {items.length > 0 && (
+          {items.length > 0 && vista === 'detalles' && (
+            <div className="tabla-envoltorio">
+              <table className="tabla-tarjetas">
+                <thead>
+                  <tr>
+                    <th className="col-check">
+                      <input type="checkbox" checked={todasMarcadas} onChange={marcarTodas}
+                        title="Marcar las de esta página" />
+                    </th>
+                    <th></th>
+                    <th>Medidas</th>
+                    <th className="num">Peso</th>
+                    <th>Formato</th>
+                    <th>Origen</th>
+                    <th>Productos</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {items.map((i) => {
+                    const huerfana = i.productos.length === 0
+                    const pequena = Math.min(i.ancho, i.alto) < 600
+                    const marcada = seleccion.has(i.id)
+                    return (
+                      <tr key={i.id} className={marcada ? 'marcada' : ''}>
+                        <td className="col-check">
+                          <input type="checkbox" checked={marcada} onChange={() => alternar(i.id)}
+                            title="Marcar para asignar o borrar en lote" />
+                        </td>
+                        <td>
+                          <img src={`/imagenes/${i.sha256}/miniatura_300`} alt="" loading="lazy"
+                            className="abrible" title="Ver en grande" onClick={() => setVisor(i)}
+                            style={{ width: 48, height: 48, objectFit: 'contain', display: 'block' }} />
+                        </td>
+                        <td className="titulo-tarjeta">
+                          {i.ancho}×{i.alto}
+                          {pequena && <span className="pastilla bloqueante" style={{ marginLeft: 6 }}>pequeña</span>}
+                        </td>
+                        <td className="num" data-etiqueta="Peso">{tamano(i.bytes)}</td>
+                        <td data-etiqueta="Formato">{i.formato}</td>
+                        <td className="tenue" data-etiqueta="Origen"
+                          title={`${ORIGEN[i.origen] ?? i.origen}${i.origen_ref ? ` · ${i.origen_ref}` : ''} · ${fecha(i.creada)}`}>
+                          {ORIGEN[i.origen] ?? i.origen}{i.origen_ref ? ` · ${dominio(i.origen_ref)}` : ''} · {fecha(i.creada)}
+                        </td>
+                        <td className="apilada" data-etiqueta="Productos">
+                          <div className="etiquetas">
+                            {huerfana
+                              ? <span className="pastilla aviso">Sin producto</span>
+                              : i.productos.map((p) => (
+                                <button key={p.variante_id} type="button" className="enlace"
+                                  title={`${p.nombre}${p.principal ? ' · portada' : ''}`}
+                                  onClick={() => onVer?.(p.variante_id)}>
+                                  {p.principal ? '★ ' : ''}{p.sku || p.nombre}
+                                </button>
+                              ))}
+                          </div>
+                        </td>
+                        <td className="acciones-fila">
+                          <button onClick={() => editarFoto(i)} disabled={ocupada}
+                            title="Recortar, girar, encajar en cuadrado, cambiar formato">Editar</button>
+                          <button onClick={() => asignarFotos([i])} disabled={ocupada}
+                            title="Enlazarla a un producto sin volver a subirla">Asignar</button>
+                          {huerfana && (
+                            <button onClick={() => void borrar([i.id])} disabled={ocupada}>Borrar</button>
+                          )}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {items.length > 0 && vista === 'lista' && (
+            <div className="vista-lista">
+              {items.map((i) => {
+                const huerfana = i.productos.length === 0
+                const pequena = Math.min(i.ancho, i.alto) < 600
+                const marcada = seleccion.has(i.id)
+                return (
+                  <div key={i.id} className={`fila-lista ${marcada ? 'marcada' : ''}`}>
+                    <input type="checkbox" checked={marcada} onChange={() => alternar(i.id)}
+                      title="Marcar para asignar o borrar en lote" />
+                    <img className="mini-foto abrible" src={`/imagenes/${i.sha256}/miniatura_300`} alt=""
+                      loading="lazy" title="Ver en grande" onClick={() => setVisor(i)}
+                      style={{ objectFit: 'contain', cursor: 'zoom-in' }} />
+                    <span className="principal">
+                      {huerfana
+                        ? <span className="tenue">Sin producto</span>
+                        : i.productos.map((p) => (
+                          <button key={p.variante_id} type="button" className="enlace"
+                            title={`${p.nombre}${p.principal ? ' · portada' : ''}`}
+                            onClick={() => onVer?.(p.variante_id)}>
+                            {p.principal ? '★ ' : ''}{p.sku || p.nombre}
+                          </button>
+                        ))}
+                    </span>
+                    <span className="dato">{i.ancho}×{i.alto}</span>
+                    {pequena && <span className="pastilla bloqueante">pequeña</span>}
+                    <span className="num">{tamano(i.bytes)}</span>
+                    <span className="dato">{i.formato}</span>
+                    <span className="dato" title={`${ORIGEN[i.origen] ?? i.origen}${i.origen_ref ? ` · ${i.origen_ref}` : ''} · ${fecha(i.creada)}`}>
+                      {ORIGEN[i.origen] ?? i.origen}{i.origen_ref ? ` · ${dominio(i.origen_ref)}` : ''}
+                    </span>
+                    <span className="vista-acciones">
+                      <button onClick={() => editarFoto(i)} disabled={ocupada}>Editar</button>
+                      <button onClick={() => asignarFotos([i])} disabled={ocupada}>Asignar</button>
+                      {huerfana && <button onClick={() => void borrar([i.id])} disabled={ocupada}>Borrar</button>}
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+
+          {/* Iconos: solo la foto y el SKU, en celdas anchas. Es para mirar
+              fotos, no fichas; editar y asignar aparecen al pasar por encima. */}
+          {items.length > 0 && vista === 'iconos' && (
+            <div className="vista-iconos grande">
+              {items.map((i) => {
+                const huerfana = i.productos.length === 0
+                const marcada = seleccion.has(i.id)
+                const principal = i.productos.find((p) => p.principal) ?? i.productos[0]
+                return (
+                  <div key={i.id} className={`icono-vista ${marcada ? 'marcada' : ''}`}>
+                    <Imagen sha={i.sha256} titulo="Ver en grande" onClick={() => setVisor(i)}>
+                      <label className="marca-esquina" onClick={(e) => e.stopPropagation()}>
+                        <input type="checkbox" checked={marcada} onChange={() => alternar(i.id)}
+                          title="Marcar para asignar o borrar en lote" />
+                      </label>
+                    </Imagen>
+                    {huerfana
+                      ? <span className="pastilla aviso">Sin producto</span>
+                      : (
+                        <button type="button" className="enlace sku" title={principal.nombre}
+                          onClick={() => onVer?.(principal.variante_id)}>
+                          {principal.sku || principal.nombre}{i.productos.length > 1 ? ` +${i.productos.length - 1}` : ''}
+                        </button>
+                      )}
+                    <div className="vista-acciones">
+                      <button onClick={() => editarFoto(i)} disabled={ocupada}>Editar</button>
+                      <button onClick={() => asignarFotos([i])} disabled={ocupada}>Asignar</button>
+                      {huerfana && <button onClick={() => void borrar([i.id])} disabled={ocupada}>Borrar</button>}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+
+          {items.length > 0 && vista === 'mosaico' && (
             <div className="galeria">
               {items.map((i) => {
                 const huerfana = i.productos.length === 0

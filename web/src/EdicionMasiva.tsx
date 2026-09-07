@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { confirmar } from './escritorio/Dialogos'
 import { api, money, num, type OperacionMasiva, type ResultadoMasivo } from './api'
 import { Guia } from './Guia'
 import { PASOS_EDICION_MASIVA } from './guias/edicionMasiva'
@@ -85,7 +86,7 @@ export function EdicionMasiva({ ids, filtro, totalFiltro, onCerrar, onAplicado }
     if (!previa) return
     const aviso = `Se va a ${QUE_HACE[tipo]} en ${num(previa.afectados)} productos.\n\n` +
       'Esta operación no se puede deshacer. ¿Continuar?'
-    if (!window.confirm(aviso)) return
+    if (!(await confirmar(aviso))) return
 
     setOcupado('aplicando')
     setError(null)

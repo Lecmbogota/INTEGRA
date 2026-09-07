@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
+import { confirmar } from './escritorio/Dialogos'
 import { api, fecha, type UsuarioCuenta } from './api'
+import { SelectorVista, useVista } from './Vista'
 
 // Qué puede hacer cada rol. Está escrito aquí porque es la pregunta que se
 // hace quien va a dar de alta a alguien, y tenerlo solo en el código obliga a
@@ -29,6 +31,7 @@ export function Usuarios() {
   const [error, setError] = useState<string | null>(null)
   const [editando, setEditando] = useState<UsuarioCuenta | 'nuevo' | null>(null)
   const [ocupado, setOcupado] = useState<number | null>(null)
+  const [vista, setVista] = useVista('usuarios', 'detalles', ['detalles', 'lista'])
 
   const cargar = useCallback(() => {
     setError(null)
@@ -47,8 +50,8 @@ export function Usuarios() {
       setError('No puedes quitarle el acceso al único administrador activo: nadie podría volver a entrar a gestionar usuarios.')
       return
     }
-    if (u.active && !window.confirm(
-      `${u.name} dejará de poder entrar. Su rastro en la auditoría se conserva. ¿Continuar?`)) return
+    if (u.active && !(await confirmar(
+      `${u.name} dejará de poder entrar. Su rastro en la auditoría se conserva. ¿Continuar?`))) return
 
     setOcupado(u.id)
     setError(null)
@@ -77,10 +80,36 @@ export function Usuarios() {
       <section className="panel">
         <h2>Cuentas</h2>
         <div className="cuerpo">
+          <div className="filtros">
+            <SelectorVista modo={vista} onCambiar={setVista} admitidos={['detalles', 'lista']} />
+          </div>
           {cargando && <div className="vacio">Cargando…</div>}
           {!cargando && usuarios.length === 0 && <div className="vacio">Sin usuarios.</div>}
 
-          {usuarios.length > 0 && (
+          {usuarios.length > 0 && vista === 'lista' && (
+            <div className="vista-lista">
+              {usuarios.map((u) => (
+                <div key={u.id} className="fila-lista">
+                  <span className="principal" title={u.email}>
+                    {u.name}<span className="tenue"> · {u.email}</span>
+                  </span>
+                  <span className="dato">{NOMBRE_ROL[u.role] ?? u.role}</span>
+                  <span className="dato">{u.last_login_at ? fecha(u.last_login_at) : 'nunca'}</span>
+                  {u.active
+                    ? <span className="pastilla ok">Activo</span>
+                    : <span className="pastilla dudosa">Sin acceso</span>}
+                  <span className="vista-acciones">
+                    <button onClick={() => setEditando(u)}>Editar</button>
+                    <button onClick={() => void alternarAcceso(u)} disabled={ocupado === u.id}>
+                      {u.active ? 'Quitar acceso' : 'Devolver acceso'}
+                    </button>
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {usuarios.length > 0 && vista === 'detalles' && (
             <div className="tabla-envoltorio">
               <table className="tabla-tarjetas" data-guia="usr-tabla">
                 <thead>

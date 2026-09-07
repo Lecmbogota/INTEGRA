@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import { api, fecha, money, num, type CuentaCanal, type Orden, type ResumenOrdenes } from './api'
+import { SelectorVista, useVista } from './Vista'
 
 const ESTADOS: Record<string, { texto: string; clase: string }> = {
   received: { texto: 'Recibido', clase: 'aviso' },
@@ -27,6 +28,9 @@ export function Pedidos() {
   const [filtro, setFiltro] = useState('')
   const [abierta, setAbierta] = useState<number | null>(null)
   const temporizador = useRef<number | null>(null)
+  // Tabla, filas compactas o tarjetas. Sin foto que enseñar, «iconos» no
+  // aporta nada aquí y no se ofrece.
+  const [vista, setVista] = useVista('pedidos', 'detalles', ['detalles', 'lista', 'mosaico'])
 
   const cargar = useCallback(() => {
     setRefrescando(true)
@@ -124,6 +128,130 @@ export function Pedidos() {
 
   const visibles = filtro === '' ? ordenes : ordenes.filter((o) => o.estado === filtro)
 
+  // El detalle desplegado de un pedido es el mismo en los tres modos: en la
+  // tabla va dentro de una fila extra; en lista y mosaico, bajo la fila o la
+  // tarjeta. Por eso se pinta desde una sola función.
+  const detalleDe = (o: Orden) => {
+    const lineas = o.lineas ?? []
+    return (
+      <>
+        {o.error && (
+          <div className="aviso-caja">
+            {o.error}
+            {o.intentos > 0 && ` (${num(o.intentos)} intento${o.intentos === 1 ? '' : 's'})`}
+          </div>
+        )}
+        {o.odoo_pedido_id && (
+          <div className="tenue mini-texto">
+            Pedido de venta en Odoo: #{o.odoo_pedido_id}
+          </div>
+        )}
+        {(o.envio > 0 || o.impuesto > 0) && (
+          <div className="tenue mini-texto">
+            Envío {money(o.envio)} · Impuestos {money(o.impuesto)}
+          </div>
+        )}
+        {lineas.length === 0
+          ? <div className="tenue mini-texto">Este pedido llegó sin líneas de detalle.</div>
+          : (
+            <table className="tabla-lineas tabla-tarjetas">
+              <thead>
+                <tr><th>SKU</th><th>Producto</th><th className="num">Cant.</th><th className="num">Precio</th></tr>
+              </thead>
+              <tbody>
+                {lineas.map((l) => (
+                  <tr key={l.id}>
+                    <td className="sku ancha">
+                      {l.sku}
+                      {l.variante_id === null &&
+                        <span className="pastilla bloqueante" title="Este SKU no existe en el catálogo de Integra">sin mapear</span>}
+                    </td>
+                    <td className="apilada" data-etiqueta="Producto">{l.titulo}</td>
+                    <td className="num" data-etiqueta="Cant.">{num(l.cantidad)}</td>
+                    <td className="num" data-etiqueta="Precio">{money(l.precio_unitario)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        {/* Solo lo que aún no está en Odoo ni canceló el canal:
+            el servidor rechaza el resto, pero no hay por qué
+            ofrecer un botón que no puede hacer nada. */}
+        {(o.estado === 'failed' || o.estado === 'received' || o.estado === 'mapped') && (
+          <div className="grupo-acciones">
+            <button className="primario" data-guia="ped-reintentar" onClick={() => void reintentar(o)}
+              disabled={reintentando === o.id}>
+              {reintentando === o.id ? 'Reintentando…' : 'Reintentar en Odoo'}
+            </button>
+          </div>
+        )}
+
+        {/* Despacho. Solo tiene sentido con el pedido ya en
+            Odoo: lo que dispara el aviso al canal es el
+            albarán validado allí, no este botón. */}
+        {o.estado === 'created_in_odoo' && (
+          <div className="bloque-despacho" data-guia="ped-despacho">
+            {o.despachado_at ? (
+              <div className="fila">
+                <span className="pastilla ok">Canal avisado</span>
+                <span className="tenue mini-texto">
+                  {fecha(o.despachado_at)}
+                  {o.guia && ` · guía ${o.guia}`}
+                  {o.transportadora && ` · ${o.transportadora}`}
+                </span>
+              </div>
+            ) : (
+              <>
+                {/* Que el canal no lo sepa no es un detalle:
+                    MercadoLibre y Falabella miden el tiempo
+                    hasta el despacho y, pasado el plazo,
+                    cancelan y bajan la reputación. */}
+                <div className="fila">
+                  <span className="pastilla aviso">{o.canal} no sabe que salió</span>
+                  {o.salida_bodega_at && (
+                    <span className="tenue mini-texto">
+                      salió de bodega el {fecha(o.salida_bodega_at)}
+                    </span>
+                  )}
+                </div>
+                {o.despacho_error && (
+                  <div className="mini-texto error" data-guia="ped-despacho-error">
+                    Último intento falló: {o.despacho_error}
+                  </div>
+                )}
+                <div className="fila apila-movil" data-guia="ped-guia">
+                  <input className="expande" placeholder="Guía (opcional)"
+                    aria-label="Número de guía"
+                    value={guias[o.id]?.guia ?? o.guia}
+                    onChange={(e) => setGuias({
+                      ...guias,
+                      [o.id]: { guia: e.target.value, transportadora: guias[o.id]?.transportadora ?? o.transportadora },
+                    })} />
+                  <input className="expande" placeholder="Transportadora (opcional)"
+                    aria-label="Transportadora"
+                    value={guias[o.id]?.transportadora ?? o.transportadora}
+                    onChange={(e) => setGuias({
+                      ...guias,
+                      [o.id]: { guia: guias[o.id]?.guia ?? o.guia, transportadora: e.target.value },
+                    })} />
+                  <button className="primario" onClick={() => void despachar(o)}
+                    disabled={despachando === o.id}>
+                    {despachando === o.id ? 'Avisando…' : 'Avisar del despacho'}
+                  </button>
+                </div>
+                <div className="tenue mini-texto">
+                  Sin guía también vale: en Mercado Envíos y en Falabella la
+                  logística la pone el canal. El aviso sale en cuanto el albarán
+                  esté validado en Odoo.
+                </div>
+              </>
+            )}
+          </div>
+        )}
+      </>
+    )
+  }
+
   return (
     <>
       <header className="principal">
@@ -177,9 +305,11 @@ export function Pedidos() {
                 ? `Los ${num(ordenes.length)} pedidos más recientes`
                 : `${num(visibles.length)} de ${num(ordenes.length)} pedidos`}
             </span>
+            <SelectorVista modo={vista} onCambiar={setVista} admitidos={['detalles', 'lista', 'mosaico']} />
           </div>
         </div>
         <div className="tabla-envoltorio" data-guia="ped-tabla">
+          {vista === 'detalles' && (
           <table className="tabla-tarjetas">
             <thead>
               <tr>
@@ -191,7 +321,6 @@ export function Pedidos() {
               {visibles.map((o) => {
                 const e = ESTADOS[o.estado] ?? { texto: o.estado, clase: 'aviso' }
                 const desplegada = abierta === o.id
-                const lineas = o.lineas ?? []
                 return (
                   <Fragment key={o.id}>
                     <tr className="clicable"
@@ -214,119 +343,7 @@ export function Pedidos() {
                     {desplegada && (
                       <tr>
                         <td colSpan={7} className="detalle-pedido" data-guia="ped-detalle">
-                          {o.error && (
-                            <div className="aviso-caja">
-                              {o.error}
-                              {o.intentos > 0 && ` (${num(o.intentos)} intento${o.intentos === 1 ? '' : 's'})`}
-                            </div>
-                          )}
-                          {o.odoo_pedido_id && (
-                            <div className="tenue mini-texto">
-                              Pedido de venta en Odoo: #{o.odoo_pedido_id}
-                            </div>
-                          )}
-                          {(o.envio > 0 || o.impuesto > 0) && (
-                            <div className="tenue mini-texto">
-                              Envío {money(o.envio)} · Impuestos {money(o.impuesto)}
-                            </div>
-                          )}
-                          {lineas.length === 0
-                            ? <div className="tenue mini-texto">Este pedido llegó sin líneas de detalle.</div>
-                            : (
-                              <table className="tabla-lineas tabla-tarjetas">
-                                <thead>
-                                  <tr><th>SKU</th><th>Producto</th><th className="num">Cant.</th><th className="num">Precio</th></tr>
-                                </thead>
-                                <tbody>
-                                  {lineas.map((l) => (
-                                    <tr key={l.id}>
-                                      <td className="sku ancha">
-                                        {l.sku}
-                                        {l.variante_id === null &&
-                                          <span className="pastilla bloqueante" title="Este SKU no existe en el catálogo de Integra">sin mapear</span>}
-                                      </td>
-                                      <td className="apilada" data-etiqueta="Producto">{l.titulo}</td>
-                                      <td className="num" data-etiqueta="Cant.">{num(l.cantidad)}</td>
-                                      <td className="num" data-etiqueta="Precio">{money(l.precio_unitario)}</td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            )}
-                          {/* Solo lo que aún no está en Odoo ni canceló el canal:
-                              el servidor rechaza el resto, pero no hay por qué
-                              ofrecer un botón que no puede hacer nada. */}
-                          {(o.estado === 'failed' || o.estado === 'received' || o.estado === 'mapped') && (
-                            <div className="grupo-acciones">
-                              <button className="primario" data-guia="ped-reintentar" onClick={() => void reintentar(o)}
-                                disabled={reintentando === o.id}>
-                                {reintentando === o.id ? 'Reintentando…' : 'Reintentar en Odoo'}
-                              </button>
-                            </div>
-                          )}
-
-                          {/* Despacho. Solo tiene sentido con el pedido ya en
-                              Odoo: lo que dispara el aviso al canal es el
-                              albarán validado allí, no este botón. */}
-                          {o.estado === 'created_in_odoo' && (
-                            <div className="bloque-despacho" data-guia="ped-despacho">
-                              {o.despachado_at ? (
-                                <div className="fila">
-                                  <span className="pastilla ok">Canal avisado</span>
-                                  <span className="tenue mini-texto">
-                                    {fecha(o.despachado_at)}
-                                    {o.guia && ` · guía ${o.guia}`}
-                                    {o.transportadora && ` · ${o.transportadora}`}
-                                  </span>
-                                </div>
-                              ) : (
-                                <>
-                                  {/* Que el canal no lo sepa no es un detalle:
-                                      MercadoLibre y Falabella miden el tiempo
-                                      hasta el despacho y, pasado el plazo,
-                                      cancelan y bajan la reputación. */}
-                                  <div className="fila">
-                                    <span className="pastilla aviso">{o.canal} no sabe que salió</span>
-                                    {o.salida_bodega_at && (
-                                      <span className="tenue mini-texto">
-                                        salió de bodega el {fecha(o.salida_bodega_at)}
-                                      </span>
-                                    )}
-                                  </div>
-                                  {o.despacho_error && (
-                                    <div className="mini-texto error" data-guia="ped-despacho-error">
-                                      Último intento falló: {o.despacho_error}
-                                    </div>
-                                  )}
-                                  <div className="fila apila-movil" data-guia="ped-guia">
-                                    <input className="expande" placeholder="Guía (opcional)"
-                                      aria-label="Número de guía"
-                                      value={guias[o.id]?.guia ?? o.guia}
-                                      onChange={(e) => setGuias({
-                                        ...guias,
-                                        [o.id]: { guia: e.target.value, transportadora: guias[o.id]?.transportadora ?? o.transportadora },
-                                      })} />
-                                    <input className="expande" placeholder="Transportadora (opcional)"
-                                      aria-label="Transportadora"
-                                      value={guias[o.id]?.transportadora ?? o.transportadora}
-                                      onChange={(e) => setGuias({
-                                        ...guias,
-                                        [o.id]: { guia: guias[o.id]?.guia ?? o.guia, transportadora: e.target.value },
-                                      })} />
-                                    <button className="primario" onClick={() => void despachar(o)}
-                                      disabled={despachando === o.id}>
-                                      {despachando === o.id ? 'Avisando…' : 'Avisar del despacho'}
-                                    </button>
-                                  </div>
-                                  <div className="tenue mini-texto">
-                                    Sin guía también vale: en Mercado Envíos y en Falabella la
-                                    logística la pone el canal. El aviso sale en cuanto el albarán
-                                    esté validado en Odoo.
-                                  </div>
-                                </>
-                              )}
-                            </div>
-                          )}
+                          {detalleDe(o)}
                         </td>
                       </tr>
                     )}
@@ -335,6 +352,75 @@ export function Pedidos() {
               })}
             </tbody>
           </table>
+          )}
+
+          {vista === 'lista' && visibles.length > 0 && (
+            <div className="vista-lista">
+              {visibles.map((o) => {
+                const e = ESTADOS[o.estado] ?? { texto: o.estado, clase: 'aviso' }
+                const desplegada = abierta === o.id
+                return (
+                  <Fragment key={o.id}>
+                    <div className="fila-lista clicable" onClick={() => setAbierta(desplegada ? null : o.id)}>
+                      <IconoCanal canal={o.canal} />
+                      <span className="sku">{o.numero || o.external_id}</span>
+                      <span className="principal" title={o.comprador || ''}>
+                        {o.comprador || <span className="tenue">—</span>}
+                      </span>
+                      <span className="dato">{fecha(o.fecha_pedido)}</span>
+                      <span className="num"><strong>{money(o.total)}</strong></span>
+                      <span className={`pastilla ${e.clase}`}>{e.texto}</span>
+                      <span className="vista-acciones">
+                        <button className="enlace" aria-expanded={desplegada}
+                          onClick={(ev) => { ev.stopPropagation(); setAbierta(desplegada ? null : o.id) }}>
+                          {desplegada ? 'Ocultar detalle' : 'Ver detalle'}
+                        </button>
+                      </span>
+                    </div>
+                    {desplegada && <div className="vista-detalle detalle-pedido">{detalleDe(o)}</div>}
+                  </Fragment>
+                )
+              })}
+            </div>
+          )}
+
+          {vista === 'mosaico' && visibles.length > 0 && (
+            <div className="vista-mosaico">
+              {visibles.map((o) => {
+                const e = ESTADOS[o.estado] ?? { texto: o.estado, clase: 'aviso' }
+                const desplegada = abierta === o.id
+                return (
+                  <Fragment key={o.id}>
+                    <div className="tarjeta-vista clicable" onClick={() => setAbierta(desplegada ? null : o.id)}>
+                      <div className="cuerpo-tarjeta">
+                        <div className="fila">
+                          <IconoCanal canal={o.canal} />
+                          <div className="crece">
+                            <div className="titulo">{o.numero || o.external_id}</div>
+                            <div className="sku">{o.canal}</div>
+                          </div>
+                        </div>
+                        <div className="datos">
+                          <span className="recorta" title={o.comprador || ''}>{o.comprador || '—'}</span>
+                          <span className="num"><strong>{money(o.total)}</strong></span>
+                          <span>{fecha(o.fecha_pedido)}</span>
+                        </div>
+                        <div className="etiquetas"><span className={`pastilla ${e.clase}`}>{e.texto}</span></div>
+                        <div className="vista-acciones">
+                          <button className="enlace" aria-expanded={desplegada}
+                            onClick={(ev) => { ev.stopPropagation(); setAbierta(desplegada ? null : o.id) }}>
+                            {desplegada ? 'Ocultar detalle' : 'Ver detalle'}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                    {desplegada && <div className="vista-detalle detalle-pedido">{detalleDe(o)}</div>}
+                  </Fragment>
+                )
+              })}
+            </div>
+          )}
+
           {!cargado && <div className="vacio">Cargando pedidos…</div>}
           {cargado && ordenes.length === 0 && (
             <div className="vacio">
@@ -349,6 +435,16 @@ export function Pedidos() {
         </div>
       </section>
     </>
+  )
+}
+
+// Sin logotipos de los canales en el proyecto, el icono son las dos primeras
+// letras del canal; el nombre completo va en el title.
+function IconoCanal({ canal }: { canal: string }) {
+  return (
+    <span className="icono-canal" title={canal} aria-label={canal}>
+      {canal.slice(0, 2).toUpperCase()}
+    </span>
   )
 }
 

@@ -1,7 +1,7 @@
 import {
   createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode,
 } from 'react'
-import type { AppId, Fondo, Preferencias } from './tipos'
+import type { AppId, Disposicion, Fondo, Preferencias, WidgetInstancia, WidgetTipo } from './tipos'
 import { APPS, ORDEN_APPS } from './apps'
 import { useSesion } from './sesion'
 
@@ -58,6 +58,34 @@ export const FONDOS: { id: string; nombre: string; css: string }[] = [
 // Ancladas por defecto: las seis secciones del día a día.
 const ANCLADAS_DEFECTO: AppId[] = ['panel', 'catalogo', 'mediateca', 'publicacion', 'pedidos', 'actividad']
 
+// Disposición inicial de los widgets, en celdas de 24 px, pensada para
+// 1920×1080 (78×41 celdas útiles descontando la barra y el margen). Los
+// iconos van a la izquierda (se autocolocan en columnas); los widgets ocupan
+// la mitad derecha: reloj arriba a la derecha, las cifras a su izquierda,
+// debajo tres columnas (bloqueos | pedidos+actividad | sincronizar+bodegas)
+// y la lista de prioridad ancha abajo. En pantallas menores el escritorio
+// los encaja dentro del área sin tocar lo guardado.
+function disposicionPorDefecto(): Disposicion {
+  const w = (id: string, tipo: WidgetTipo, x: number, y: number, w: number, h: number): WidgetInstancia =>
+    ({ id, tipo, x, y, w, h })
+  return {
+    iconos: {},
+    widgets: [
+      w('reloj', 'reloj', 62, 0, 16, 7),
+      w('cifras', 'cifras', 32, 0, 29, 7),
+      w('bloqueos', 'bloqueos', 32, 8, 15, 12),
+      w('pedidos', 'pedidos', 48, 8, 13, 6),
+      w('actividad', 'actividad', 48, 15, 13, 5),
+      w('sincronizacion', 'sincronizacion', 62, 8, 16, 5),
+      w('bodegas', 'bodegas', 62, 14, 16, 6),
+      w('prioridad', 'prioridad', 32, 21, 46, 20),
+    ],
+  }
+}
+
+// La configuración la usa para «Restablecer disposición».
+export { disposicionPorDefecto }
+
 function preferenciasPorDefecto(): Preferencias {
   return {
     tema: 'sistema',
@@ -65,9 +93,63 @@ function preferenciasPorDefecto(): Preferencias {
     ancladas: ANCLADAS_DEFECTO.filter(id => APPS[id]),
     escritorio: ORDEN_APPS.filter(id => APPS[id]?.enEscritorio),
     tamanoTexto: 'normal',
-    widgets: { atencion: true, pedidos: true, actividad: true },
     barraCentrada: true,
+    disposicion: disposicionPorDefecto(),
   }
+}
+
+// Tipos de widget válidos. Es un objeto y no una lista para que TypeScript
+// avise si aparece un tipo nuevo en tipos.ts y se olvida aquí.
+const TIPOS: Record<WidgetTipo, true> = {
+  cifras: true, cifra: true, bloqueos: true, bodegas: true, prioridad: true,
+  pedidos: true, actividad: true, sincronizacion: true, reloj: true, atajos: true,
+}
+
+const esEntero = (n: unknown): n is number => typeof n === 'number' && Number.isInteger(n) && n >= 0
+
+// Sanea una disposición guardada: iconos de apps conocidas con posición
+// entera, widgets de tipo conocido con geometría entera (tamaño ≥ 1). Lo que
+// no cuadre se descarta en vez de romper el escritorio.
+function sanearDisposicion(g: unknown): Disposicion | null {
+  if (!g || typeof g !== 'object') return null
+  const d = g as Partial<Disposicion>
+  if (!Array.isArray(d.widgets) || !d.iconos || typeof d.iconos !== 'object') return null
+  const iconos: Disposicion['iconos'] = {}
+  for (const [id, p] of Object.entries(d.iconos as Record<string, unknown>)) {
+    if (!APPS[id as AppId] || !p || typeof p !== 'object') continue
+    const { x, y } = p as { x?: unknown; y?: unknown }
+    if (esEntero(x) && esEntero(y)) iconos[id as AppId] = { x, y }
+  }
+  const vistos = new Set<string>()
+  const widgets: WidgetInstancia[] = []
+  for (const w of d.widgets as unknown[]) {
+    if (!w || typeof w !== 'object') continue
+    const i = w as Partial<WidgetInstancia>
+    if (typeof i.tipo !== 'string' || !TIPOS[i.tipo as WidgetTipo]) continue
+    if (!esEntero(i.x) || !esEntero(i.y) || !esEntero(i.w) || !esEntero(i.h) || i.w < 1 || i.h < 1) continue
+    const id = typeof i.id === 'string' && i.id && !vistos.has(i.id) ? i.id : `${i.tipo}-${widgets.length}-${Date.now().toString(36)}`
+    vistos.add(id)
+    widgets.push({
+      id, tipo: i.tipo as WidgetTipo, x: i.x, y: i.y, w: i.w, h: i.h,
+      ...(i.config && typeof i.config === 'object' ? { config: i.config as Record<string, unknown> } : {}),
+    })
+  }
+  return { iconos, widgets }
+}
+
+// Migración desde las prefs anteriores, que tenían `widgets: {atencion,
+// pedidos, actividad}` como interruptores: se parte de la disposición por
+// defecto y se quita lo que el usuario había apagado (atención era lo que
+// hoy es «bloqueos»).
+function migrarWidgetsViejos(viejo: unknown): Disposicion {
+  const base = disposicionPorDefecto()
+  if (!viejo || typeof viejo !== 'object') return base
+  const v = viejo as Record<string, unknown>
+  const apagados = new Set<WidgetTipo>()
+  if (v.atencion === false) apagados.add('bloqueos')
+  if (v.pedidos === false) apagados.add('pedidos')
+  if (v.actividad === false) apagados.add('actividad')
+  return { ...base, widgets: base.widgets.filter(w => !apagados.has(w.tipo)) }
 }
 
 // Fotos de Unsplash incluidas. Se enlazan a su CDN (images.unsplash.com),
@@ -124,7 +206,7 @@ function cargar(usuarioId: number): Preferencias {
   try {
     const crudo = localStorage.getItem(claveDe(usuarioId))
     if (!crudo) return base
-    const g = JSON.parse(crudo) as Partial<Preferencias>
+    const g = JSON.parse(crudo) as Partial<Preferencias> & { widgets?: unknown }
     const soloConocidas = (xs: unknown): AppId[] | null =>
       Array.isArray(xs) ? (xs as AppId[]).filter(id => typeof id === 'string' && APPS[id]) : null
     return {
@@ -133,8 +215,8 @@ function cargar(usuarioId: number): Preferencias {
       ancladas: soloConocidas(g.ancladas) ?? base.ancladas,
       escritorio: soloConocidas(g.escritorio) ?? base.escritorio,
       tamanoTexto: g.tamanoTexto === 'grande' ? 'grande' : 'normal',
-      widgets: { ...base.widgets, ...(g.widgets ?? {}) },
       barraCentrada: typeof g.barraCentrada === 'boolean' ? g.barraCentrada : base.barraCentrada,
+      disposicion: sanearDisposicion(g.disposicion) ?? migrarWidgetsViejos(g.widgets),
     }
   } catch {
     return base

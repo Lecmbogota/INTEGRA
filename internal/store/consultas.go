@@ -114,6 +114,11 @@ type FilaProducto struct {
 	GarantiaTipo  string            `json:"garantia_tipo"`
 	VideoURL      string            `json:"video_url"`
 	NotaInterna   string            `json:"nota_interna"`
+
+	// PortadaSHA es el sha256 de la imagen principal del producto (vacío si
+	// no tiene). La lista lo trae para que las vistas de mosaico e iconos
+	// pinten la foto sin pedir la galería de cada producto una a una.
+	PortadaSHA string `json:"portada_sha"`
 }
 
 // FiltroProductos acota la consulta del catálogo.
@@ -255,6 +260,13 @@ func (s *Store) ListarProductos(ctx context.Context, f FiltroProductos) ([]FilaP
 		       COALESCE(v.largo_cm,0), COALESCE(v.ancho_cm,0), COALESCE(v.alto_cm,0),
 		       p.condicion, p.garantia_meses, COALESCE(p.garantia_tipo,''),
 		       COALESCE(p.video_url,''), COALESCE(p.nota_interna,''),
+		       -- La portada: la marcada como principal y, si no hay ninguna, la
+		       -- primera por posición, que es lo que verá quien abra la ficha.
+		       COALESCE((SELECT i.sha256 FROM producto_imagenes pi
+		                 JOIN imagenes i ON i.id = pi.imagen_id
+		                 WHERE pi.product_id = p.id
+		                 ORDER BY pi.principal DESC, pi.posicion, pi.imagen_id
+		                 LIMIT 1), ''),
 		       COALESCE(ARRAY(
 		           SELECT ch.code || ':' || vcl.status::text
 		           FROM variant_channel_listings vcl
@@ -285,7 +297,7 @@ func (s *Store) ListarProductos(ctx context.Context, f FiltroProductos) ([]FilaP
 			&r.Excluido, &r.Stock, &r.Problemas, &detalles,
 			&titulos, &r.LargoCm, &r.AnchoCm, &r.AltoCm,
 			&r.Condicion, &r.GarantiaMeses, &r.GarantiaTipo,
-			&r.VideoURL, &r.NotaInterna, &publicado); err != nil {
+			&r.VideoURL, &r.NotaInterna, &r.PortadaSHA, &publicado); err != nil {
 			return nil, 0, err
 		}
 		if err := json.Unmarshal(titulos, &r.Titulos); err != nil {

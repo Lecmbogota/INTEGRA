@@ -1,0 +1,271 @@
+/* Modos de vista de las listas (Vista.tsx): detalles, lista, mosaico e
+   iconos. «Detalles» es la tabla de siempre y no necesita nada de aquí; lo
+   demás son las otras tres formas de enseñar las mismas filas. Solo variables
+   de color: hay tema oscuro y cualquier color fijo se vería mal en uno de
+   los dos. */
+
+/* ------------------------------------------------------------ selector */
+
+/* Va al final de la barra de filtros, a la derecha, como en el explorador. */
+.selector-vista {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  margin-left: auto;
+}
+.selector-vista .badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 7px;
+  min-height: 0;
+  line-height: 0;
+}
+.selector-vista .badge svg { display: block; }
+/* Sobre el acento se lee mejor el tono del fondo base que el blanco fijo:
+   en claro es blanco, en oscuro es oscuro, que es lo que pide tema.css. */
+.selector-vista .badge.activo { color: var(--surface-1); }
+
+/* ------------------------------------------------------------ comunes */
+
+/* Hueco de imagen cuando el producto no tiene foto: el icono hereda el
+   color terciario para no competir con la foto de al lado. */
+.vista-imagen {
+  position: relative;
+  background: var(--surface-3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--texto-terciario);
+  overflow: hidden;
+}
+.vista-imagen img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+.vista-imagen.abrible { cursor: zoom-in; }
+/* La casilla de selección se posa sobre la imagen para no quitar espacio a
+   los datos; el fondo la separa de la foto. */
+.vista-imagen .marca-esquina {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  display: flex;
+  align-items: center;
+  padding: 2px;
+  border-radius: var(--radio-sm);
+  background: var(--surface-1);
+  border: 1px solid var(--borde);
+}
+.vista-acciones {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.vista-acciones button {
+  padding: 3px 8px;
+  font-size: 11px;
+  min-height: 0;
+}
+
+/* ------------------------------------------------------------ lista */
+
+/* Filas compactas de una línea con lo esencial: nombre, dos datos y las
+   acciones al final. Todo se recorta antes que saltar de línea. */
+.vista-lista { display: flex; flex-direction: column; }
+.fila-lista {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 8px;
+  min-height: 36px;
+  border-bottom: 1px solid var(--borde);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.fila-lista:last-child { border-bottom: none; }
+.fila-lista:hover { background: var(--surface-3); }
+.fila-lista.clicable { cursor: pointer; }
+.fila-lista.marcada { background: color-mix(in srgb, var(--acento) 8%, transparent); }
+.fila-lista.marcada:hover { background: color-mix(in srgb, var(--acento) 12%, transparent); }
+.fila-lista .principal {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fila-lista .sku {
+  font-family: var(--fuente-mono);
+  font-size: 12px;
+  color: var(--texto-tenue);
+  flex: 0 0 auto;
+}
+.fila-lista .dato {
+  color: var(--texto-tenue);
+  font-size: 12px;
+  flex: 0 0 auto;
+}
+.fila-lista .num {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  flex: 0 0 auto;
+}
+.fila-lista .icono-canal,
+.fila-lista .mini-foto {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radio-sm);
+}
+.fila-lista .icono-canal {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--surface-4);
+  color: var(--texto-tenue);
+}
+.fila-lista .vista-acciones { margin-left: auto; flex: 0 0 auto; }
+/* El detalle desplegado bajo una fila (pedidos) ocupa el ancho entero. */
+.vista-lista .vista-detalle,
+.vista-mosaico .vista-detalle {
+  grid-column: 1 / -1;
+  border-bottom: 1px solid var(--borde);
+}
+
+/* ------------------------------------------------------------ mosaico */
+
+/* Tarjetas medianas: imagen 4:3 (o icono), título, dos o tres datos y las
+   mismas acciones que la fila de la tabla. */
+.vista-mosaico {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  padding: 4px 0;
+}
+.tarjeta-vista {
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-2);
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+  overflow: hidden;
+  min-width: 0;
+}
+.tarjeta-vista:hover { border-color: var(--borde-fuerte); }
+.tarjeta-vista.clicable { cursor: pointer; }
+.tarjeta-vista.marcada {
+  border-color: var(--acento);
+  box-shadow: 0 0 0 1px var(--acento);
+}
+.tarjeta-vista > .vista-imagen { aspect-ratio: 4 / 3; }
+.tarjeta-vista .icono-canal {
+  font-size: 28px;
+  font-weight: 600;
+  color: var(--texto-tenue);
+}
+.tarjeta-vista .cuerpo-tarjeta {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  flex: 1;
+  min-width: 0;
+}
+.tarjeta-vista .titulo {
+  font-weight: 500;
+  font-size: 13px;
+  line-height: 1.3;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.tarjeta-vista .sku {
+  font-family: var(--fuente-mono);
+  font-size: 11px;
+  color: var(--texto-tenue);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tarjeta-vista .datos {
+  font-size: 12px;
+  color: var(--texto-tenue);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.tarjeta-vista .datos .num { font-variant-numeric: tabular-nums; }
+.tarjeta-vista .etiquetas { margin-top: auto; }
+.tarjeta-vista .vista-acciones { padding-top: 4px; }
+
+/* ------------------------------------------------------------ iconos */
+
+/* Cuadrícula grande: imagen cuadrada, nombre debajo y el estado como
+   pastilla pequeña. Pensada para reconocer el producto por la foto. */
+.vista-iconos {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  padding: 4px 0;
+}
+/* Mediateca: la foto es lo que se mira, así que las celdas van más anchas. */
+.vista-iconos.grande { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+.icono-vista {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radio);
+  text-align: center;
+  min-width: 0;
+}
+.icono-vista:hover { background: var(--surface-3); border-color: var(--borde); }
+.icono-vista.clicable { cursor: pointer; }
+.icono-vista.marcada {
+  border-color: var(--acento);
+  background: color-mix(in srgb, var(--acento) 8%, transparent);
+}
+.icono-vista > .vista-imagen {
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: var(--radio-sm);
+}
+.icono-vista .nombre {
+  font-size: 12px;
+  line-height: 1.3;
+  width: 100%;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.icono-vista .sku {
+  font-family: var(--fuente-mono);
+  font-size: 11px;
+  color: var(--texto-tenue);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.icono-vista .pastilla { font-size: 10px; padding: 1px 6px; }
+/* Las acciones se esconden hasta pasar por encima o enfocar: en una
+   cuadrícula de iconos, cuarenta botones «Editar» a la vez son ruido. */
+.icono-vista .vista-acciones {
+  opacity: 0;
+  transition: opacity .15s;
+  justify-content: center;
+}
+.icono-vista:hover .vista-acciones,
+.icono-vista:focus-within .vista-acciones { opacity: 1; }
+@media (hover: none) {
+  .icono-vista .vista-acciones { opacity: 1; }
+}

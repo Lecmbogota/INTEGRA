@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
+import { confirmar } from './escritorio/Dialogos'
 import { api, fecha, type Alerta, type Horario } from './api'
+import { SelectorVista, useVista } from './Vista'
 
 const DIAS = [
   { n: 1, letra: 'L' }, { n: 2, letra: 'M' }, { n: 3, letra: 'X' },
@@ -32,6 +34,10 @@ export function Automatizacion() {
   const [ocupadaAlerta, setOcupadaAlerta] = useState<number | null>(null)
   const [nuevo, setNuevo] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Un selector por sección: los avisos y los horarios son listas distintas
+  // y cada una recuerda su modo.
+  const [vistaAvisos, setVistaAvisos] = useVista('automatizacion.avisos', 'detalles', ['detalles', 'lista'])
+  const [vistaHorarios, setVistaHorarios] = useVista('automatizacion.horarios', 'detalles', ['detalles', 'lista'])
 
   const cargar = useCallback(() => {
     Promise.all([api.horarios(), api.alertas()])
@@ -65,8 +71,8 @@ export function Automatizacion() {
     // Borrar un horario no se deshace y no se nota: la tarea simplemente deja
     // de correr esa noche, y eso solo se descubre cuando el catálogo lleva
     // días sin sincronizar.
-    if (!window.confirm(
-      `Se borrará la tarea «${h.nombre}» (${h.hora}). Dejará de ejecutarse y habrá que volver a crearla a mano. ¿Continuar?`)) return
+    if (!(await confirmar(
+      `Se borrará la tarea «${h.nombre}» (${h.hora}). Dejará de ejecutarse y habrá que volver a crearla a mano. ¿Continuar?`))) return
     setOcupadoHorario(h.id)
     await conAviso('borrar la automatización', () => api.borrarHorario(h.id))
     setOcupadoHorario(null)
@@ -93,9 +99,31 @@ export function Automatizacion() {
       <section className="panel" data-guia="avisos">
         <h2>Avisos abiertos</h2>
         <div className="cuerpo">
+          <div className="filtros">
+            <SelectorVista modo={vistaAvisos} onCambiar={setVistaAvisos} admitidos={['detalles', 'lista']} />
+          </div>
           {cargando && <div className="vacio">Cargando…</div>}
           {!cargando && alertas.length === 0 && <div className="vacio">Nada roto. Todo en orden.</div>}
-          {alertas.map((a) => (
+          {vistaAvisos === 'lista' && alertas.length > 0 && (
+            <div className="vista-lista">
+              {alertas.map((a) => (
+                <div key={a.id} className="fila-lista">
+                  <span className={`pastilla ${SEVERIDAD[a.severidad] ?? 'aviso'}`}>
+                    {NOMBRE_SEVERIDAD[a.severidad] ?? 'Aviso'}
+                  </span>
+                  <span className="principal" title={a.mensaje}>{a.mensaje}</span>
+                  <span className="dato">{a.canal && `${a.canal} · `}{fecha(a.creada_at)}</span>
+                  <span className="vista-acciones">
+                    <button onClick={() => void reconocer(a.id)} disabled={ocupadaAlerta === a.id}
+                      title="Marcar como visto; volverá a avisar si reaparece">
+                      {ocupadaAlerta === a.id ? 'Guardando…' : 'Visto'}
+                    </button>
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+          {vistaAvisos === 'detalles' && alertas.map((a) => (
             <div key={a.id} className="fila-cuenta fila-apilable" data-guia="aut-aviso">
               {/* La pastilla va dentro del bloque de texto: suelta, al apilarse
                   la fila en el móvil se estiraría a todo el ancho. */}
@@ -124,6 +152,9 @@ export function Automatizacion() {
       <section className="panel" data-guia="aut-horarios">
         <h2>Tareas programadas</h2>
         <div className="cuerpo">
+          <div className="filtros">
+            <SelectorVista modo={vistaHorarios} onCambiar={setVistaHorarios} admitidos={['detalles', 'lista']} />
+          </div>
           {cargando && <div className="vacio">Cargando…</div>}
           {!cargando && horarios.length === 0 && (
             <div className="vacio">
@@ -131,7 +162,33 @@ export function Automatizacion() {
               y publique sin que nadie pulse un botón.
             </div>
           )}
-          {horarios.map((h) => (
+          {vistaHorarios === 'lista' && horarios.length > 0 && (
+            <div className="vista-lista">
+              {horarios.map((h) => (
+                <div key={h.id} className="fila-lista">
+                  <span className="sku">{h.hora}</span>
+                  <span className="principal" title={ALCANCES[h.alcance] ?? h.alcance}>
+                    {h.nombre}<span className="tenue"> · {ALCANCES[h.alcance] ?? h.alcance}</span>
+                  </span>
+                  <span className="dato">
+                    {h.dias.length === 0 ? 'todos los días' : h.dias.map((d) => DIAS[d - 1]?.letra).join(' ')}
+                    {h.canal && ` · solo ${h.canal}`}
+                  </span>
+                  {h.proxima_ejecucion && <span className="dato">próxima: {fecha(h.proxima_ejecucion)}</span>}
+                  {h.activo
+                    ? <span className="pastilla ok">Activo</span>
+                    : <span className="pastilla dudosa">Pausado</span>}
+                  <span className="vista-acciones">
+                    <button onClick={() => void alternar(h)} disabled={ocupadoHorario === h.id}>
+                      {h.activo ? 'Pausar' : 'Activar'}
+                    </button>
+                    <button onClick={() => void borrar(h)} disabled={ocupadoHorario === h.id}>Borrar</button>
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+          {vistaHorarios === 'detalles' && horarios.map((h) => (
             <div key={h.id} className="fila-cuenta fila-apilable" data-guia="aut-horario">
               <div className="expande-recorta">
                 <div className="fila">

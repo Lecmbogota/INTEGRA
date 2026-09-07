@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { confirmar } from './escritorio/Dialogos'
 import { api, fecha, num, type BodegaCuenta, type CredencialesCanal, type CuentaCanal } from './api'
 
 // Conexión de las cuentas de canal. Las credenciales viajan una sola vez al
@@ -254,8 +255,8 @@ function FormularioCuenta({ def, yaConectada, onCerrar, onGuardada }: {
     }
     // Guardar sobre una cuenta que ya existe borra la credencial anterior y no
     // hay forma de recuperarla: la que había nunca llegó a mostrarse.
-    if (yaConectada && !window.confirm(
-      `Se reemplazarán las credenciales de ${def.nombre}. Las actuales se borran y no se pueden recuperar. ¿Continuar?`)) return
+    if (yaConectada && !(await confirmar(
+      `Se reemplazarán las credenciales de ${def.nombre}. Las actuales se borran y no se pueden recuperar. ¿Continuar?`))) return
 
     setGuardando(true)
     setError(null)

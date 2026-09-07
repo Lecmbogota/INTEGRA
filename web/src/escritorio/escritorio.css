@@ -11,6 +11,7 @@
 
 .cristal,
 .widget,
+.galeria-widgets,
 .menu-contextual,
 .menu-usuario,
 .barra-lista,
@@ -25,7 +26,7 @@
 /* Sin backdrop-filter el cristal se vería como un fondo semitransparente sin
    desenfoque: ilegible sobre un fondo de pantalla. Fondo opaco entonces. */
 @supports not (backdrop-filter: blur(1px)) {
-  .cristal, .widget, .menu-contextual, .menu-usuario, .barra-lista, .barra-tareas, .inicio {
+  .cristal, .widget, .galeria-widgets, .menu-contextual, .menu-usuario, .barra-lista, .barra-tareas, .inicio {
     background: var(--surface-1);
   }
 }
@@ -36,34 +37,20 @@
   position: absolute;
   inset: 0 0 var(--alto-barra, 52px) 0;
   overflow: hidden;
-  display: flex;
-  align-items: flex-start;
-  gap: 16px;
-  padding: 16px;
-  box-sizing: border-box;
   background-size: cover;
   background-position: center;
   user-select: none;
   -webkit-user-select: none;
 }
 
-/* Cuadrícula que llena por columnas (arriba-abajo, luego a la derecha),
-   como un escritorio de verdad. Las filas se fijan a 96 px para que
-   grid-auto-flow: column sepa cuántas caben. */
-.escritorio-iconos {
-  flex: 1 1 auto;
-  align-self: stretch;
-  min-width: 0;
-  display: grid;
-  grid-auto-flow: column;
-  grid-template-rows: repeat(auto-fill, 96px);
-  grid-auto-columns: 96px;
-  gap: 4px;
-  align-content: start;
-  justify-content: start;
-}
+/* El lienzo: un plano libre con una cuadrícula invisible de 24 px (CELDA en
+   tipos.ts). Iconos y widgets van en absoluto, en múltiplos de la celda; el
+   margen respecto a la pantalla lo pone Escritorio.tsx (MARGEN) para que la
+   aritmética de celdas y el CSS no puedan discrepar. */
+.lienzo { position: absolute; }
 
 .icono-app {
+  position: absolute;
   width: 96px;
   height: 96px;
   padding: 6px 4px;
@@ -78,7 +65,7 @@
   font: inherit;
   color: inherit;
   touch-action: none; /* el arrastre lo gestionamos con pointer events */
-  transition: background .12s, border-color .12s, transform .12s;
+  transition: background .12s, border-color .12s, left .18s ease, top .18s ease;
 }
 .icono-app:hover {
   background: color-mix(in srgb, var(--surface-1) 22%, transparent);
@@ -92,15 +79,14 @@
   outline: 2px solid var(--acento);
   outline-offset: 1px;
 }
+/* Mientras se arrastra sigue al puntero sin animar y flota sobre lo demás. */
 .icono-app.arrastrando {
-  pointer-events: none; /* para que elementFromPoint vea el icono de debajo */
-  opacity: .85;
-  z-index: 2;
   transition: none;
-}
-.icono-app.destino {
-  border-color: var(--acento);
-  background: color-mix(in srgb, var(--acento) 18%, transparent);
+  opacity: .9;
+  z-index: 20;
+  transform: translate(var(--dx, 0px), var(--dy, 0px)) scale(1.05);
+  background: color-mix(in srgb, var(--acento) 20%, transparent);
+  border-color: color-mix(in srgb, var(--acento) 45%, transparent);
 }
 .icono-app-img {
   width: 52px;
@@ -125,76 +111,356 @@
   word-break: break-word;
 }
 
-/* En móvil no hay sitio para dos columnas: iconos por filas y los widgets
-   debajo, con desplazamiento vertical. */
-.escritorio.movil { flex-direction: column; overflow: auto; padding: 12px; }
+/* Botón «+» discreto abajo a la izquierda, sobre la barra: abre la galería.
+   Casi invisible hasta que se pasa el ratón para no competir con el fondo. */
+.boton-anadir-widget {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  z-index: 30;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid color-mix(in srgb, var(--borde) 70%, transparent);
+  background: color-mix(in srgb, var(--surface-1) 60%, transparent);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  color: var(--texto);
+  font: inherit;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: .45;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .18);
+  transition: opacity .15s, transform .15s;
+}
+.boton-anadir-widget:hover, .boton-anadir-widget:focus-visible { opacity: 1; transform: scale(1.06); outline: none; }
+.boton-anadir-widget:focus-visible { box-shadow: 0 0 0 3px color-mix(in srgb, var(--acento) 40%, transparent); }
+
+/* En móvil no hay posiciones libres: iconos por filas y los widgets
+   apilados en una columna debajo, con desplazamiento vertical. */
+.escritorio.movil { overflow: auto; padding: 12px 12px 64px; box-sizing: border-box; }
 .escritorio.movil .escritorio-iconos {
-  flex: 0 0 auto;
-  align-self: auto;
-  width: 100%;
-  grid-auto-flow: row;
-  grid-template-rows: none;
+  display: grid;
   grid-template-columns: repeat(auto-fill, 96px);
   justify-content: space-between;
+  gap: 4px;
+  margin-bottom: 16px;
 }
-.escritorio.movil .widgets { flex: 0 0 auto; width: 100%; max-height: none; overflow: visible; }
+.escritorio.movil .icono-app { position: static; }
+.escritorio.movil .escritorio-widgets { display: flex; flex-direction: column; gap: 12px; }
+.escritorio.movil .widget { position: static; width: auto; height: auto; min-height: 96px; }
+.escritorio.movil .widget-cabecera { cursor: default; }
+.escritorio.movil .boton-anadir-widget { position: fixed; bottom: calc(var(--alto-barra, 52px) + 12px); }
 
 /* ------------------------------------------------------------ widgets */
 
-.widgets {
-  flex: 0 0 260px;
-  width: 260px;
+/* Tarjeta de cristal: esquinas de 16 px, sombra suave, cabecera fina y
+   cuerpo con su propio scroll. Posición y tamaño los pone Escritorio.tsx
+   en px (celdas × 24). Se anima al aparecer y al pegarse a la cuadrícula. */
+.widget {
+  position: absolute;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  max-height: 100%;
-  overflow: auto;
+  box-sizing: border-box;
+  border-radius: 16px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .14), inset 0 1px 0 color-mix(in srgb, var(--surface-1) 60%, transparent);
+  overflow: hidden;
+  animation: aparecer .18s ease-out;
+  transition: left .18s ease, top .18s ease, width .18s ease, height .18s ease, transform .15s ease, box-shadow .15s ease;
 }
-.widget {
-  border-radius: var(--radio-lg);
-  padding: 12px 14px;
-  cursor: pointer;
-  box-shadow: 0 6px 24px rgba(0, 0, 0, .12);
-  transition: transform .12s, box-shadow .12s;
+.widget:hover { box-shadow: 0 12px 34px rgba(0, 0, 0, .18), inset 0 1px 0 color-mix(in srgb, var(--surface-1) 60%, transparent); }
+/* Arrastrando: sigue al puntero (variables --dx/--dy que pone el marco)
+   sin animar, un poco más grande y con más sombra, por encima de los demás. */
+.widget.arrastrando {
+  transition: none;
+  z-index: 25;
+  box-shadow: 0 24px 56px rgba(0, 0, 0, .3);
+  transform: translate(var(--dx, 0px), var(--dy, 0px)) scale(1.02);
 }
-.widget:hover { transform: translateY(-1px); box-shadow: 0 10px 28px rgba(0, 0, 0, .16); }
-.widget:focus-visible { outline: 2px solid var(--acento); outline-offset: 2px; }
+.widget.redimensionando { transition: none; }
+
+.widget-cabecera {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 6px 4px 14px;
+  cursor: grab;
+  touch-action: none;
+}
+.widget.arrastrando .widget-cabecera { cursor: grabbing; }
 .widget-titulo {
   font-family: var(--fuente-titular);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
-  letter-spacing: .04em;
+  letter-spacing: .05em;
   text-transform: uppercase;
   color: var(--texto-tenue);
-  margin-bottom: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
+.widget-menu {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 22px;
+  border: 0;
+  border-radius: var(--radio);
+  background: transparent;
+  color: var(--texto-tenue);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity .12s, background .12s;
+}
+.widget:hover .widget-menu, .widget:focus-within .widget-menu, .escritorio.movil .widget-menu { opacity: 1; }
+.widget-menu:hover, .widget-menu:focus-visible { background: color-mix(in srgb, var(--texto) 10%, transparent); color: var(--texto); outline: none; }
+
+.widget-cuerpo {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 14px 12px;
+  font-size: 13px;
+  /* Para que las cifras y el reloj escalen con el ancho del widget (cqi). */
+  container-type: inline-size;
+}
+
+/* Asa de la esquina inferior derecha (visible al pasar el ratón) y bordes
+   derecho e inferior invisibles pero agarrables. */
+.widget-asa {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  width: 14px;
+  height: 14px;
+  cursor: nwse-resize;
+  touch-action: none;
+  opacity: 0;
+  transition: opacity .12s;
+  /* Dos rayitas diagonales con el color del texto tenue. */
+  background:
+    linear-gradient(135deg, transparent 0 55%, var(--texto-tenue) 55% 65%, transparent 65% 80%, var(--texto-tenue) 80% 90%, transparent 90%);
+  border-bottom-right-radius: 10px;
+}
+.widget:hover .widget-asa { opacity: .8; }
+.widget-borde { position: absolute; touch-action: none; }
+.widget-borde-e { top: 12px; right: 0; bottom: 12px; width: 6px; cursor: ew-resize; }
+.widget-borde-s { left: 12px; right: 12px; bottom: 0; height: 6px; cursor: ns-resize; }
+
+/* ---- contenido común */
+
+.widget-vacio, .widget-nota { font-size: 13px; color: var(--texto-tenue); }
+.widget-nota { margin-top: 6px; }
+.widget-nota b { color: var(--texto); font-weight: 600; }
 .widget-cifra { display: flex; align-items: baseline; gap: 8px; }
 .widget-cifra strong { font-family: var(--fuente-titular); font-size: 28px; font-weight: 700; line-height: 1; }
 .widget-cifra strong.en-marcha { color: var(--acento); }
 .widget-cifra span { font-size: 13px; color: var(--texto-tenue); }
-.widget-lista { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
-.widget-lista li { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; }
-.widget-lista li::before {
-  content: '';
-  flex: 0 0 6px;
-  width: 6px; height: 6px;
-  border-radius: 50%;
-  align-self: center;
-  background: var(--aviso);
+.widget-cifra .punto-animado { align-self: center; }
+.widget-marcha, .widget-tres, .widget-barras { cursor: pointer; border-radius: var(--radio); }
+.widget-marcha:focus-visible, .widget-tres:focus-visible, .widget-barras:focus-visible { outline: 2px solid var(--acento); outline-offset: 2px; }
+
+/* Tarjetas de cifras: rejilla compacta que se adapta al tamaño del widget. */
+.widget-tarjetas {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+  gap: 6px;
 }
-.widget-lista li[data-severidad="error"]::before,
-.widget-lista li[data-severidad="critical"]::before { background: var(--error); }
-.widget-lista li[data-severidad="info"]::before { background: var(--acento); }
-.widget-motivo { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.widget-numero { font-variant-numeric: tabular-nums; font-weight: 600; }
-.widget-tres { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; text-align: center; }
+.widget-tarjeta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--borde) 60%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface-2) 55%, transparent);
+  color: var(--texto);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background .12s, border-color .12s;
+}
+.widget-tarjeta:hover, .widget-tarjeta:focus-visible { background: color-mix(in srgb, var(--acento) 12%, transparent); border-color: color-mix(in srgb, var(--acento) 40%, transparent); outline: none; }
+/* Una sola cifra: llena el widget y crece con él. */
+.widget-tarjeta.grande { height: 100%; box-sizing: border-box; justify-content: center; border: 0; background: transparent; padding: 0 2px 4px; }
+.widget-tarjeta.grande:hover { background: color-mix(in srgb, var(--acento) 8%, transparent); }
+.widget-tarjeta.grande .widget-valor { font-size: clamp(28px, 22cqi, 64px); }
+.widget-etiqueta { font-size: 11px; color: var(--texto-tenue); text-transform: uppercase; letter-spacing: .05em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.widget-valor { font-family: var(--fuente-titular); font-size: 22px; font-weight: 700; line-height: 1.15; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.widget-valor.ok { color: var(--ok); }
+.widget-valor.error { color: var(--error); }
+.widget-tarjeta .widget-pie { font-size: 11px; color: var(--texto-tenue); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Barras (bloqueos, bodegas): como .barra-fila del Panel, más compactas. */
+.widget-barras { display: flex; flex-direction: column; gap: 4px; }
+.widget-barra { display: flex; align-items: center; gap: 8px; min-height: 22px; }
+.widget-barra-nombre { flex: 0 1 45%; min-width: 0; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.widget-barra-pista { flex: 1 1 auto; height: 8px; border-radius: 4px; background: color-mix(in srgb, var(--surface-4) 80%, transparent); overflow: hidden; }
+.widget-barra-relleno { display: block; height: 100%; background: var(--acento); border-radius: 4px; transition: width .4s ease; }
+.widget-barra-relleno.aviso { background: var(--aviso); }
+.widget-barra-relleno.error { background: var(--error); }
+.widget-barra-cifra { flex: 0 0 auto; min-width: 36px; text-align: right; font-size: 12px; color: var(--texto-tenue); font-variant-numeric: tabular-nums; }
+
+/* Pedidos: tres cifras. */
+.widget-tres { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; text-align: center; padding: 4px 0; }
 .widget-tres > div { display: flex; flex-direction: column; gap: 2px; }
 .widget-tres strong { font-family: var(--fuente-titular); font-size: 24px; font-weight: 700; line-height: 1; }
 .widget-tres span { font-size: 12px; color: var(--texto-tenue); }
 .widget-tres .mal strong { color: var(--error); }
 .widget-tres .bien strong { color: var(--ok); }
-.widget-vacio, .widget-pie { font-size: 13px; color: var(--texto-tenue); margin-top: 6px; }
-.widget-pie b { color: var(--texto); font-weight: 600; }
+
+/* Sincronización. */
+.widget-sincro { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.widget-sincro .primario { align-self: stretch; }
+
+/* Reloj: hora grande que crece con el widget, fecha larga debajo. */
+.widget-reloj-cuerpo { text-align: right; }
+.widget-reloj-hora {
+  font-family: var(--fuente-titular);
+  font-size: clamp(32px, 20cqi, 88px);
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -.03em;
+  font-variant-numeric: tabular-nums;
+}
+.widget-reloj-fecha { margin-top: 6px; font-size: 13px; color: var(--texto-tenue); text-transform: capitalize; }
+
+/* Atajos: iconos de app en fila que se envuelven. */
+.widget-atajos-lista { display: flex; flex-wrap: wrap; gap: 6px; }
+.widget-atajo {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: 68px;
+  padding: 6px 2px;
+  border: 0;
+  border-radius: var(--radio);
+  background: transparent;
+  color: var(--texto);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.widget-atajo:hover, .widget-atajo:focus-visible { background: color-mix(in srgb, var(--acento) 14%, transparent); outline: none; }
+.widget-atajo-icono {
+  width: 38px; height: 38px;
+  border-radius: 11px;
+  display: grid; place-items: center;
+  color: #fff; /* icono blanco sobre su color de app */
+  box-shadow: 0 2px 6px rgba(0, 0, 0, .18);
+}
+.widget-atajo-icono svg { width: 22px; height: 22px; }
+.widget-atajo-icono.mini { width: 22px; height: 22px; border-radius: 6px; box-shadow: none; }
+.widget-atajo-icono.mini svg { width: 13px; height: 13px; }
+.widget-atajo-nombre { text-align: center; line-height: 1.2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+
+/* Prioridad: reutiliza el componente del Panel; se le quita su marco y su
+   título porque ya los pone el widget. */
+.widget-prioridad .panel { background: transparent; border: 0; border-radius: 0; overflow: visible; }
+.widget-prioridad .panel > h2 { display: none; }
+.widget-prioridad .panel .cuerpo { padding: 0; }
+.widget-prioridad .vacio { padding: 16px 0; text-align: left; }
+
+/* Ajustes propios de un tipo (cifra, atajos), dentro del cuerpo. */
+.widget-ajustes { display: flex; flex-direction: column; gap: 10px; }
+.widget-ajuste { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--texto-tenue); }
+.widget-ajuste select { font: inherit; font-size: 13px; color: var(--texto); }
+.widget-ajuste-lista { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 4px 10px; }
+.widget-ajuste-lista label { display: flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; }
+.widget-listo { align-self: flex-end; }
+
+/* Botonera de la sección de widgets en Configuración. */
+.config-acciones { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* ------------------------------------------------------------ galería */
+
+/* Fondo que recoge el clic fuera y, encima, el panel de cristal con los
+   tipos de widget. Va por portal al body (igual que los menús). */
+.galeria-fondo {
+  position: fixed;
+  inset: 0;
+  z-index: 950;
+}
+.galeria-widgets {
+  position: fixed;
+  z-index: 951;
+  left: 8px;
+  bottom: calc(var(--alto-barra, 52px) + 8px);
+  width: min(560px, calc(100vw - 16px));
+  max-height: min(600px, calc(100vh - var(--alto-barra, 52px) - 16px));
+  display: flex;
+  flex-direction: column;
+  border-radius: 16px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, .26);
+  overflow: hidden;
+  animation: subir .16s ease-out;
+}
+.galeria-widgets.movil { inset: 0 0 var(--alto-barra, 52px) 0; width: auto; max-height: none; border-radius: 0; }
+.galeria-cabecera {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 10px 8px 16px;
+}
+.galeria-cabecera h2 { margin: 0; font-family: var(--fuente-titular); font-size: 15px; font-weight: 600; }
+.galeria-cerrar {
+  width: 28px; height: 28px;
+  border: 0; border-radius: 50%;
+  background: transparent; color: var(--texto-tenue);
+  font: inherit; font-size: 18px; line-height: 1; cursor: pointer;
+}
+.galeria-cerrar:hover, .galeria-cerrar:focus-visible { background: color-mix(in srgb, var(--texto) 10%, transparent); color: var(--texto); outline: none; }
+.galeria-lista { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 0 10px 10px; display: flex; flex-direction: column; gap: 4px; }
+.galeria-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px;
+  border-radius: 12px;
+  transition: background .12s;
+}
+.galeria-item:hover { background: color-mix(in srgb, var(--acento) 10%, transparent); }
+.galeria-miniatura {
+  flex: 0 0 auto;
+  width: 64px;
+  height: 40px;
+  padding: 6px;
+  border-radius: 10px;
+  color: var(--acento);
+  background: color-mix(in srgb, var(--surface-2) 70%, transparent);
+  border: 1px solid color-mix(in srgb, var(--borde) 60%, transparent);
+}
+.galeria-texto { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.galeria-nombre { font-size: 14px; font-weight: 500; display: flex; align-items: center; gap: 8px; }
+.galeria-cuantos {
+  min-width: 18px; height: 18px; padding: 0 5px;
+  border-radius: var(--radio-pill);
+  background: color-mix(in srgb, var(--acento) 18%, transparent);
+  color: var(--acento);
+  font-size: 11px; font-weight: 700; line-height: 18px; text-align: center;
+}
+.galeria-desc { font-size: 12px; color: var(--texto-tenue); }
+.galeria-anadir {
+  flex: 0 0 auto;
+  min-width: 84px;
+  padding: 6px 12px;
+  border: 1px solid color-mix(in srgb, var(--acento) 50%, transparent);
+  border-radius: var(--radio-pill);
+  background: color-mix(in srgb, var(--acento) 12%, transparent);
+  color: var(--acento);
+  font: inherit; font-size: 13px; font-weight: 500;
+  cursor: pointer;
+  transition: background .12s;
+}
+.galeria-anadir:hover, .galeria-anadir:focus-visible { background: color-mix(in srgb, var(--acento) 24%, transparent); outline: none; }
 
 /* ------------------------------------------------- menús flotantes */
 
@@ -601,7 +867,10 @@
 .inicio.movil { animation-name: aparecer; }
 
 @media (prefers-reduced-motion: reduce) {
-  .menu-contextual, .menu-usuario, .barra-lista, .inicio { animation: none; }
+  .menu-contextual, .menu-usuario, .barra-lista, .inicio, .widget, .galeria-widgets { animation: none; }
   .punto-animado { animation: none; }
-  .icono-app, .widget, .barra-boton, .barra-app, .barra-app-marca, .reloj { transition: none; }
+  .icono-app, .widget, .widget-asa, .widget-menu, .widget-barra-relleno, .boton-anadir-widget, .galeria-item, .galeria-anadir,
+  .barra-boton, .barra-app, .barra-app-marca, .reloj { transition: none; }
+  .widget.arrastrando { transform: translate(var(--dx, 0px), var(--dy, 0px)); }
+  .icono-app.arrastrando { transform: translate(var(--dx, 0px), var(--dy, 0px)); }
 }

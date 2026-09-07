@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { alCaducarSesion, api } from './api'
 import { Login, borrarSesion, leerSesion, type Sesion } from './Login'
 import { ProveedorSesion } from './escritorio/sesion'
+import { sonidoCierre } from './escritorio/sonido'
+import { Dialogos } from './escritorio/Dialogos'
 import { ALTO_BARRA, ProveedorSistema, useEvento, useSistema } from './escritorio/sistema'
 import { ProveedorDatos } from './escritorio/datos'
 import { ProveedorPreferencias } from './escritorio/preferencias'
@@ -48,16 +50,25 @@ export default function App() {
     setSesion(null)
   }, [])
 
+  // Recién entrado, el escritorio aparece con un fundido que continúa el de
+  // la pantalla de bloqueo; después ya no hay animación.
+  const [recienEntrado, setRecienEntrado] = useState(false)
+  const entrar = useCallback((s: Sesion) => {
+    setSesion(s)
+    setRecienEntrado(true)
+    window.setTimeout(() => setRecienEntrado(false), 1000)
+  }, [])
+
   if (!sesion) {
-    return <Login onEntrar={setSesion} />
+    return <Login onEntrar={entrar} />
   }
   return (
-    <ProveedorSesion valor={{ usuario: sesion.usuario, salir: () => void salir() }}>
+    <ProveedorSesion valor={{ usuario: sesion.usuario, salir: () => { sonidoCierre(); void salir() } }}>
       <ProveedorPreferencias>
         <ProveedorSistema>
           <ProveedorDatos>
             <ProveedorNotificaciones>
-              <Pantalla sesion={sesion} />
+              <Pantalla sesion={sesion} entrando={recienEntrado} />
             </ProveedorNotificaciones>
           </ProveedorDatos>
         </ProveedorSistema>
@@ -69,7 +80,7 @@ export default function App() {
 // Las apps de sección coinciden con las secciones de la guía.
 const SECCIONES = new Set<string>(Object.keys(GUIAS_POR_SECCION))
 
-function Pantalla({ sesion }: { sesion: Sesion }) {
+function Pantalla({ sesion, entrando }: { sesion: Sesion; entrando: boolean }) {
   const sis = useSistema()
 
   // La «sección» actual para la guía: la app de la ventana activa, si es una
@@ -165,7 +176,7 @@ function Pantalla({ sesion }: { sesion: Sesion }) {
 
   return (
     <ContextoAyuda.Provider value={contextoAyuda}>
-      <div className="pantalla" style={{ '--alto-barra': `${ALTO_BARRA}px` } as React.CSSProperties}>
+      <div className={`pantalla ${entrando ? 'entrando' : ''}`} style={{ '--alto-barra': `${ALTO_BARRA}px` } as React.CSSProperties}>
         <Escritorio />
         <div className="ventanas">
           {sis.ventanas.map((v) => {
@@ -180,6 +191,7 @@ function Pantalla({ sesion }: { sesion: Sesion }) {
         </div>
         <BarraTareas />
         <Emergentes />
+        <Dialogos />
         {activo && (
           <Guia pasos={activo.rec.pasos} nombre={activo.rec.nombre} inicio={activo.inicio}
             seccion={seccion} irA={irA}

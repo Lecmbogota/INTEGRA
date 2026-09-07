@@ -1,7 +1,8 @@
 import { useState, type ReactNode } from 'react'
 import type { AppId, Fondo, Preferencias } from './tipos'
 import { APPS, ORDEN_APPS } from './apps'
-import { FONDOS, FOTOS, cssFondo, urlFoto, usePreferencias } from './preferencias'
+import { FONDOS, FOTOS, cssFondo, disposicionPorDefecto, urlFoto, usePreferencias } from './preferencias'
+import { GaleriaWidgets, tituloWidget } from './Widgets'
 import { useSesion } from './sesion'
 import { useSistema } from './sistema'
 
@@ -286,11 +287,10 @@ function Escritorio() {
   // Solo apps de una instancia (secciones, configuración, ayuda): un diálogo
   // no tiene sentido como icono porque necesita props para abrirse.
   const candidatas = ORDEN_APPS.filter(id => APPS[id]?.unica && (!APPS[id].soloAdmin || admin))
-  const widgets: { id: keyof Preferencias['widgets']; nombre: string; nota: string }[] = [
-    { id: 'atencion', nombre: 'Atención', nota: 'Lo que pide una mano: productos sin foto, sin precio…' },
-    { id: 'pedidos', nombre: 'Pedidos', nota: 'Recibidos, en Odoo y fallidos de hoy' },
-    { id: 'actividad', nombre: 'Actividad', nota: 'Trabajos en marcha y lo último que pasó' },
-  ]
+  const [galeria, setGaleria] = useState(false)
+  const widgets = prefs.disposicion.widgets
+  const quitar = (id: string) =>
+    poner({ disposicion: { ...prefs.disposicion, widgets: widgets.filter(w => w.id !== id) } })
   return (
     <>
       <Grupo titulo="Iconos del escritorio" nota="Marca las apps que quieres ver en el escritorio y ordénalas con las flechas.">
@@ -299,20 +299,28 @@ function Escritorio() {
       <Grupo titulo="Ancladas en la barra" nota="Las apps ancladas están siempre en la barra de tareas, abiertas o no.">
         <ListaApps etiqueta="Ancladas en la barra" seleccion={prefs.ancladas} candidatas={candidatas} onCambiar={s => poner({ ancladas: s })} />
       </Grupo>
-      <Grupo titulo="Widgets">
-        <ul className="lista-apps">
-          {widgets.map(w => (
-            <li key={w.id} className="fila-app">
-              <label>
-                <input
-                  type="checkbox" checked={prefs.widgets[w.id]}
-                  onChange={e => poner({ widgets: { ...prefs.widgets, [w.id]: e.target.checked } })}
-                />
-                <span className="app-nombre">{w.nombre}<small>{w.nota}</small></span>
-              </label>
-            </li>
-          ))}
-        </ul>
+      <Grupo titulo="Widgets" nota="Los widgets se mueven arrastrando su cabecera y se redimensionan por la esquina. Aquí puedes quitarlos, añadir más o volver a la disposición inicial.">
+        {widgets.length === 0
+          ? <p className="config-nota">No hay widgets en el escritorio.</p>
+          : (
+            <ul className="lista-apps">
+              {widgets.map(w => (
+                <li key={w.id} className="fila-app">
+                  <span className="app-nombre">{tituloWidget(w)}<small>{w.w * 24}×{w.h * 24} px</small></span>
+                  <span className="fila-app-orden">
+                    <button type="button" onClick={() => quitar(w.id)}>Quitar</button>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        <div className="config-acciones">
+          <button type="button" onClick={() => setGaleria(true)}>Añadir widget</button>
+          {/* Vuelve a la disposición de fábrica: widgets e iconos (los iconos
+              sin posición se autocolocan en columnas). */}
+          <button type="button" onClick={() => poner({ disposicion: disposicionPorDefecto() })}>Restablecer disposición</button>
+        </div>
+        <GaleriaWidgets abierta={galeria} onCerrar={() => setGaleria(false)} />
       </Grupo>
     </>
   )

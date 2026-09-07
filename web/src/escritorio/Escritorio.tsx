@@ -2,20 +2,29 @@ import {
   useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState,
   type CSSProperties, type KeyboardEvent as KeyboardEventReact,
   type MouseEvent as MouseEventReact, type PointerEvent as PointerEventReact,
-  type ReactNode, type RefObject,
+  type RefObject,
 } from 'react'
 import { createPortal } from 'react-dom'
-import type { AppId, Fondo } from './tipos'
+import { CELDA, type AppId, type Disposicion, type WidgetInstancia } from './tipos'
 import { useSistema } from './sistema'
-import { usePreferencias, FONDOS } from './preferencias'
-import { APPS, ORDEN_APPS } from './apps'
+import { usePreferencias, cssFondo } from './preferencias'
+import { APPS } from './apps'
 import { useDatos } from './datos'
 import { useSesion } from './sesion'
+import {
+  WIDGETS, TAMANOS_RAPIDOS, GaleriaWidgets, tituloWidget, dimensionesLienzo, encajar, huecoMasCercano,
+  primerHueco, ICONO, MARGEN, type ContextoWidget, type Rect, type TamanoRapido,
+} from './Widgets'
 
-// El escritorio: la capa que hay debajo de las ventanas. Pinta el fondo, la
-// cuadrícula de iconos, los widgets y el menú contextual. Las ventanas las
-// pinta App por encima; aquí no se sabe nada de ellas salvo lo que ofrece
-// `useSistema` (minimizar todas, abrir).
+// El escritorio: la capa que hay debajo de las ventanas. Pinta el fondo y un
+// lienzo libre con una cuadrícula invisible de CELDA px donde viven los
+// iconos y los widgets; cada uno se arrastra a donde se quiera y al soltar
+// se pega a la celda más cercana. Las ventanas las pinta App por encima;
+// aquí no se sabe nada de ellas salvo lo que ofrece `useSistema`.
+
+// «hace 5 min»… vive en Widgets.tsx (lo usan varios widgets) y se
+// reexporta desde aquí, que es de donde lo importan la barra y el inicio.
+export { hace } from './Widgets'
 
 // ------------------------------------------------- utilidades compartidas
 // La barra de tareas y el menú de inicio reutilizan estas piezas para no
@@ -109,78 +118,119 @@ export function MenuContextual({ x, y, opciones, onCerrar }: {
 const ROLES: Record<string, string> = { admin: 'Administrador', operator: 'Operador', viewer: 'Solo lectura' }
 export function nombreRol(rol: string): string { return ROLES[rol] ?? rol }
 
-// «hace 5 min», «hace 2 h», «ayer»… para la última sincronización.
-export function hace(iso: string | null | undefined): string {
-  if (!iso) return 'nunca'
-  const ms = Date.now() - new Date(iso).getTime()
-  if (!Number.isFinite(ms)) return 'nunca'
-  const min = Math.round(ms / 60000)
-  if (min < 1) return 'ahora mismo'
-  if (min < 60) return `hace ${min} min`
-  const h = Math.round(min / 60)
-  if (h < 24) return `hace ${h} h`
-  const d = Math.round(h / 24)
-  return d === 1 ? 'ayer' : `hace ${d} días`
+// -------------------------------------------------------------- arrastre
+
+// px de movimiento antes de considerar que se arrastra y no se pulsa.
+const UMBRAL_ARRASTRE = 4
+
+type Operacion = {
+  x0: number
+  y0: number
+  activo: boolean
+  alMover: (dx: number, dy: number) => void
+  alSoltar: (dx: number, dy: number, arrastro: boolean) => void
 }
 
-// ----------------------------------------------------------------- fondo
-
-function estiloFondo(f: Fondo): CSSProperties {
-  switch (f.tipo) {
-    case 'preset': {
-      const p = FONDOS.find((x) => x.id === f.id) ?? FONDOS[0]
-      return { background: p?.css }
+// Arrastre genérico con pointer events (sin librerías). El elemento que
+// recibe el pointerdown captura el puntero, así que sus propios
+// onPointerMove/Up siguen llegando aunque el cursor salga de él. Devuelve los
+// tres manejadores; `bajar` recibe qué hacer al mover y al soltar.
+function useArrastre() {
+  const op = useRef<Operacion | null>(null)
+  const bajar = useCallback((e: PointerEventReact<HTMLElement>, alMover: Operacion['alMover'], alSoltar: Operacion['alSoltar']) => {
+    if (e.button !== 0) return
+    op.current = { x0: e.clientX, y0: e.clientY, activo: false, alMover, alSoltar }
+    e.currentTarget.setPointerCapture(e.pointerId)
+  }, [])
+  const mover = useCallback((e: PointerEventReact<HTMLElement>) => {
+    const a = op.current
+    if (!a) return
+    const dx = e.clientX - a.x0
+    const dy = e.clientY - a.y0
+    if (!a.activo) {
+      if (Math.hypot(dx, dy) < UMBRAL_ARRASTRE) return
+      a.activo = true
     }
-    case 'color':
-      return { background: f.color }
-    case 'degradado':
-      return { background: `linear-gradient(135deg, ${f.desde}, ${f.hasta})` }
-    case 'imagen':
-      return { background: `#1e293b url("${f.url}") center / cover no-repeat` }
-  }
+    a.alMover(dx, dy)
+  }, [])
+  const soltar = useCallback((e: PointerEventReact<HTMLElement>) => {
+    const a = op.current
+    op.current = null
+    if (!a) return
+    try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { /* ya liberado */ }
+    // Cancelado (el navegador se quedó con el gesto): se deja todo como estaba.
+    if (e.type === 'pointercancel') { a.alSoltar(0, 0, false); return }
+    a.alSoltar(e.clientX - a.x0, e.clientY - a.y0, a.activo)
+  }, [])
+  return { bajar, mover, soltar }
+}
+
+type Punteros = {
+  onPointerMove: (e: PointerEventReact<HTMLElement>) => void
+  onPointerUp: (e: PointerEventReact<HTMLElement>) => void
+  onPointerCancel: (e: PointerEventReact<HTMLElement>) => void
 }
 
 // ----------------------------------------------------------------- iconos
 
-const UMBRAL_ARRASTRE = 6 // px antes de considerar que se arrastra y no se pulsa
+function rectIcono(p: { x: number; y: number }): Rect { return { x: p.x, y: p.y, w: ICONO, h: ICONO } }
 
-type Arrastre = { app: AppId; x0: number; y0: number; activo: boolean; destino: number | null }
+// Dónde va cada icono: los que tienen posición guardada, donde se dejaron
+// (encajados en el área y, si ahora chocan con algo, al hueco más cercano);
+// los demás, en el primer hueco libre recorriendo columnas de izquierda a
+// derecha, en saltos de icono para que queden en columnas limpias.
+function colocarIconos(
+  apps: AppId[], guardadas: Disposicion['iconos'], widgets: Rect[], cols: number, filas: number,
+): Map<AppId, { x: number; y: number }> {
+  const res = new Map<AppId, { x: number; y: number }>()
+  const ocupados: Rect[] = widgets.slice()
+  const sinSitio: AppId[] = []
+  for (const app of apps) {
+    const p = guardadas[app]
+    if (!p) { sinSitio.push(app); continue }
+    const r = huecoMasCercano(rectIcono(p), ocupados, cols, filas)
+    res.set(app, { x: r.x, y: r.y })
+    ocupados.push(r)
+  }
+  for (const app of sinSitio) {
+    const r = primerHueco(ICONO, ICONO, ocupados, cols, filas, ICONO)
+      ?? primerHueco(ICONO, ICONO, ocupados, cols, filas)
+      ?? { x: 0, y: 0, w: ICONO, h: ICONO }
+    res.set(app, { x: r.x, y: r.y })
+    ocupados.push(r)
+  }
+  return res
+}
 
-function IconoApp({ app, indice, seleccionado, arrastrando, destino, movil, onSeleccionar, onAbrir, onPointerDown, onPointerMove, onPointerUp }: {
+function IconoApp({ app, pos, seleccionado, desplazamiento, movil, onSeleccionar, onAbrir, onPointerDown, punteros }: {
   app: AppId
-  indice: number
+  pos: { x: number; y: number } | null
   seleccionado: boolean
-  arrastrando: { dx: number; dy: number } | null
-  destino: boolean
+  desplazamiento: { dx: number; dy: number } | null
   movil: boolean
   onSeleccionar: (app: AppId) => void
   onAbrir: (app: AppId) => void
-  onPointerDown: (e: PointerEventReact<HTMLButtonElement>, app: AppId) => void
-  onPointerMove: (e: PointerEventReact<HTMLButtonElement>) => void
-  onPointerUp: (e: PointerEventReact<HTMLButtonElement>) => void
+  onPointerDown: (e: PointerEventReact<HTMLElement>, app: AppId) => void
+  punteros: Punteros
 }) {
   const def = APPS[app]
   const clases = ['icono-app']
   if (seleccionado) clases.push('seleccionado')
-  if (arrastrando) clases.push('arrastrando')
-  if (destino) clases.push('destino')
-  const estilo: CSSProperties | undefined = arrastrando
-    ? { transform: `translate(${arrastrando.dx}px, ${arrastrando.dy}px)` }
-    : undefined
+  if (desplazamiento) clases.push('arrastrando')
+  const estilo: CSSProperties = {}
+  if (pos) { estilo.left = pos.x * CELDA; estilo.top = pos.y * CELDA }
+  if (desplazamiento) Object.assign(estilo, { '--dx': `${desplazamiento.dx}px`, '--dy': `${desplazamiento.dy}px` })
   return (
     <button
       type="button"
       className={clases.join(' ')}
       style={estilo}
-      data-indice={indice}
       title={def.descripcion}
       aria-label={def.nombre}
       aria-pressed={seleccionado}
       onPointerDown={(e) => onPointerDown(e, app)}
-      onPointerMove={onPointerMove}
-      onPointerUp={onPointerUp}
-      onPointerCancel={onPointerUp}
-      // En móvil un toque abre (se resuelve en pointerup); en escritorio hace
+      {...punteros}
+      // En móvil un toque abre (se resuelve al soltar); en escritorio hace
       // falta doble clic o Enter.
       onDoubleClick={() => { if (!movil) onAbrir(app) }}
       onKeyDown={(e) => {
@@ -196,77 +246,96 @@ function IconoApp({ app, indice, seleccionado, arrastrando, destino, movil, onSe
 
 // ---------------------------------------------------------------- widgets
 
-function Widget({ titulo, onAbrir, children, className }: {
-  titulo: string; onAbrir: () => void; children: ReactNode; className?: string
+type ModoRedim = 'e' | 's' | 'se'
+
+// Marco de un widget: tarjeta de cristal con cabecera (título, «…»), cuerpo
+// con scroll propio, asa de redimensionar y bordes derecho e inferior. El
+// contenido lo pinta el tipo (Widgets.tsx). En móvil no se mueve ni se
+// redimensiona: solo se quita o se ajusta.
+function MarcoWidget({ inst, ctx, movil, desplazamiento, redimensionando, onMover, onRedimensionar, punteros, onTamano, onQuitar, onConfig }: {
+  inst: WidgetInstancia
+  ctx: ContextoWidget
+  movil: boolean
+  desplazamiento: { dx: number; dy: number } | null
+  // Verdadero mientras se arrastra el asa: sin transiciones, que si no el
+  // tamaño va a remolque del puntero.
+  redimensionando: boolean
+  onMover: (e: PointerEventReact<HTMLElement>, id: string) => void
+  onRedimensionar: (e: PointerEventReact<HTMLElement>, id: string, modo: ModoRedim) => void
+  punteros: Punteros
+  onTamano: (id: string, t: TamanoRapido) => void
+  onQuitar: (id: string) => void
+  onConfig: (id: string, config: Record<string, unknown>) => void
 }) {
-  // Es un `div` con rol de botón y no un `<button>` porque dentro va contenido
-  // de bloque (listas, cifras), que HTML no permite dentro de un botón.
+  const def = WIDGETS[inst.tipo]
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
+  const [ajustando, setAjustando] = useState(false)
+  const botonMenu = useRef<HTMLButtonElement>(null)
+
+  const abrirMenu = () => {
+    const r = botonMenu.current?.getBoundingClientRect()
+    if (r) setMenu({ x: r.left, y: r.bottom + 4 })
+  }
+  const contextual = (e: MouseEventReact<HTMLDivElement>) => {
+    e.preventDefault()
+    setMenu({ x: e.clientX, y: e.clientY })
+  }
+  const tamanoActual = TAMANOS_RAPIDOS.find(({ id }) => def.tamanos[id].w === inst.w && def.tamanos[id].h === inst.h)?.id
+
+  const estilo: CSSProperties = movil ? {} : {
+    left: inst.x * CELDA, top: inst.y * CELDA, width: inst.w * CELDA, height: inst.h * CELDA,
+  }
+  // El desplazamiento va en variables CSS para que la hoja de estilos pueda
+  // combinarlo con la escala de «arrastrando» en un solo transform.
+  if (desplazamiento) Object.assign(estilo, { '--dx': `${desplazamiento.dx}px`, '--dy': `${desplazamiento.dy}px` })
+
+  const opciones: OpcionMenu[] = []
+  if (!movil) {
+    for (const t of TAMANOS_RAPIDOS) {
+      opciones.push({ etiqueta: t.nombre, marcado: tamanoActual === t.id, accion: () => onTamano(inst.id, t.id) })
+    }
+    opciones.push({ separador: true })
+  }
+  if (def.ajustes) opciones.push({ etiqueta: 'Ajustes…', accion: () => setAjustando(true) })
+  opciones.push({ etiqueta: 'Quitar', accion: () => onQuitar(inst.id) })
+
   return (
-    <div className={`widget ${className ?? ''}`} role="button" tabIndex={0} onClick={onAbrir}
-      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onAbrir() } }}>
-      <div className="widget-titulo">{titulo}</div>
-      {children}
+    <div
+      className={`widget widget-tipo-${inst.tipo}${desplazamiento ? ' arrastrando' : ''}${redimensionando ? ' redimensionando' : ''}`}
+      style={estilo}
+      data-widget={inst.id}
+      onContextMenu={contextual}
+    >
+      <div
+        className="widget-cabecera"
+        onPointerDown={(e) => {
+          // El «…» no arrastra: abre el menú.
+          if ((e.target as HTMLElement).closest('.widget-menu')) return
+          if (!movil) onMover(e, inst.id)
+        }}
+        {...punteros}
+      >
+        <span className="widget-titulo">{tituloWidget(inst)}</span>
+        <button ref={botonMenu} type="button" className="widget-menu" aria-label={`Opciones de ${def.nombre}`}
+          aria-haspopup="menu" onClick={abrirMenu}>…</button>
+      </div>
+      <div className="widget-cuerpo">
+        {ajustando && def.ajustes ? (
+          <div className="widget-ajustes">
+            {def.ajustes(inst, (config) => onConfig(inst.id, config), ctx)}
+            <button type="button" className="widget-listo" onClick={() => setAjustando(false)}>Listo</button>
+          </div>
+        ) : def.render(inst, ctx)}
+      </div>
+      {!movil && (
+        <>
+          <div className="widget-borde widget-borde-e" onPointerDown={(e) => onRedimensionar(e, inst.id, 'e')} {...punteros} />
+          <div className="widget-borde widget-borde-s" onPointerDown={(e) => onRedimensionar(e, inst.id, 's')} {...punteros} />
+          <div className="widget-asa" aria-hidden onPointerDown={(e) => onRedimensionar(e, inst.id, 'se')} {...punteros} />
+        </>
+      )}
+      {menu && <MenuContextual x={menu.x} y={menu.y} opciones={opciones} onCerrar={() => setMenu(null)} />}
     </div>
-  )
-}
-
-function WidgetAtencion() {
-  const datos = useDatos()
-  const sistema = useSistema()
-  const lista = datos.atencion.slice(0, 5)
-  const total = datos.resumen?.en_atencion ?? datos.atencion.reduce((s, a) => s + a.cantidad, 0)
-  return (
-    <Widget titulo="Atención" className="widget-atencion" onAbrir={() => sistema.abrir('catalogo')}>
-      <div className="widget-cifra">
-        <strong>{total}</strong>
-        <span>{total === 1 ? 'producto pide revisión' : 'productos piden revisión'}</span>
-      </div>
-      {lista.length > 0 ? (
-        <ul className="widget-lista">
-          {lista.map((a) => (
-            <li key={a.motivo} data-severidad={a.severidad}>
-              <span className="widget-motivo">{a.motivo}</span>
-              <span className="widget-numero">{a.cantidad}</span>
-            </li>
-          ))}
-        </ul>
-      ) : <div className="widget-vacio">Nada pendiente</div>}
-    </Widget>
-  )
-}
-
-function WidgetPedidos() {
-  const datos = useDatos()
-  const sistema = useSistema()
-  const p = datos.pedidos
-  return (
-    <Widget titulo="Pedidos" className="widget-pedidos" onAbrir={() => sistema.abrir('pedidos')}>
-      {p ? (
-        <div className="widget-tres">
-          <div><strong>{p.recibidos}</strong><span>recibidos</span></div>
-          <div className={p.fallidos > 0 ? 'mal' : undefined}><strong>{p.fallidos}</strong><span>fallidos</span></div>
-          {/* «montados» = ya creados en Odoo (en_odoo en la API). */}
-          <div className="bien"><strong>{p.en_odoo}</strong><span>montados</span></div>
-        </div>
-      ) : <div className="widget-vacio">Sin datos todavía</div>}
-    </Widget>
-  )
-}
-
-function WidgetActividad() {
-  const datos = useDatos()
-  const sistema = useSistema()
-  const n = datos.tareasActivas
-  return (
-    <Widget titulo="Actividad" className="widget-actividad" onAbrir={() => sistema.abrir('actividad')}>
-      <div className="widget-cifra">
-        <strong className={n > 0 ? 'en-marcha' : undefined}>{n}</strong>
-        <span>{n === 1 ? 'tarea en marcha' : 'tareas en marcha'}</span>
-      </div>
-      <div className="widget-pie">
-        Última sincronización: <b>{hace(datos.resumen?.ultima_sincronizacion)}</b>
-      </div>
-    </Widget>
   )
 }
 
@@ -275,129 +344,197 @@ function WidgetActividad() {
 export function Escritorio() {
   const sistema = useSistema()
   const { prefs, poner } = usePreferencias()
+  const datos = useDatos()
   const { usuario } = useSesion()
   const esAdmin = usuario.role === 'admin'
+  const disp = prefs.disposicion
+  const movil = sistema.movil
 
   const iconos = useMemo(
     () => prefs.escritorio.filter((id) => APPS[id] && (!APPS[id].soloAdmin || esAdmin)),
     [prefs.escritorio, esAdmin],
   )
 
+  // Celdas que caben en el área. Cambia con la ventana del navegador.
+  const { cols, filas } = dimensionesLienzo(sistema.area)
+
+  // Widgets tal como se pintan: lo guardado, encajado en el área actual (una
+  // disposición hecha en 1920 px no se sale en una pantalla menor). Solo se
+  // persiste cuando el usuario mueve algo.
+  const widgets = useMemo(
+    () => disp.widgets.map((w) => ({ ...w, ...encajar(w, cols, filas) })),
+    [disp.widgets, cols, filas],
+  )
+  const posIconos = useMemo(
+    () => colocarIconos(iconos, disp.iconos, widgets, cols, filas),
+    [iconos, disp.iconos, widgets, cols, filas],
+  )
+
+  const ctx = useMemo<ContextoWidget>(
+    () => ({ datos, abrir: sistema.abrir, movil, esAdmin }),
+    [datos, sistema.abrir, movil, esAdmin],
+  )
+
   const [seleccion, setSeleccion] = useState<AppId | null>(null)
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
-  const arrastre = useRef<Arrastre | null>(null)
-  const [vista, setVista] = useState<{ app: AppId; dx: number; dy: number; destino: number | null } | null>(null)
+  const [galeria, setGaleria] = useState(false)
+  // Lo que se está arrastrando ahora mismo, en px desde su sitio.
+  const [vista, setVista] = useState<{ tipo: 'icono' | 'widget'; id: string; dx: number; dy: number } | null>(null)
+  // Tamaño en vivo mientras se redimensiona (ya pegado a celdas).
+  const [tamanoVivo, setTamanoVivo] = useState<{ id: string; w: number; h: number } | null>(null)
 
+  const { bajar, mover, soltar } = useArrastre()
+  const punteros = useMemo<Punteros>(() => ({ onPointerMove: mover, onPointerUp: soltar, onPointerCancel: soltar }), [mover, soltar])
+
+  const guardar = useCallback((d: Disposicion) => poner({ disposicion: d }), [poner])
   const abrir = useCallback((app: AppId) => { sistema.abrir(app) }, [sistema])
 
-  // --- arrastre de iconos con pointer events (sin librerías)
-  const bajar = (e: PointerEventReact<HTMLButtonElement>, app: AppId) => {
-    if (e.button !== 0) return
+  // --- iconos: arrastrar a cualquier sitio; al soltar, a la celda más
+  // cercana, y si está ocupada, al hueco libre más próximo.
+  const bajarIcono = (e: PointerEventReact<HTMLElement>, app: AppId) => {
     setSeleccion(app)
-    arrastre.current = { app, x0: e.clientX, y0: e.clientY, activo: false, destino: null }
-    e.currentTarget.setPointerCapture(e.pointerId)
-  }
-  const mover = (e: PointerEventReact<HTMLButtonElement>) => {
-    const a = arrastre.current
-    if (!a) return
-    const dx = e.clientX - a.x0
-    const dy = e.clientY - a.y0
-    if (!a.activo) {
-      if (Math.hypot(dx, dy) < UMBRAL_ARRASTRE) return
-      a.activo = true
-    }
-    // El icono arrastrado tiene `pointer-events: none` (clase .arrastrando),
-    // así que elementFromPoint devuelve el icono que hay debajo del puntero.
-    const bajo = document.elementFromPoint(e.clientX, e.clientY)?.closest<HTMLElement>('.icono-app')
-    const destino = bajo?.dataset.indice != null ? Number(bajo.dataset.indice) : null
-    a.destino = destino
-    setVista({ app: a.app, dx, dy, destino })
-  }
-  const soltar = (e: PointerEventReact<HTMLButtonElement>) => {
-    const a = arrastre.current
-    arrastre.current = null
-    setVista(null)
-    if (!a) return
-    try { e.currentTarget.releasePointerCapture(e.pointerId) } catch { /* ya liberado */ }
-    if (e.type === 'pointercancel') return
-    if (a.activo) {
-      const desde = iconos.indexOf(a.app)
-      if (a.destino != null && a.destino !== desde && desde >= 0) {
-        // Se reordena sobre la lista completa de prefs (no sobre la filtrada
-        // por rol) para no perder los iconos que este usuario no ve.
-        const orden = prefs.escritorio.slice()
-        const objetivo = iconos[a.destino]
-        orden.splice(orden.indexOf(a.app), 1)
-        const j = orden.indexOf(objetivo)
-        orden.splice(a.destino > desde ? j + 1 : j, 0, a.app)
-        poner({ escritorio: orden })
-      }
+    if (movil) {
+      // En móvil no hay posiciones libres: el gesto solo sirve para abrir.
+      bajar(e, () => {}, (_dx, _dy, arrastro) => { if (!arrastro) abrir(app) })
       return
     }
-    // Sin arrastre: fue un clic. En móvil no hay doble clic: un toque abre.
-    if (sistema.movil) abrir(a.app)
+    bajar(e,
+      (dx, dy) => setVista({ tipo: 'icono', id: app, dx, dy }),
+      (dx, dy, arrastro) => {
+        setVista(null)
+        if (!arrastro) return
+        const p = posIconos.get(app)
+        if (!p) return
+        const deseado = rectIcono({ x: Math.round(p.x + dx / CELDA), y: Math.round(p.y + dy / CELDA) })
+        const ocupados: Rect[] = [
+          ...widgets,
+          ...iconos.filter((a) => a !== app).map((a) => rectIcono(posIconos.get(a) ?? { x: 0, y: 0 })),
+        ]
+        const r = huecoMasCercano(deseado, ocupados, cols, filas)
+        guardar({ ...disp, iconos: { ...disp.iconos, [app]: { x: r.x, y: r.y } } })
+      })
   }
+
+  // --- widgets: mover por la cabecera, redimensionar por asa y bordes.
+  const moverWidget = (e: PointerEventReact<HTMLElement>, id: string) => {
+    bajar(e,
+      (dx, dy) => setVista({ tipo: 'widget', id, dx, dy }),
+      (dx, dy, arrastro) => {
+        setVista(null)
+        if (!arrastro) return
+        const w = widgets.find((x) => x.id === id)
+        if (!w) return
+        const deseado = { x: Math.round(w.x + dx / CELDA), y: Math.round(w.y + dy / CELDA), w: w.w, h: w.h }
+        // Los widgets se esquivan entre sí; los iconos se apartan solos si
+        // no tienen posición fija (ver colocarIconos).
+        const r = huecoMasCercano(deseado, widgets.filter((o) => o.id !== id), cols, filas)
+        guardar({ ...disp, widgets: disp.widgets.map((o) => (o.id === id ? { ...o, x: r.x, y: r.y, w: r.w, h: r.h } : o)) })
+      })
+  }
+  const redimensionarWidget = (e: PointerEventReact<HTMLElement>, id: string, modo: ModoRedim) => {
+    const w = widgets.find((x) => x.id === id)
+    if (!w) return
+    const min = WIDGETS[w.tipo].minimo
+    const calcular = (dx: number, dy: number) => ({
+      id,
+      w: modo === 's' ? w.w : Math.max(min.w, Math.min(cols - w.x, Math.round((w.w * CELDA + dx) / CELDA))),
+      h: modo === 'e' ? w.h : Math.max(min.h, Math.min(filas - w.y, Math.round((w.h * CELDA + dy) / CELDA))),
+    })
+    bajar(e,
+      (dx, dy) => setTamanoVivo(calcular(dx, dy)),
+      (dx, dy, arrastro) => {
+        setTamanoVivo(null)
+        if (!arrastro) return
+        const t = calcular(dx, dy)
+        guardar({ ...disp, widgets: disp.widgets.map((o) => (o.id === id ? { ...o, x: w.x, y: w.y, w: t.w, h: t.h } : o)) })
+      })
+  }
+  const tamanoRapido = (id: string, t: TamanoRapido) => {
+    const w = widgets.find((x) => x.id === id)
+    if (!w) return
+    // El tamaño pedido, desplazado si no cabe desde donde está.
+    const r = encajar({ x: w.x, y: w.y, ...WIDGETS[w.tipo].tamanos[t] }, cols, filas)
+    guardar({ ...disp, widgets: disp.widgets.map((o) => (o.id === id ? { ...o, ...r } : o)) })
+  }
+  const quitarWidget = (id: string) => guardar({ ...disp, widgets: disp.widgets.filter((o) => o.id !== id) })
+  const configurarWidget = (id: string, config: Record<string, unknown>) =>
+    guardar({ ...disp, widgets: disp.widgets.map((o) => (o.id === id ? { ...o, config } : o)) })
 
   // --- menú contextual del fondo
   const contextual = (e: MouseEventReact<HTMLDivElement>) => {
-    // Solo sobre el fondo, no sobre iconos ni widgets.
+    // Solo sobre el fondo, no sobre iconos ni widgets (tienen el suyo).
     const t = e.target as HTMLElement
     if (t.closest('.icono-app, .widget')) return
     e.preventDefault()
     setMenu({ x: e.clientX, y: e.clientY })
   }
-  const ordenar = () => {
-    // Orden canónico de las apps, conservando solo las que están en el escritorio.
-    const presentes = new Set(prefs.escritorio)
-    poner({ escritorio: ORDEN_APPS.filter((id) => presentes.has(id)) })
-  }
-  const alternarWidget = (k: keyof typeof prefs.widgets) => {
-    poner({ widgets: { ...prefs.widgets, [k]: !prefs.widgets[k] } })
-  }
+  // Sin posiciones guardadas, todos se autocolocan en columnas por el orden
+  // de prefs.escritorio: eso es «ordenar».
+  const ordenar = () => guardar({ ...disp, iconos: {} })
 
   // Clic en el fondo: deselecciona. No hay API para quitar el foco a las
   // ventanas; con deseleccionar los iconos basta para que parezca lo mismo.
   const clicFondo = (e: MouseEventReact<HTMLDivElement>) => {
     const t = e.target as HTMLElement
-    if (t.closest('.icono-app, .widget')) return
+    if (t.closest('.icono-app, .widget, .boton-anadir-widget')) return
     setSeleccion(null)
   }
 
-  const hayWidgets = prefs.widgets.atencion || prefs.widgets.pedidos || prefs.widgets.actividad
+  const pintarIcono = (app: AppId) => (
+    <IconoApp
+      key={app}
+      app={app}
+      pos={movil ? null : (posIconos.get(app) ?? null)}
+      seleccionado={seleccion === app}
+      desplazamiento={vista?.tipo === 'icono' && vista.id === app ? { dx: vista.dx, dy: vista.dy } : null}
+      movil={movil}
+      onSeleccionar={setSeleccion}
+      onAbrir={abrir}
+      onPointerDown={bajarIcono}
+      punteros={punteros}
+    />
+  )
+  const pintarWidget = (w: WidgetInstancia) => (
+    <MarcoWidget
+      key={w.id}
+      inst={tamanoVivo?.id === w.id ? { ...w, w: tamanoVivo.w, h: tamanoVivo.h } : w}
+      ctx={ctx}
+      movil={movil}
+      desplazamiento={vista?.tipo === 'widget' && vista.id === w.id ? { dx: vista.dx, dy: vista.dy } : null}
+      redimensionando={tamanoVivo?.id === w.id}
+      onMover={moverWidget}
+      onRedimensionar={redimensionarWidget}
+      punteros={punteros}
+      onTamano={tamanoRapido}
+      onQuitar={quitarWidget}
+      onConfig={configurarWidget}
+    />
+  )
 
   return (
     <div
-      className={`escritorio${sistema.movil ? ' movil' : ''}`}
-      style={estiloFondo(prefs.fondo)}
+      className={`escritorio${movil ? ' movil' : ''}`}
+      style={{ background: cssFondo(prefs.fondo) }}
       onContextMenu={contextual}
       onMouseDown={clicFondo}
     >
-      <div className="escritorio-iconos" aria-label="Iconos del escritorio">
-        {iconos.map((app, i) => (
-          <IconoApp
-            key={app}
-            app={app}
-            indice={i}
-            seleccionado={seleccion === app}
-            arrastrando={vista?.app === app ? { dx: vista.dx, dy: vista.dy } : null}
-            destino={vista != null && vista.destino === i && vista.app !== app}
-            movil={sistema.movil}
-            onSeleccionar={setSeleccion}
-            onAbrir={abrir}
-            onPointerDown={bajar}
-            onPointerMove={mover}
-            onPointerUp={soltar}
-          />
-        ))}
-      </div>
-
-      {hayWidgets && (
-        <aside className="widgets" aria-label="Widgets">
-          {prefs.widgets.atencion && <WidgetAtencion />}
-          {prefs.widgets.pedidos && <WidgetPedidos />}
-          {prefs.widgets.actividad && <WidgetActividad />}
-        </aside>
+      {movil ? (
+        // Móvil: sin posiciones libres. Iconos en rejilla por filas y los
+        // widgets apilados debajo, con desplazamiento vertical.
+        <>
+          <div className="escritorio-iconos" aria-label="Iconos del escritorio">{iconos.map(pintarIcono)}</div>
+          <div className="escritorio-widgets" aria-label="Widgets">{widgets.map(pintarWidget)}</div>
+        </>
+      ) : (
+        <div className="lienzo" style={{ inset: MARGEN }}>
+          {iconos.map(pintarIcono)}
+          {widgets.map(pintarWidget)}
+        </div>
       )}
+
+      <button type="button" className="boton-anadir-widget" title="Añadir widget" aria-label="Añadir widget"
+        onClick={() => setGaleria(true)}>+</button>
+      <GaleriaWidgets abierta={galeria} onCerrar={() => setGaleria(false)} />
 
       {menu && (
         <MenuContextual
@@ -405,11 +542,8 @@ export function Escritorio() {
           y={menu.y}
           onCerrar={() => setMenu(null)}
           opciones={[
-            { etiqueta: 'Ordenar iconos', accion: ordenar },
-            { separador: true },
-            { etiqueta: 'Widget de atención', marcado: prefs.widgets.atencion, accion: () => alternarWidget('atencion') },
-            { etiqueta: 'Widget de pedidos', marcado: prefs.widgets.pedidos, accion: () => alternarWidget('pedidos') },
-            { etiqueta: 'Widget de actividad', marcado: prefs.widgets.actividad, accion: () => alternarWidget('actividad') },
+            { etiqueta: 'Ordenar iconos', accion: ordenar, deshabilitado: movil },
+            { etiqueta: 'Añadir widget…', accion: () => setGaleria(true) },
             { separador: true },
             { etiqueta: 'Cambiar fondo…', accion: () => sistema.abrir('configuracion') },
             { etiqueta: 'Minimizar todas las ventanas', deshabilitado: sistema.ventanas.length === 0, accion: () => sistema.minimizarTodas() },

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { confirmar } from './escritorio/Dialogos'
 import { api, fecha, num, type ConexionOdoo, type DatosIntegracion } from './api'
 
 // Conexiones a Odoo. La API key viaja una sola vez al guardar (se cifra en el
@@ -43,9 +44,9 @@ export function Integraciones() {
     // Activar cambia de qué Odoo sale el catálogo entero de aquí en adelante;
     // no borra nada, pero la siguiente sincronización ya lee de otro sitio.
     const actual = conexiones.find((x) => x.activa)
-    if (!window.confirm(
+    if (!(await confirmar(
       `Integra pasará a sincronizar contra ${c.nombre} (${c.base_url}, base ${c.database})`
-      + `${actual ? `, en lugar de ${actual.nombre}` : ''}. ¿Continuar?`)) return
+      + `${actual ? `, en lugar de ${actual.nombre}` : ''}. ¿Continuar?`))) return
     setOperando({ id: c.id, que: 'Activando…' })
     setError(null)
     try {
@@ -58,11 +59,11 @@ export function Integraciones() {
     }
   }
 
-  function borrar(c: ConexionOdoo) {
+  async function borrar(c: ConexionOdoo) {
     const aviso = c.productos > 0
       ? `Se borrará la conexión ${c.nombre} Y SUS ${num(c.productos)} PRODUCTOS sincronizados. El trabajo de Integra (precios, imágenes) que cuelga de ella quedará huérfano. ¿Continuar?`
       : `Se borrará la conexión ${c.nombre}. ¿Continuar?`
-    if (!window.confirm(aviso)) return
+    if (!(await confirmar(aviso))) return
     setOperando({ id: c.id, que: 'Borrando…' })
     setError(null)
     api.borrarIntegracion(c.id)

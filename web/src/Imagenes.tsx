@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { confirmar } from './escritorio/Dialogos'
 import { EditorFoto, type FotoEditable } from './EditorFoto'
 import { SelectorMediateca } from './SelectorMediateca'
 import { api, type ImagenProducto } from './api'
@@ -91,7 +92,7 @@ export function Imagenes({ varianteId, onCambio }: { varianteId: number; onCambi
     const aviso = img.principal
       ? 'Esta es la foto de portada. Si la quitas, el producto se queda sin portada hasta que elijas otra. ¿Quitarla?'
       : 'Se quita esta foto del banco de Integra. ¿Seguro?'
-    if (!window.confirm(aviso)) return
+    if (!(await confirmar(aviso))) return
 
     setOcupada(img.id)
     setError(null)
