@@ -109,3 +109,21 @@
    se está viendo. El «?» que cada diálogo lleva en su cabecera era para
    cuando eran modales; dentro de una ventana sobra. */
 .ventana-cuerpo button[title="Cómo funciona esta pantalla"] { display: none; }
+
+/* Aire dentro de la ventana: el contenido (filas, notas, formularios) lleva
+   su margen; solo la barra de herramientas, las tablas y la paginación van
+   a sangre, sacándolas del relleno con márgenes negativos. */
+.ventana-cuerpo .app-seccion > .panel > .cuerpo,
+.ventana-cuerpo .app-seccion > .rejilla-1 > .panel > .cuerpo { padding: 10px 16px 16px; }
+.ventana-cuerpo .panel > .cuerpo > .filtros:first-child { margin: -10px -16px 12px; }
+.ventana-cuerpo .panel > .cuerpo > .barra-masiva { margin: 0 -16px 12px; }
+.ventana-cuerpo .panel > .cuerpo > .filtros:first-child + .barra-masiva { margin-top: -12px; }
+.ventana-cuerpo .panel > .cuerpo > .tabla-envoltorio { margin: 0 -16px; }
+.ventana-cuerpo .panel > .cuerpo > .paginacion { margin: 0 -16px -16px; }
+.ventana-cuerpo .vista-mosaico, .ventana-cuerpo .vista-iconos, .ventana-cuerpo .vista-lista { padding: 12px 0; }
+.ventana-cuerpo .app-seccion > .aviso-caja,
+.ventana-cuerpo .app-seccion > .nota-previa,
+.ventana-cuerpo .app-seccion > .rejilla,
+.ventana-cuerpo .app-seccion > .rejilla-1 { margin-left: 16px; margin-right: 16px; }
+.ventana-cuerpo .app-seccion > .rejilla-1 > .panel { border: 1px solid var(--borde); border-radius: var(--radio); }
+.ventana-cuerpo .app-seccion > .rejilla-1 { margin-top: 12px; margin-bottom: 12px; }
