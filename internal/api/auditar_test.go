@@ -190,10 +190,16 @@ func usuarioAuditor(t *testing.T, st *store.Store, ctx context.Context) int64 {
 	if err != nil {
 		t.Fatalf("creando el usuario de prueba: %v", err)
 	}
-	// Se desactiva en vez de borrarse: la fila de auditoría apunta a su
-	// usuario, y el registro tiene que seguir diciendo quién fue.
+	// Se borra del todo, y antes se borra lo que anotó en la auditoría. Se
+	// desactivaba «para que la auditoría siguiera diciendo quién fue», pero
+	// eso vale para una persona real, no para una cobaya: cada corrida dejaba
+	// un usuario más para siempre —cuarenta y cinco en un día— y sus filas de
+	// auditoría, con el usuario a NULL, salían como «sistema» y enterraban la
+	// historia real bajo un 94 % de ruido.
 	t.Cleanup(func() {
-		_ = st.ActualizarUsuario(context.Background(), id, "ZZ Auditoría", auth.RolOperator, false)
+		bg := context.Background()
+		_, _ = st.Pool().Exec(bg, `DELETE FROM audit_logs WHERE user_id = $1`, id)
+		_, _ = st.BorrarUsuario(bg, email)
 	})
 	return id
 }
