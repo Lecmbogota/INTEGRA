@@ -89,6 +89,8 @@ func (a *Adaptador) Kind() channel.Kind { return channel.WooCommerce }
 
 func (a *Adaptador) Capabilities() channel.Capabilities {
 	return channel.Capabilities{
+		// La API borra el producto de verdad y su dirección deja de resolver.
+		BorradoReal:          true,
 		NativeCompareAtPrice: true, // regular_price + sale_price
 		ScheduledOffers:      true, // date_on_sale_from / _to
 		BulkPriceUpdate:      true, // products/batch
@@ -702,4 +704,25 @@ func recortar(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+// Delete borra el producto de la tienda.
+//
+// force=true porque sin él WooCommerce lo manda a la papelera: seguiría
+// ocupando su SKU, y el siguiente intento de publicar chocaría con un producto
+// «que no existe» pero que la tienda sigue reservando.
+func (a *Adaptador) Delete(ctx context.Context, ref channel.ExternalRef) error {
+	if ref.ListingID == "" {
+		return &channel.Error{
+			Kind: channel.WooCommerce, StatusCode: http.StatusBadRequest,
+			Message: "falta el identificador del producto en la tienda",
+		}
+	}
+	err := a.llamar(ctx, http.MethodDelete,
+		"/products/"+ref.ListingID, url.Values{"force": {"true"}}, nil, nil)
+	// Ya no está: se da por hecho. El objetivo era que dejara de existir.
+	if errors.Is(err, channel.ErrNoEncontrado) {
+		return nil
+	}
+	return err
 }

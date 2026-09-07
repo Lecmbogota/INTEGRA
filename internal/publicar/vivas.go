@@ -275,3 +275,40 @@ func EncolarActivacion(ctx context.Context, cola encolador, st interface {
 	}
 	return len(pubs), nil
 }
+
+// TrabajoBorrar elimina una publicación del canal para siempre.
+const TrabajoBorrar = "borrar_publicacion"
+
+// borrar quita la ficha del canal y su rastro en Integra.
+//
+// Nunca lo encola el motor: borrar tira el historial, las preguntas, las
+// reseñas y la posición en el buscador del canal, y la dirección deja de
+// existir. Eso solo lo decide una persona.
+func (s *Servicio) borrar(ctx context.Context, t jobs.Trabajo) error {
+	p, ref, ad, err := s.publicacion(ctx, t)
+	if err != nil {
+		return err
+	}
+	if err := ad.Delete(ctx, ref); err != nil {
+		// Si ya no está, el objetivo se cumplió: se limpia igual el rastro
+		// local, que si no queda apuntando a una ficha inexistente y el motor
+		// intentaría actualizarla para siempre.
+		if !errors.Is(err, channel.ErrNoEncontrado) {
+			return err
+		}
+	}
+	// El olvido va después del canal y no antes: al revés, un fallo de red
+	// dejaría la ficha viva allí y a Integra convencida de que no existe, que
+	// es la forma de tener un producto vendiéndose sin que nadie lo vigile.
+	return s.st.OlvidarPublicacion(ctx, p.CuentaID, p.VarianteID)
+}
+
+// EncolarBorrado pide eliminar del canal las publicaciones de unas variantes.
+func EncolarBorrado(ctx context.Context, cola encolador, cuentaID int64, variantes []int64) (int, error) {
+	for _, v := range variantes {
+		if err := encolar(ctx, cola, TrabajoBorrar, cuentaID, v, 10); err != nil {
+			return 0, err
+		}
+	}
+	return len(variantes), nil
+}

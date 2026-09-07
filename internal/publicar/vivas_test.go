@@ -245,3 +245,69 @@ func TestPausarLoQueYaNoExisteLoDejaMarcadoComoCaido(t *testing.T) {
 		t.Fatalf("quedó como %q", got)
 	}
 }
+
+// ------------------------------------------------------------------ borrado
+
+// Borrar no es pausar. Pausar deja la ficha con su historial, sus preguntas,
+// sus reseñas y su posición en el buscador del canal, listos para volver;
+// borrar tira todo eso y la dirección deja de existir. Por eso el motor no lo
+// encola jamás por su cuenta y por eso el orden de las dos operaciones —canal
+// primero, olvido después— importa tanto.
+
+func trabajoDeBorrado(t *testing.T, cuentaID, varianteID int64) jobs.Trabajo {
+	t.Helper()
+	cuerpo, err := json.Marshal(PayloadPublicar{CuentaID: cuentaID, VarianteID: varianteID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return jobs.Trabajo{ID: 1, Kind: TrabajoBorrar, Payload: cuerpo}
+}
+
+func TestBorrarQuitaLaFichaDelCanalYDespuesSuRastro(t *testing.T) {
+	st := &almacenFalso{ref: channel.ExternalRef{ListingID: "777", SKU: "SKU-1"}}
+	canal := &canalFalso{}
+	s := servicioDePrueba(st, &colaFalsa{}, canal)
+
+	if err := s.borrar(context.Background(), trabajoDeBorrado(t, 5, 42)); err != nil {
+		t.Fatal(err)
+	}
+	if len(canal.borradas) != 1 || canal.borradas[0] != "777" {
+		t.Errorf("no se pidió borrar la ficha correcta: %q", canal.borradas)
+	}
+	if len(st.olvidadas) != 1 || st.olvidadas[0] != 42 {
+		t.Errorf("no se olvidó el rastro local: %v", st.olvidadas)
+	}
+}
+
+func TestSiElCanalNoBorraNoSeOlvidaElRastro(t *testing.T) {
+	// Al revés —olvidar primero— un fallo de red dejaría la ficha viva en el
+	// canal y a Integra convencida de que no existe: un producto vendiéndose
+	// sin que nadie lo vigile ni lo pueda volver a tocar.
+	st := &almacenFalso{ref: channel.ExternalRef{ListingID: "777", SKU: "SKU-1"}}
+	canal := &canalFalso{errBorrar: &channel.Error{
+		Kind: channel.WooCommerce, StatusCode: 502, Message: "la tienda no responde",
+	}}
+	s := servicioDePrueba(st, &colaFalsa{}, canal)
+
+	if err := s.borrar(context.Background(), trabajoDeBorrado(t, 5, 42)); err == nil {
+		t.Fatal("un 502 tiene que devolver error para que el trabajo se reintente")
+	}
+	if len(st.olvidadas) != 0 {
+		t.Error("se olvidó el rastro de una ficha que sigue viva en el canal")
+	}
+}
+
+func TestUnaFichaQueYaNoExisteSeOlvidaIgual(t *testing.T) {
+	// El objetivo era que dejara de existir y ya no existe. Dejar el rastro
+	// haría que el motor intentara actualizarla para siempre.
+	st := &almacenFalso{ref: channel.ExternalRef{ListingID: "777", SKU: "SKU-1"}}
+	canal := &canalFalso{errBorrar: channel.ErrNoEncontrado}
+	s := servicioDePrueba(st, &colaFalsa{}, canal)
+
+	if err := s.borrar(context.Background(), trabajoDeBorrado(t, 5, 42)); err != nil {
+		t.Fatalf("una ficha ya inexistente no es un fallo: %v", err)
+	}
+	if len(st.olvidadas) != 1 {
+		t.Error("no se limpió el rastro de una ficha que ya no está")
+	}
+}

@@ -183,3 +183,5 @@ func contiene(s, sub string) bool {
 	}
 	return false
 }
+
+func (a *adaptadorFalso) Delete(context.Context, ExternalRef) error { return nil }

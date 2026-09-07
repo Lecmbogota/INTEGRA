@@ -260,3 +260,33 @@ func (s *Store) PublicacionesDeCuenta(ctx context.Context, cuentaID int64, paraA
 	defer filas.Close()
 	return leerPublicacionesVivas(filas)
 }
+
+// OlvidarPublicacion borra el rastro local de una ficha eliminada del canal.
+//
+// Se quitan las dos filas y sus hashes: dejarlas haría que el motor tratara de
+// actualizar para siempre una publicación que ya no existe, y que el producto
+// no se pudiera volver a publicar nunca porque el external_id seguía ahí.
+func (s *Store) OlvidarPublicacion(ctx context.Context, cuentaID, varianteID int64) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM variant_channel_listings
+		WHERE channel_account_id = $1 AND variant_id = $2`, cuentaID, varianteID); err != nil {
+		return fmt.Errorf("olvidando la publicación de la variante %d: %w", varianteID, err)
+	}
+	// La fila de producto solo se borra si no le queda ninguna variante: un
+	// producto con varias publicadas sigue vivo en el canal.
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM product_channel_listings l
+		WHERE l.channel_account_id = $1
+		  AND l.product_id = (SELECT product_id FROM product_variants WHERE id = $2)
+		  AND NOT EXISTS (SELECT 1 FROM variant_channel_listings v WHERE v.listing_id = l.id)`,
+		cuentaID, varianteID); err != nil {
+		return fmt.Errorf("olvidando la ficha de producto: %w", err)
+	}
+	return tx.Commit(ctx)
+}

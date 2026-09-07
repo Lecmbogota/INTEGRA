@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/mdv/integra/internal/atributos"
+	"github.com/mdv/integra/internal/auth"
 	"github.com/mdv/integra/internal/conectores"
 	"github.com/mdv/integra/internal/crypto"
 	"github.com/mdv/integra/internal/imagen"
@@ -100,6 +101,7 @@ func Nuevo(st *store.Store, log *slog.Logger, addr string, alm *imagen.Almacen, 
 	mux.HandleFunc("GET /api/publicaciones/productos", s.estadoPublicaciones)
 	mux.HandleFunc("POST /api/cuentas/{id}/planificar", s.planificar)
 	mux.HandleFunc("POST /api/cuentas/{id}/publicaciones/{accion}", s.activarPublicaciones)
+	mux.HandleFunc("DELETE /api/cuentas/{id}/publicaciones", s.borrarPublicaciones)
 	mux.HandleFunc("GET /api/cuentas", s.cuentas)
 	mux.HandleFunc("PUT /api/cuentas/{canal}", s.guardarCuenta)
 	mux.HandleFunc("POST /api/cuentas/{id}/probar", s.probarCuenta)
@@ -815,6 +817,57 @@ func (s *Server) activarPublicaciones(w http.ResponseWriter, r *http.Request) {
 		strconv.FormatInt(id, 10), nil, map[string]any{"publicaciones": n}, r.RemoteAddr)
 
 	escribir(w, http.StatusOK, map[string]any{"encoladas": n, "activar": activar})
+}
+
+// borrarPublicaciones elimina del canal las fichas de unas variantes.
+//
+// Solo administradores: borrar no se deshace. Pausar deja la ficha con su
+// historial, sus preguntas, sus reseñas y su posición en el buscador del
+// canal, listos para volver; esto tira todo eso y la dirección deja de
+// existir. En MercadoLibre y en Falabella ni siquiera hay borrado: la ficha
+// queda cerrada para siempre, que es lo más cerca que se puede estar.
+func (s *Server) borrarPublicaciones(w http.ResponseWriter, r *http.Request) {
+	claims := s.exigirRolRetorno(w, r, auth.RolAdmin)
+	if claims == nil {
+		return
+	}
+	if s.cola == nil {
+		escribir(w, http.StatusServiceUnavailable,
+			map[string]string{"error": "la cola de trabajos no está disponible en este proceso"})
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		escribir(w, http.StatusBadRequest, map[string]string{"error": "identificador inválido"})
+		return
+	}
+
+	var req struct {
+		Variantes []int64 `json:"variantes"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "cuerpo json inválido", http.StatusBadRequest)
+		return
+	}
+	if len(req.Variantes) == 0 {
+		// Sin lista se borraría el canal entero por accidente. Aquí no hay
+		// «todo» implícito: hay que decir qué.
+		escribir(w, http.StatusBadRequest,
+			map[string]string{"error": "no dijiste qué publicaciones borrar"})
+		return
+	}
+
+	n, err := publicar.EncolarBorrado(r.Context(), s.cola, id, req.Variantes)
+	if err != nil {
+		s.fallo(w, err)
+		return
+	}
+
+	_ = s.st.RegistrarAuditoria(r.Context(), &claims.UserID, "delete", "publicaciones",
+		strconv.FormatInt(id, 10), nil,
+		map[string]any{"variantes": req.Variantes}, r.RemoteAddr)
+
+	escribir(w, http.StatusOK, map[string]any{"encoladas": n})
 }
 
 func (s *Server) cuentas(w http.ResponseWriter, r *http.Request) {

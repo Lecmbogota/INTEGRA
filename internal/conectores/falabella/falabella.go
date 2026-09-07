@@ -83,6 +83,9 @@ func (a *Adaptador) Kind() channel.Kind { return channel.Falabella }
 
 func (a *Adaptador) Capabilities() channel.Capabilities {
 	return channel.Capabilities{
+		// El canal no permite borrar: Delete deja la ficha cerrada de forma
+		// irreversible, que es lo más cerca que se puede estar.
+		BorradoReal: false,
 		NativeCompareAtPrice: true, // SalePrice sobre Price
 		ScheduledOffers:      true, // SaleStartDate / SaleEndDate
 		BulkPriceUpdate:      true,
@@ -1435,4 +1438,22 @@ func recortarRunes(s string, n int) string {
 		return string(r)
 	}
 	return string(r[:n])
+}
+
+// Delete deja el producto inactivo para siempre.
+//
+// El Seller Center no expone borrado: un SKU publicado no se puede quitar del
+// catálogo por API, solo desactivar. Así que aquí «borrar» es lo mismo que
+// pausar salvo por una cosa: el núcleo anota que fue definitivo y no lo
+// reabrirá solo, que es la única diferencia que puede garantizarse. Se declara
+// en Capabilities.BorradoReal = false para que la pantalla lo advierta antes
+// de que alguien pulse esperando otra cosa.
+func (a *Adaptador) Delete(ctx context.Context, ref channel.ExternalRef) error {
+	if ref.SKU == "" {
+		return &channel.Error{
+			Kind: channel.Falabella, StatusCode: http.StatusBadRequest,
+			Message: "falta el SKU: en Falabella es lo que identifica la publicación",
+		}
+	}
+	return a.cambiarEstado(ctx, ref, "inactive")
 }

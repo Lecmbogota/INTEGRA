@@ -59,6 +59,20 @@ type Adapter interface {
 
 	FetchOrders(ctx context.Context, desde time.Time, cur Cursor) (OrderPage, error)
 	AckOrder(ctx context.Context, ref ExternalRef, f Fulfillment) error
+
+	// Delete retira la publicación para siempre.
+	//
+	// No es Pause. Pausar deja la ficha con su historial, sus preguntas, sus
+	// reseñas y su posición en el buscador del canal, listos para volver;
+	// borrar tira todo eso y la dirección deja de existir. En un marketplace
+	// eso casi nunca es lo que se quiere, y por eso el núcleo no lo llama
+	// jamás por su cuenta: solo cuando alguien lo pide expresamente.
+	//
+	// Qué significa «borrar» lo decide el canal, y no es igual en los cuatro:
+	// lo dice Capabilities.BorradoReal. Donde no hay borrado de verdad, el
+	// adaptador deja la ficha cerrada de forma irreversible, que es lo más
+	// cerca que se puede estar.
+	Delete(ctx context.Context, ref ExternalRef) error
 }
 
 // ConFeeds lo cumplen los canales cuyo Capabilities declara AsyncFeeds: sus
@@ -129,6 +143,14 @@ type Capabilities struct {
 	// RequiresCategoryMapping: hay que mapear la categoría de Odoo a la del
 	// canal antes de poder publicar.
 	RequiresCategoryMapping bool
+
+	// BorradoReal: Delete elimina la publicación de verdad y su dirección deja
+	// de resolver. Falso significa que el canal no permite borrar y el
+	// adaptador la cierra de forma irreversible: deja de venderse y no se
+	// puede reabrir, pero la ficha sigue existiendo. La diferencia hay que
+	// decírsela a quien pulsa el botón, porque no puede deshacer ninguna de
+	// las dos.
+	BorradoReal bool
 }
 
 // VariantSupport describe el modelo de variantes de un canal.

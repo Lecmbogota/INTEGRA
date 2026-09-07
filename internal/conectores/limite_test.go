@@ -255,3 +255,7 @@ func TestLaEsperaTrasCupoLeeLasDosFormasYTieneMinimo(t *testing.T) {
 		t.Errorf("una cabecera ilegible no puede valer cero: %v", d)
 	}
 }
+
+func (c *canalQuePideParar) Delete(ctx context.Context, ref channel.ExternalRef) error {
+	return c.error429()
+}

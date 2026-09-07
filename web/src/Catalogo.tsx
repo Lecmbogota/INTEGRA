@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api, money, motivo, num, type Categoria, type Marca, type PaginaProductos, type Producto } from './api'
+import { api, money, motivo, num, type Categoria, type Marca, type PaginaProductos, type Producto, rolActual } from './api'
 import { Editar } from './Editar'
 import { EdicionMasiva } from './EdicionMasiva'
 import { PlantillaMasiva } from './PlantillaMasiva'
@@ -51,6 +51,7 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio }: {
   const [masiva, setMasiva] = useState(false)
   const [plantilla, setPlantilla] = useState(false)
   const [publicando, setPublicando] = useState(false)
+  const esAdmin = rolActual() === 'admin'
   // El resultado de publicar tiene su propio aviso: el banner de error de la
   // pantalla dice «no se pudo cargar la lista», que no es lo que pasó.
   const [aviso, setAviso] = useState<{ texto: string; malo: boolean } | null>(null)
@@ -58,6 +59,41 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio }: {
   // Publicar lo seleccionado. Planificar la cuenta entera es lo correcto para
   // la corrida nocturna, pero quien acaba de arreglar tres fichas quiere
   // verlas en el canal sin esperar a que pase por delante todo el catálogo.
+  // Borrar es la única acción de esta pantalla que no se deshace, y en dos de
+  // los cuatro canales ni siquiera es un borrado: la ficha queda cerrada para
+  // siempre. Por eso el aviso nombra los canales y exige escribir BORRAR.
+  async function borrarSeleccion() {
+    setAviso(null)
+    const n = marcados.size
+    const cuentas = (await api.cuentas()).filter((c) => c.activa)
+    if (cuentas.length === 0) {
+      setAviso({ texto: 'No hay ninguna cuenta de canal activa.', malo: true })
+      return
+    }
+    const donde = cuentas.map((c) => NOMBRE_CANAL[c.canal] ?? c.canal).join(', ')
+    const escrito = window.prompt(
+      `Se eliminarán de ${donde} las publicaciones de ${num(n)} productos.` +
+      '\n\nEsto NO es retirar de la venta: se pierden el historial, las preguntas, ' +
+      'las reseñas y la posición en el buscador del canal, y la dirección deja de ' +
+      'existir. En MercadoLibre y en Falabella ni siquiera hay borrado: la ficha ' +
+      'queda cerrada para siempre.' +
+      '\n\nNo se puede deshacer. Escribe BORRAR para confirmar:')
+    if (escrito !== 'BORRAR') return
+
+    setPublicando(true)
+    try {
+      const ids = [...marcados]
+      let total = 0
+      for (const c of cuentas) total += (await api.borrarPublicaciones(c.id, ids)).encoladas
+      setMarcados(new Set())
+      setAviso({ texto: `${num(total)} publicaciones encoladas para eliminarse. El worker las procesa en segundo plano.`, malo: false })
+    } catch (e) {
+      setAviso({ texto: `No se pudo borrar: ${e instanceof Error ? e.message : String(e)}`, malo: true })
+    } finally {
+      setPublicando(false)
+    }
+  }
+
   async function publicarSeleccion() {
     setError(null)
     setAviso(null)
@@ -257,6 +293,12 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio }: {
                 disabled={publicando}
                 title="Encola el envío a los canales de los productos marcados">
                 {publicando ? 'Encolando…' : `Publicar ${num(marcados.size)}`}
+              </button>
+            )}
+            {marcados.size > 0 && esAdmin && (
+              <button onClick={() => void borrarSeleccion()} disabled={publicando}
+                title="Elimina las fichas del canal. No se deshace.">
+                Borrar del canal
               </button>
             )}
             <button onClick={() => setPlantilla(true)}

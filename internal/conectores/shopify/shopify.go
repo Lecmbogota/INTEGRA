@@ -102,6 +102,8 @@ func (a *Adaptador) Kind() channel.Kind { return channel.Shopify }
 
 func (a *Adaptador) Capabilities() channel.Capabilities {
 	return channel.Capabilities{
+		// La API borra el producto de verdad y su dirección deja de resolver.
+		BorradoReal:             true,
 		NativeCompareAtPrice:    true,  // compare_at_price
 		ScheduledOffers:         false, // no hay fechas de promoción nativas
 		BulkPriceUpdate:         false, // la REST actualiza variante a variante
@@ -1217,4 +1219,19 @@ func recortar(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+// Delete borra el producto de la tienda.
+func (a *Adaptador) Delete(ctx context.Context, ref channel.ExternalRef) error {
+	if ref.ListingID == "" {
+		return &channel.Error{
+			Kind: channel.Shopify, StatusCode: http.StatusBadRequest,
+			Message: "falta el identificador del producto",
+		}
+	}
+	err := a.llamar(ctx, http.MethodDelete, "/products/"+ref.ListingID+".json", nil, nil)
+	if errors.Is(err, channel.ErrNoEncontrado) {
+		return nil
+	}
+	return err
 }

@@ -613,6 +613,20 @@ function tokenGuardado(): string {
   }
 }
 
+// rolActual lee el rol de la sesión guardada.
+//
+// El servidor es quien decide de verdad —una ruta de administrador responde
+// 403 pase lo que pase—, pero enseñar un botón que va a fallar es peor que no
+// enseñarlo: quien lo pulsa cree que rompió algo.
+export function rolActual(): string {
+  try {
+    const crudo = localStorage.getItem('integra_sesion')
+    return crudo ? (JSON.parse(crudo).usuario?.role as string) ?? '' : ''
+  } catch {
+    return ''
+  }
+}
+
 async function pedir<T>(ruta: string, init?: RequestInit): Promise<T> {
   // El token se lee en cada llamada y no se cachea, para que cerrar sesión
   // surta efecto de inmediato.
@@ -894,6 +908,16 @@ export const api = {
   // Abre o apaga de cara al público lo que ya está en el canal. Integra
   // publica en borrador a propósito: que la ficha la vea el comprador es
   // decisión de una persona.
+  // Elimina del canal las fichas de unas variantes. No se deshace: pausar
+  // conserva historial, preguntas, reseñas y posición en el buscador; esto las
+  // tira y la dirección deja de existir.
+  borrarPublicaciones: (cuentaId: number, variantes: number[]) =>
+    pedir<{ encoladas: number }>(`/api/cuentas/${cuentaId}/publicaciones`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ variantes }),
+    }),
+
   activarPublicaciones: (cuentaId: number, activar: boolean) =>
     pedir<{ encoladas: number; activar: boolean }>(
       `/api/cuentas/${cuentaId}/publicaciones/${activar ? 'activar' : 'desactivar'}`,

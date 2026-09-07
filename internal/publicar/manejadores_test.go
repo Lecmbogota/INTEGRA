@@ -27,6 +27,9 @@ type almacenFalso struct {
 	candidato store.CandidatoPublicacion
 	ref       channel.ExternalRef
 
+	// olvidadas anota de qué variantes se borró el rastro local.
+	olvidadas []int64
+
 	guardado *publicacionGuardada
 	// soloContenido distingue por qué camino se guardó: actualizar una ficha
 	// viva no puede tocar el precio ni el stock publicados.
@@ -202,6 +205,11 @@ type canalFalso struct {
 	// veredicto es lo que responderá cuando se pregunte por ese feed.
 	veredicto  channel.Veredicto
 	consultado []string
+
+	// borradas anota las publicaciones que se pidió eliminar, y errBorrar deja
+	// que una prueba haga fallar el canal.
+	borradas  []string
+	errBorrar error
 
 	publicaciones   []channel.Product
 	actualizadas    []channel.UpdateRequest
@@ -871,4 +879,15 @@ func TestLaURLDeLaImagenPublicadaLlevaExtension(t *testing.T) {
 	if p.Images[0].Hash != "abc123" {
 		t.Errorf("el hash cambio: %q", p.Images[0].Hash)
 	}
+}
+
+// Delete no lo llama nunca el motor: borrar es una decisión de una persona.
+func (c *canalFalso) Delete(ctx context.Context, ref channel.ExternalRef) error {
+	c.borradas = append(c.borradas, ref.ListingID)
+	return c.errBorrar
+}
+
+func (a *almacenFalso) OlvidarPublicacion(_ context.Context, cuentaID, varianteID int64) error {
+	a.olvidadas = append(a.olvidadas, varianteID)
+	return nil
 }

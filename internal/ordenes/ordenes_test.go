@@ -943,3 +943,5 @@ func (t *tiendaFalsa) AnotarFalloDespacho(_ context.Context, _ int64, causa stri
 	t.falloDespacho = causa
 	return nil
 }
+
+func (c *canalFalso) Delete(context.Context, channel.ExternalRef) error { return nil }

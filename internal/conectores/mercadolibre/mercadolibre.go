@@ -106,6 +106,9 @@ func (a *Adaptador) Kind() channel.Kind { return channel.MercadoLibre }
 
 func (a *Adaptador) Capabilities() channel.Capabilities {
 	return channel.Capabilities{
+		// El canal no permite borrar: Delete deja la ficha cerrada de forma
+		// irreversible, que es lo más cerca que se puede estar.
+		BorradoReal: false,
 		NativeCompareAtPrice:    false, // no hay precio tachado propio
 		ScheduledOffers:         false, // las promociones no llevan fechas por API
 		BulkPriceUpdate:         false,
@@ -1377,4 +1380,56 @@ func recortarRunes(s string, n int) string {
 		return string(r)
 	}
 	return string(r[:n])
+}
+
+// Delete cierra la publicación y luego la marca como eliminada.
+//
+// MercadoLibre no borra en un paso: exige cerrar primero y solo entonces
+// acepta el borrado, y el cierre es irreversible aunque el segundo paso falle.
+// Un ítem con ventas no se puede eliminar nunca, así que ahí «borrar» acaba
+// siendo «cerrado para siempre»: se devuelve sin error porque el objetivo
+// —que deje de venderse y no se pueda reabrir— sí se cumplió.
+func (a *Adaptador) Delete(ctx context.Context, ref channel.ExternalRef) error {
+	if ref.ListingID == "" {
+		return noProcede("sin_item", "falta el identificador del ítem de MercadoLibre")
+	}
+
+	err := a.llamar(ctx, http.MethodPut, "/items/"+ref.ListingID, nil,
+		map[string]any{"status": "closed"}, nil)
+	if err != nil && !errors.Is(err, channel.ErrNoEncontrado) {
+		// Un ítem ya cerrado responde con error de transición: no es un fallo,
+		// es el estado que se quería.
+		var e *channel.Error
+		if !errors.As(err, &e) || e.StatusCode != http.StatusBadRequest {
+			return err
+		}
+	}
+
+	// Tras cerrar, el segundo PUT puede dar 409 por bloqueo optimista: se
+	// reintenta un par de veces antes de rendirse, que es lo que documenta
+	// MercadoLibre.
+	var ultimo error
+	for intento := 0; intento < 3; intento++ {
+		ultimo = a.llamar(ctx, http.MethodPut, "/items/"+ref.ListingID, nil,
+			map[string]any{"deleted": "true"}, nil)
+		if ultimo == nil || errors.Is(ultimo, channel.ErrNoEncontrado) {
+			return nil
+		}
+		var e *channel.Error
+		if !errors.As(ultimo, &e) || e.StatusCode != http.StatusConflict {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Duration(intento+1) * 2 * time.Second):
+		}
+	}
+
+	// El cierre sí se aplicó, y es irreversible. Devolver error haría que
+	// alguien lo reintentara sobre una publicación que ya está muerta, así que
+	// se da por bueno: el objetivo —que deje de venderse y no se pueda
+	// reabrir— se cumplió. Es lo que declara Capabilities.BorradoReal = false.
+	_ = ultimo
+	return nil
 }

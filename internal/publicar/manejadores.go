@@ -53,6 +53,7 @@ type almacen interface {
 	MarcarPublicacionRetirada(ctx context.Context, cuentaID, varianteID int64, estadoCanal string) error
 	MarcarPublicacionPausada(ctx context.Context, cuentaID, varianteID int64, motivo string) error
 	MarcarPublicacionReanudada(ctx context.Context, cuentaID, varianteID int64) error
+	OlvidarPublicacion(ctx context.Context, cuentaID, varianteID int64) error
 }
 
 // Servicio ejecuta los trabajos de publicación contra los canales.
@@ -116,6 +117,7 @@ func (s *Servicio) Registrar(w *jobs.Worker) {
 	w.Registrar(TrabajoPausar, s.pausar)
 	w.Registrar(TrabajoReanudar, s.reanudar)
 	w.Registrar(TrabajoConciliar, s.conciliar)
+	w.Registrar(TrabajoBorrar, s.borrar)
 }
 
 func (s *Servicio) datos(ctx context.Context, t jobs.Trabajo) (*store.CandidatoPublicacion, channel.Adapter, PayloadPublicar, error) {
