@@ -104,3 +104,8 @@
 .ventana-cuerpo .tabla-envoltorio, .ventana-cuerpo table { border-radius: 0; }
 .ventana-cuerpo .vista-mosaico, .ventana-cuerpo .vista-iconos, .ventana-cuerpo .vista-lista { padding: 12px; }
 .ventana-cuerpo .paginacion { border-top: 1px solid var(--borde); padding: 8px 12px; background: var(--surface-3); position: sticky; bottom: 0; }
+
+/* Un solo icono de ayuda: el de la barra de título, que ya sabe qué página
+   se está viendo. El «?» que cada diálogo lleva en su cabecera era para
+   cuando eran modales; dentro de una ventana sobra. */
+.ventana-cuerpo button[title="Cómo funciona esta pantalla"] { display: none; }
