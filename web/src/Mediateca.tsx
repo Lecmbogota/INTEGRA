@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, fecha, num, type FiltroMediateca, type ImagenBanco, type OrdenMediateca, type PaginaImagenes, type Producto } from './api'
+import { EditorFoto } from './EditorFoto'
 
 // El banco de imágenes visto entero, no producto a producto.
 //
@@ -65,6 +66,7 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
   const [visor, setVisor] = useState<ImagenBanco | null>(null)
   // Lo que se va a asignar: una foto desde su botón, o todas las marcadas.
   const [asignando, setAsignando] = useState<ImagenBanco[] | null>(null)
+  const [editando, setEditando] = useState<ImagenBanco | null>(null)
 
   // Subida masiva. Cada fichero sale en su propia petición: así el informe
   // avanza línea a línea y un fichero corrupto no tumba la tanda entera.
@@ -135,6 +137,7 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
   // Escape cierra lo que esté abierto encima.
   useEffect(() => {
     const h = (e: KeyboardEvent) => { if (e.key === 'Escape') { setVisor(null); setAsignando(null) } }
+    // El editor cierra con su propio Escape.
     window.addEventListener('keydown', h)
     return () => window.removeEventListener('keydown', h)
   }, [])
@@ -345,6 +348,10 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
                           ))}
                       </div>
                       <div className="acciones">
+                        <button onClick={() => setEditando(i)} disabled={ocupada}
+                          title="Recortar, girar, encajar en cuadrado, cambiar formato">
+                          Editar
+                        </button>
                         <button onClick={() => setAsignando([i])} disabled={ocupada}
                           title="Enlazarla a un producto sin volver a subirla">
                           Asignar a producto
@@ -393,11 +400,22 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
               {visor.origen_ref && <> · <a href={visor.origen_ref} target="_blank" rel="noreferrer">{dominio(visor.origen_ref)}</a></>}
             </div>
             <div className="grupo-acciones">
+              <button onClick={() => { setEditando(visor); setVisor(null) }}>Editar</button>
               <button onClick={() => { setAsignando([visor]); setVisor(null) }}>Asignar a producto</button>
               <button onClick={() => setVisor(null)}>Cerrar ✕</button>
             </div>
           </div>
         </div>
+      )}
+
+      {editando && (
+        <EditorFoto foto={editando}
+          onCerrar={() => setEditando(null)}
+          onGuardada={(modo) => {
+            setEditando(null)
+            setAviso(modo === 'reemplazar' ? 'Foto reemplazada en todos sus productos.' : 'Foto guardada como nueva.')
+            recargar()
+          }} />
       )}
 
       {asignando && (

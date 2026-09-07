@@ -250,3 +250,22 @@ func (s *Store) BorrarDelBanco(ctx context.Context, id int64) ([]string, error) 
 	}
 	return append(rutas, original), nil
 }
+
+// ProductosDeImagen devuelve los productos que usan una imagen.
+func (s *Store) ProductosDeImagen(ctx context.Context, imagenID int64) ([]int64, error) {
+	filas, err := s.pool.Query(ctx,
+		`SELECT product_id FROM producto_imagenes WHERE imagen_id = $1 ORDER BY product_id`, imagenID)
+	if err != nil {
+		return nil, fmt.Errorf("leyendo los productos de la imagen %d: %w", imagenID, err)
+	}
+	defer filas.Close()
+	var out []int64
+	for filas.Next() {
+		var id int64
+		if err := filas.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, filas.Err()
+}

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { EditorFoto, type FotoEditable } from './EditorFoto'
 import { api, type ImagenProducto } from './api'
 
 const CANALES = ['woocommerce', 'shopify', 'mercadolibre', 'falabella'] as const
@@ -21,6 +22,8 @@ export function Imagenes({ varianteId, onCambio }: { varianteId: number; onCambi
   // botones mientras el servidor responde.
   const [ocupada, setOcupada] = useState<number | null>(null)
   const input = useRef<HTMLInputElement>(null)
+
+  const [editando, setEditando] = useState<FotoEditable | null>(null)
 
   const cargar = useCallback(() => {
     setCargando(true)
@@ -170,6 +173,12 @@ export function Imagenes({ varianteId, onCambio }: { varianteId: number; onCambi
           onChange={(e) => { void subir(e.target.files); e.target.value = '' }} />
       </div>
 
+      {editando && (
+        <EditorFoto foto={editando}
+          onCerrar={() => setEditando(null)}
+          onGuardada={() => { setEditando(null); cargar(); onCambio?.() }} />
+      )}
+
       {imgs.length > 0 && (
         <div className="galeria">
           {imgs.map((i) => (
@@ -192,6 +201,8 @@ export function Imagenes({ varianteId, onCambio }: { varianteId: number; onCambi
                     : <button onClick={() => void principal(i.id)} disabled={ocupada === i.id}>
                         {ocupada === i.id ? 'Guardando…' : 'Hacer portada'}
                       </button>}
+                  <button onClick={() => setEditando(i)} disabled={ocupada === i.id}
+                    title="Recortar, girar, encajar en cuadrado, cambiar formato">Editar</button>
                   <button onClick={() => void quitar(i)} disabled={ocupada === i.id}>Quitar</button>
                 </div>
               </figcaption>

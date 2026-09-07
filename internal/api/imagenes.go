@@ -29,6 +29,7 @@ func (s *Server) registrarImagenes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/imagenes/borrar", s.borrarVariasDelBanco)
 	mux.HandleFunc("POST /api/imagenes/{id}/asociar", s.asociarDelBanco)
 	mux.HandleFunc("POST /api/imagenes/asociar", s.asociarVariasDelBanco)
+	mux.HandleFunc("POST /api/imagenes/{id}/editada", s.guardarEdicion)
 	// El fichero se sirve por hash, no por identificador: así la URL es
 	// inmutable y se puede cachear para siempre.
 	mux.HandleFunc("GET /imagenes/{sha}", s.servirImagen)
@@ -318,6 +319,115 @@ func (s *Server) subirAlBanco(w http.ResponseWriter, r *http.Request) {
 		"problemas":  imagen.ValidarTodos(res.Original),
 		"asignada_a": asignada,
 		"candidatos": candidatos,
+	})
+}
+
+// guardarEdicion recibe la versión editada de una foto del banco.
+//
+// La edición pasa entera en el navegador; aquí llega el resultado. Con
+// modo=reemplazar, la nueva ocupa el sitio de la vieja en todos los
+// productos —misma posición, misma portada— y la vieja se borra del disco:
+// es lo que se quiere cuando se recorta un borde o se pasa a cuadrado. Con
+// modo=nueva, se añade detrás en esos mismos productos y la original sigue
+// ahí, para cuando se quieren las dos versiones.
+func (s *Server) guardarEdicion(w http.ResponseWriter, r *http.Request) {
+	if s.almacen == nil {
+		escribir(w, http.StatusServiceUnavailable,
+			map[string]string{"error": "el banco de imágenes no está configurado"})
+		return
+	}
+	viejaID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		escribir(w, http.StatusBadRequest, map[string]string{"error": "identificador inválido"})
+		return
+	}
+	if err := r.ParseMultipartForm(imagen.MaxBytesEntrada); err != nil {
+		escribir(w, http.StatusBadRequest,
+			map[string]string{"error": "no se pudo leer el formulario: " + err.Error()})
+		return
+	}
+	fichero, cabecera, err := r.FormFile("archivo")
+	if err != nil {
+		escribir(w, http.StatusBadRequest, map[string]string{"error": "falta el campo 'archivo'"})
+		return
+	}
+	defer fichero.Close()
+	datos, err := io.ReadAll(io.LimitReader(fichero, imagen.MaxBytesEntrada+1))
+	if err != nil {
+		s.fallo(w, err)
+		return
+	}
+	modo := r.FormValue("modo")
+	if modo != "reemplazar" && modo != "nueva" {
+		escribir(w, http.StatusBadRequest, map[string]string{"error": "modo debe ser «reemplazar» o «nueva»"})
+		return
+	}
+
+	// Los productos se leen ANTES de tocar nada: al reemplazar, la vieja
+	// desaparece y con ella la lista.
+	productos, err := s.st.ProductosDeImagen(r.Context(), viejaID)
+	if err != nil {
+		s.fallo(w, err)
+		return
+	}
+
+	res, err := s.almacen.Ingerir(datos, imagen.VariantesPorDefecto)
+	if err != nil {
+		escribir(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+		return
+	}
+	derivadas := make([]struct {
+		Variante, Ruta, Formato string
+		Ancho, Alto, Bytes      int
+	}, 0, len(res.Derivadas))
+	for _, d := range res.Derivadas {
+		derivadas = append(derivadas, struct {
+			Variante, Ruta, Formato string
+			Ancho, Alto, Bytes      int
+		}{d.Variante, d.Ruta, d.Info.Formato, d.Info.Ancho, d.Info.Alto, d.Info.Bytes})
+	}
+	nuevaID, err := s.st.RegistrarImagen(r.Context(),
+		res.Original.SHA256, res.RutaOrig, res.Original.Formato,
+		res.Original.Ancho, res.Original.Alto, res.Original.Bytes,
+		"editada", cabecera.Filename, derivadas)
+	if err != nil {
+		s.fallo(w, err)
+		return
+	}
+
+	if modo == "reemplazar" {
+		huerfanas, err := s.st.SustituirImagen(r.Context(), viejaID, nuevaID)
+		if err != nil {
+			s.fallo(w, err)
+			return
+		}
+		for _, ruta := range huerfanas {
+			_ = s.almacen.Borrar(ruta)
+		}
+	} else {
+		for _, prodID := range productos {
+			if err := s.st.AsociarImagen(r.Context(), prodID, nuevaID); err != nil {
+				s.fallo(w, err)
+				return
+			}
+		}
+	}
+	_ = s.st.RecalcularAtencion(r.Context())
+
+	var usuario *int64
+	if c := ClaimsDeContext(r.Context()); c != nil {
+		usuario = &c.UserID
+	}
+	_ = s.st.RegistrarAuditoria(r.Context(), usuario, "edit", "imagenes",
+		strconv.FormatInt(viejaID, 10), nil,
+		map[string]any{"nueva": nuevaID, "modo": modo, "productos": len(productos),
+			"ancho": res.Original.Ancho, "alto": res.Original.Alto, "formato": res.Original.Formato},
+		r.RemoteAddr)
+	escribir(w, http.StatusCreated, map[string]any{
+		"id": nuevaID, "sha256": res.Original.SHA256,
+		"ancho": res.Original.Ancho, "alto": res.Original.Alto,
+		"formato": res.Original.Formato, "bytes": res.Original.Bytes,
+		"productos": len(productos),
 	})
 }
 

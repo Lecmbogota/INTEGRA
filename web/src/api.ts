@@ -770,6 +770,17 @@ export const api = {
     return pedir<SubidaAlBanco>('/api/imagenes', { method: 'POST', body: fd })
   },
 
+  // Guarda la versión editada de una foto. «reemplazar» la pone en el sitio
+  // de la original en todos sus productos; «nueva» la añade y conserva la
+  // original.
+  guardarEdicion: (id: number, archivo: File, modo: 'reemplazar' | 'nueva') => {
+    const fd = new FormData()
+    fd.append('archivo', archivo)
+    fd.append('modo', modo)
+    return pedir<{ id: number; sha256: string; ancho: number; alto: number; productos: number }>(
+      `/api/imagenes/${id}/editada`, { method: 'POST', body: fd })
+  },
+
   // Varias de golpe al mismo producto; la primera puede quedar como portada.
   asociarVariasDelBanco: (ids: number[], varianteId: number, principal: boolean) =>
     pedir<{ asociadas: number; rechazadas: number }>('/api/imagenes/asociar', {

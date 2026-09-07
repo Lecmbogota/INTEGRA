@@ -660,6 +660,26 @@ button.enlace:hover:not(:disabled) { background: none; color: var(--acento-hover
 .informe-subida { margin: 10px 0 0; padding-left: 18px; font-size: 12px; max-height: 30vh; overflow: auto; }
 .informe-subida li { margin-bottom: 2px; }
 .informe-subida .mal { color: var(--error); }
+.hoja-ancha { max-width: 1100px; width: min(96vw, 1100px); }
+.editor { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 18px; padding: 0 16px 16px; }
+@media (max-width: 900px) { .editor { grid-template-columns: 1fr; } }
+.editor-lienzo { position: relative; user-select: none; touch-action: none; background: #eee; max-width: 100%; }
+.editor-lienzo canvas { display: block; }
+.recorte-caja { position: absolute; border: 2px solid var(--acento); box-shadow: 0 0 0 9999px rgba(0,0,0,.35); cursor: move; box-sizing: border-box; }
+.recorte-asa { position: absolute; width: 14px; height: 14px; background: #fff; border: 2px solid var(--acento); border-radius: 3px; }
+.recorte-asa.nw { left: -8px; top: -8px; cursor: nwse-resize; }
+.recorte-asa.ne { right: -8px; top: -8px; cursor: nesw-resize; }
+.recorte-asa.sw { left: -8px; bottom: -8px; cursor: nesw-resize; }
+.recorte-asa.se { right: -8px; bottom: -8px; cursor: nwse-resize; }
+.editor-deslizadores { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.fila-campo { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+.fila-campo > span:first-child { min-width: 82px; color: var(--texto-secundario, #555); }
+.fila-campo input[type=range] { flex: 1; }
+.editor-controles { display: flex; flex-direction: column; gap: 10px; }
+.editor-resultado { background: #f6f6f6; border-radius: 8px; padding: 10px; text-align: center; }
+.editor-resultado canvas { max-width: 100%; border: 1px solid #ddd; background: #fff; }
+.editor-resultado ul { text-align: left; }
+.editor-guardar { display: flex; flex-direction: column; gap: 4px; border-top: 1px solid #e5e5e5; padding-top: 10px; }
 .galeria img {
   width: 100%; aspect-ratio: 1; object-fit: contain;
   background: #fff; display: block;
