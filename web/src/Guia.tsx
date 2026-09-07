@@ -112,14 +112,19 @@ function colocar(foco: Caja, w: number, h: number, vw: number, vh: number): Colo
 // o diálogo: se le pasan los pasos. Los recorridos que se abren dentro de un
 // diálogo no navegan entre secciones, así que `seccion` e `irA` son
 // opcionales; un paso con sección se ignora si no hay forma de ir.
-export function Guia({ pasos, nombre, seccion, irA, onCerrar }: {
+export function Guia({ pasos, nombre, seccion, irA, onCerrar, inicio = 0, onProgreso }: {
   pasos: Paso[]
   nombre?: string
   seccion?: Seccion
   irA?: (s: Seccion) => void
   onCerrar: () => void
+  // Paso por el que empezar: para retomar donde se dejó o saltar desde una
+  // búsqueda al paso exacto.
+  inicio?: number
+  // Al cerrar: en qué paso se iba y si se llegó al final.
+  onProgreso?: (paso: number, terminado: boolean) => void
 }) {
-  const [i, setI] = useState(0)
+  const [i, setI] = useState(Math.min(Math.max(0, inicio), pasos.length - 1))
   const [rect, setRect] = useState<DOMRect | null>(null)
   // Mientras se busca el elemento el globo está montado pero invisible: hace
   // falta montarlo para medirlo, y no enseñarlo para que no se le vea saltar
@@ -135,6 +140,7 @@ export function Guia({ pasos, nombre, seccion, irA, onCerrar }: {
   const siguienteRef = useRef<HTMLButtonElement>(null)
   const paso = pasos[i]
   const ultimo = i === pasos.length - 1
+  const cerrar = (terminado: boolean) => { onProgreso?.(i, terminado); onCerrar() }
 
   // Ir a la sección del paso antes de buscar su elemento.
   useEffect(() => {
@@ -256,11 +262,11 @@ export function Guia({ pasos, nombre, seccion, irA, onCerrar }: {
   // nada que se pueda usar.
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { onCerrar(); return }
-      if (e.key === 'ArrowRight') { e.preventDefault(); ultimo ? onCerrar() : setI(i + 1); return }
+      if (e.key === 'Escape') { cerrar(false); return }
+      if (e.key === 'ArrowRight') { e.preventDefault(); ultimo ? cerrar(true) : setI(i + 1); return }
       if (e.key === 'ArrowLeft') { e.preventDefault(); if (i > 0) setI(i - 1); return }
       if (e.key === 'Enter' && (e.target as HTMLElement | null)?.tagName !== 'BUTTON') {
-        e.preventDefault(); ultimo ? onCerrar() : setI(i + 1); return
+        e.preventDefault(); ultimo ? cerrar(true) : setI(i + 1); return
       }
       if (e.key === 'Tab' && globoRef.current) {
         const nodos = globoRef.current.querySelectorAll<HTMLElement>('button:not(:disabled), [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')
@@ -274,7 +280,7 @@ export function Guia({ pasos, nombre, seccion, irA, onCerrar }: {
     }
     window.addEventListener('keydown', h)
     return () => window.removeEventListener('keydown', h)
-  }, [i, ultimo, onCerrar])
+  }, [i, ultimo, onCerrar, onProgreso])
 
   // Al enseñar cada paso, el foco de teclado va a «Siguiente»: Enter o
   // espacio avanzan, y el lector de pantalla entra por el diálogo.
@@ -338,10 +344,10 @@ export function Guia({ pasos, nombre, seccion, irA, onCerrar }: {
         <h3 id="guia-titulo" aria-live="polite">{paso.titulo}</h3>
         <div ref={textoRef} className="guia-texto">{paso.texto}</div>
         <div className="guia-acciones">
-          <button type="button" className="enlace" onClick={onCerrar}>Saltar</button>
+          <button type="button" className="enlace" onClick={() => cerrar(false)}>Saltar</button>
           <span className="crece" />
           {i > 0 && <button type="button" onClick={() => setI(i - 1)}>Anterior</button>}
-          <button ref={siguienteRef} type="button" className="primario" onClick={() => (ultimo ? onCerrar() : setI(i + 1))}>
+          <button ref={siguienteRef} type="button" className="primario" onClick={() => (ultimo ? cerrar(true) : setI(i + 1))}>
             {ultimo ? 'Terminar' : 'Siguiente'}
           </button>
         </div>

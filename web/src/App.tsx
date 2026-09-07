@@ -22,8 +22,8 @@ import { Mediateca } from './Mediateca'
 import { Avisos } from './Avisos'
 import { Sidebar, type Seccion } from './Sidebar'
 import { Guia } from './Guia'
-import { PASOS } from './GuiaPasos'
-import { GUIAS_POR_SECCION, type Recorrido } from './guias'
+import { GENERAL, GUIAS_POR_SECCION, type Recorrido } from './guias'
+import { Ayuda, type Progreso } from './Ayuda'
 
 export default function App() {
   const [sesion, setSesion] = useState<Sesion | null>(leerSesion)
@@ -99,38 +99,61 @@ function Aplicacion({ sesion, onSalir }: { sesion: Sesion; onSalir: () => void }
   // Cambios hechos desde la vista previa que la lista de productos debe ver.
   const [refrescoCatalogo, setRefrescoCatalogo] = useState(0)
 
-  // El recorrido guiado salta solo la primera vez que entra cada usuario; se
-  // recuerda en este navegador y queda «Ver guía» en el menú para repetirlo.
-  const claveGuia = `integra.guia.v1.${sesion.usuario.id}`
-  const [guia, setGuia] = useState(() => {
-    try { return localStorage.getItem(claveGuia) !== 'vista' } catch { return false }
+  // Recorridos guiados. El progreso de cada uno —por dónde se iba, si se
+  // terminó— se guarda por usuario en este navegador. El general salta solo
+  // la primera vez; después todo se abre desde «Ver guía» (el centro de
+  // ayuda) o desde el «?» de cada pantalla.
+  const claveProgreso = `integra.guia.v2.${sesion.usuario.id}`
+  const [progreso, setProgreso] = useState<Progreso>(() => {
+    try {
+      const crudo = localStorage.getItem(claveProgreso)
+      if (crudo) return JSON.parse(crudo) as Progreso
+      // Quien ya vio la primera versión del recorrido no lo vuelve a ver solo.
+      if (localStorage.getItem(`integra.guia.v1.${sesion.usuario.id}`) === 'vista') {
+        return { [GENERAL.clave]: { paso: 0, total: GENERAL.pasos.length, terminado: true, cuando: new Date().toISOString() } }
+      }
+    } catch { /* sin almacenamiento */ }
+    return {}
   })
-  const cerrarGuia = useCallback(() => {
-    setGuia(false)
-    try { localStorage.setItem(claveGuia, 'vista') } catch { /* sin almacenamiento: se repetirá */ }
-  }, [claveGuia])
-
-  // La ayuda de la pantalla en la que se está: un recorrido detallado por
-  // sección, distinto del general. Se abre con el botón flotante o con la
-  // tecla «?» cuando no se está escribiendo en ningún campo.
-  const [ayuda, setAyuda] = useState<Recorrido | null>(null)
+  const [activo, setActivo] = useState<{ rec: Recorrido; inicio: number } | null>(() =>
+    progreso[GENERAL.clave] ? null : { rec: GENERAL, inicio: 0 })
+  const [centro, setCentro] = useState(false)
+  const iniciar = useCallback((rec: Recorrido, inicio: number) => { setCentro(false); setActivo({ rec, inicio }) }, [])
+  const anotarProgreso = useCallback((rec: Recorrido, paso: number, terminado: boolean) => {
+    setProgreso((prev) => {
+      const antes = prev[rec.clave]
+      const sig: Progreso = {
+        ...prev,
+        [rec.clave]: {
+          paso: terminado ? 0 : paso, total: rec.pasos.length,
+          terminado: terminado || (antes?.terminado ?? false), cuando: new Date().toISOString(),
+        },
+      }
+      try { localStorage.setItem(claveProgreso, JSON.stringify(sig)) } catch { /* sin almacenamiento */ }
+      return sig
+    })
+  }, [claveProgreso])
+  // La ayuda de la pantalla en la que se está: retoma donde se dejó si no se
+  // terminó. Se abre con el botón flotante o con la tecla «?» cuando no se
+  // está escribiendo en ningún campo ni hay un diálogo abierto.
   const abrirAyuda = useCallback(() => {
     const g = GUIAS_POR_SECCION[seccion]
-    if (g) setAyuda(g)
-  }, [seccion])
+    if (!g) return
+    const p = progreso[g.clave]
+    setActivo({ rec: g, inicio: p && !p.terminado ? p.paso : 0 })
+  }, [seccion, progreso])
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
-      if (e.key !== '?' || guia || ayuda) return
+      if (e.key !== '?' || activo || centro) return
       const t = e.target as HTMLElement | null
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return
-      // Con un diálogo abierto la ayuda es la del diálogo, no la de la sección.
       if (document.querySelector('.capa')) return
       e.preventDefault()
       abrirAyuda()
     }
     window.addEventListener('keydown', h)
     return () => window.removeEventListener('keydown', h)
-  }, [abrirAyuda, guia, ayuda])
+  }, [abrirAyuda, activo, centro])
 
   const irAArreglar = useCallback((d: DestinoFaltante) => {
     setPreview(null)
@@ -228,7 +251,7 @@ function Aplicacion({ sesion, onSalir }: { sesion: Sesion; onSalir: () => void }
         tareasActivas={tareasActivas}
         pedidosPendientes={pedidos ? pedidos.recibidos + pedidos.fallidos : 0}
         alertas={alertas}
-        usuario={sesion.usuario} onSalir={onSalir} onGuia={() => setGuia(true)} />
+        usuario={sesion.usuario} onSalir={onSalir} onGuia={() => setCentro(true)} />
 
       <main className="contenido">
         {error && <div className="aviso-caja">Error: {error}</div>}
@@ -401,11 +424,15 @@ function Aplicacion({ sesion, onSalir }: { sesion: Sesion; onSalir: () => void }
         )}
       </main>
 
-      {guia && <Guia pasos={PASOS} nombre="Cómo funciona Integra" seccion={seccion} irA={irA} onCerrar={cerrarGuia} />}
-      {ayuda && !guia && (
-        <Guia pasos={ayuda.pasos} nombre={ayuda.nombre} seccion={seccion} irA={irA} onCerrar={() => setAyuda(null)} />
+      {activo && (
+        <Guia pasos={activo.rec.pasos} nombre={activo.rec.nombre} inicio={activo.inicio} seccion={seccion} irA={irA}
+          onProgreso={(paso, terminado) => anotarProgreso(activo.rec, paso, terminado)}
+          onCerrar={() => setActivo(null)} />
       )}
-      {GUIAS_POR_SECCION[seccion] && !guia && !ayuda && preview === null && (
+      {centro && !activo && (
+        <Ayuda seccion={seccion} progreso={progreso} onCerrar={() => setCentro(false)} onIniciar={iniciar} />
+      )}
+      {GUIAS_POR_SECCION[seccion] && !activo && !centro && preview === null && (
         <button type="button" className="boton-ayuda" onClick={abrirAyuda}
           title={`Cómo funciona ${GUIAS_POR_SECCION[seccion]?.nombre} (tecla ?)`} aria-label="Ayuda de esta pantalla">
           ?

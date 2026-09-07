@@ -777,6 +777,38 @@ button.mini { padding: 3px 8px; font-size: 11px; min-height: 0; }
 .guia-globo.hoja .guia-acciones .enlace { flex: none; min-height: 0; }
 .guia-globo.hoja .guia-progreso { font-size: 12px; }
 @media (max-width: 767px) { .guia-puntos { display: none; } .guia-barra { display: block; } .guia-foco { border-radius: 8px; } }
+/* Centro de ayuda. */
+.ayuda-hoja { max-height: 92vh; display: flex; flex-direction: column; }
+.ayuda-hoja .hoja-cabecera, .ayuda-tabs { flex: none; }
+.ayuda-tabs { padding: 0 16px; }
+.ayuda-cuerpo { padding: 12px 16px 16px; overflow: auto; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
+.lista-recorridos { display: flex; flex-direction: column; gap: 6px; }
+.fila-recorrido { display: flex; gap: 12px; align-items: center; padding: 10px 12px; border: 1px solid #e6e6e6; border-radius: 10px; background: #fff; }
+.fila-recorrido.actual { border-color: var(--acento); background: rgba(37,99,235,.04); }
+.fila-recorrido.visto strong { color: #4b5563; }
+.fila-recorrido .fila { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.lista-resultados { display: flex; flex-direction: column; gap: 4px; }
+.fila-resultado { text-align: left; background: #fff; border: 1px solid #e6e6e6; border-radius: 8px; padding: 8px 12px; cursor: pointer; font: inherit; min-height: 0; display: flex; flex-direction: column; gap: 3px; }
+.fila-resultado:hover { border-color: var(--acento); background: rgba(37,99,235,.05); }
+.fila-resultado .fila { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.manual h1 { font-size: 24px; margin: 0 0 6px; }
+.manual-indice { columns: 2; column-gap: 24px; font-size: 13px; padding-left: 20px; }
+.manual-indice li { break-inside: avoid; margin-bottom: 4px; }
+.manual-capitulo { border-top: 1px solid #e5e7eb; padding-top: 14px; margin-top: 8px; }
+.manual-capitulo h2 { margin: 0 0 4px; font-size: 19px; }
+.manual-apartado { margin: 12px 0 0; }
+.manual-apartado h3 { margin: 0 0 4px; font-size: 15px; }
+.manual .guia-texto { overflow: visible; }
+@media (max-width: 700px) { .manual-indice { columns: 1; } .fila-recorrido { flex-direction: column; align-items: stretch; } }
+@media print {
+  .sidebar, .contenido, .barra-movil, .boton-ayuda, .velo-menu, .ayuda-tabs, .hoja-cabecera .grupo-acciones { display: none !important; }
+  .ayuda-capa { position: static !important; background: none !important; }
+  .ayuda-hoja { position: static !important; max-height: none !important; width: 100% !important; max-width: none !important; box-shadow: none !important; overflow: visible !important; transform: none !important; }
+  .ayuda-cuerpo { overflow: visible !important; }
+  .manual-capitulo { break-before: page; }
+  .manual-portada + .manual-capitulo { break-before: auto; }
+  .manual-apartado { break-inside: avoid; }
+}
 .galeria img {
   width: 100%; aspect-ratio: 1; object-fit: contain;
   background: #fff; display: block;
