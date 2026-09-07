@@ -719,6 +719,16 @@ button.mini { padding: 3px 8px; font-size: 11px; min-height: 0; }
 .fila-producto .nombre { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fila-producto .marca { flex: none; max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @media (max-width: 600px) { .fila-producto { flex-wrap: wrap; } .fila-producto .nombre { white-space: normal; flex-basis: 100%; } }
+/* Selector de fotos de la mediateca para un producto. */
+.selector-mediateca { display: flex; flex-direction: column; gap: 10px; padding: 0 16px 12px; max-height: 62vh; overflow: auto; }
+.rejilla-mini { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 8px; }
+.celda-mini { position: relative; border: 1px solid #e6e6e6; border-radius: 8px; overflow: hidden; cursor: pointer; background: #fff; }
+.celda-mini:hover { border-color: var(--acento); }
+.celda-mini.marcada { outline: 2px solid var(--acento); border-color: var(--acento); }
+.celda-mini.bloqueada { opacity: .5; cursor: default; }
+.celda-mini img { display: block; width: 100%; aspect-ratio: 1; object-fit: contain; background: #fff; }
+.celda-mini .marca-sel { position: absolute; top: 6px; left: 6px; margin: 0; }
+.celda-mini .pie { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; font-size: 11px; padding: 4px 6px; color: var(--texto-terciario, #777); border-top: 1px solid #f0f0f0; }
 .galeria img {
   width: 100%; aspect-ratio: 1; object-fit: contain;
   background: #fff; display: block;

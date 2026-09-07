@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { EditorFoto, type FotoEditable } from './EditorFoto'
+import { SelectorMediateca } from './SelectorMediateca'
 import { api, type ImagenProducto } from './api'
 
 const CANALES = ['woocommerce', 'shopify', 'mercadolibre', 'falabella'] as const
@@ -24,6 +25,8 @@ export function Imagenes({ varianteId, onCambio }: { varianteId: number; onCambi
   const input = useRef<HTMLInputElement>(null)
 
   const [editando, setEditando] = useState<FotoEditable | null>(null)
+  // Elegir de la mediateca: la tercera forma de darle fotos al producto.
+  const [eligiendo, setEligiendo] = useState(false)
 
   const cargar = useCallback(() => {
     setCargando(true)
@@ -132,16 +135,31 @@ export function Imagenes({ varianteId, onCambio }: { varianteId: number; onCambi
               ? 'ninguna — el producto no se puede publicar sin foto'
               : `${imgs.length} en el banco de Integra`}
         </span>
-        <button onClick={() => void buscarEnInternet()} disabled={buscando}>
-          {buscando ? 'Buscando en internet…' : 'Buscar en internet'}
-        </button>
+        {/* Las tres formas de darle fotos al producto, una al lado de la
+            otra: subirlas del PC, elegirlas del banco o buscarlas fuera. */}
+        <div className="grupo-acciones">
+          <button onClick={abrirSelector} disabled={subiendo} title="Elegir archivos de este equipo">
+            Subir desde el PC
+          </button>
+          <button onClick={() => setEligiendo(true)} disabled={subiendo}
+            title="Fotos que ya están en el banco de Integra: de otras variantes o huérfanas">
+            Elegir de la mediateca
+          </button>
+          <button onClick={() => void buscarEnInternet()} disabled={buscando}
+            title="Busca por referencia y marca y descarga varias fotos de al menos 500 px">
+            {buscando ? 'Buscando en internet…' : 'Buscar en internet'}
+          </button>
+        </div>
       </div>
 
       {/* La explicación estaba solo en el title del botón, y en una tablet o un
           móvil no hay puntero que lo saque: se pasa a texto visible. */}
       <div className="nota-previa">
-        «Buscar en internet» busca por referencia y marca y descarga varias fotos de
-        al menos 500 px. <strong>Comprueba que puedes usarlas antes de publicar.</strong>
+        <strong>Subir desde el PC</strong> o arrastrar aquí abajo; <strong>elegir de la
+        mediateca</strong> las que ya están en Integra (de otra variante, o huérfanas de
+        una búsqueda); o <strong>buscar en internet</strong> por referencia y marca, que
+        descarga varias de al menos 500 px. Lo descargado hay que revisarlo: comprueba
+        que puedes usarlas antes de publicar.
       </div>
 
       {error && <div className="aviso-caja">{error}</div>}
@@ -172,6 +190,17 @@ export function Imagenes({ varianteId, onCambio }: { varianteId: number; onCambi
         <input ref={input} type="file" accept="image/*" multiple hidden
           onChange={(e) => { void subir(e.target.files); e.target.value = '' }} />
       </div>
+
+      {eligiendo && (
+        <SelectorMediateca varianteId={varianteId}
+          onCerrar={() => setEligiendo(false)}
+          onElegidas={(n) => {
+            setEligiendo(false)
+            setResultado(`${n} foto${n === 1 ? '' : 's'} añadida${n === 1 ? '' : 's'} desde la mediateca.`)
+            cargar()
+            onCambio?.()
+          }} />
+      )}
 
       {editando && (
         <EditorFoto foto={editando}
