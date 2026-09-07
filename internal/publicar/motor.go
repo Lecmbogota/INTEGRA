@@ -32,6 +32,10 @@ const (
 type PayloadPublicar struct {
 	CuentaID   int64 `json:"cuenta_id"`
 	VarianteID int64 `json:"variante_id"`
+	// Motivo solo lo usa la pausa, para distinguir la que decide el
+	// planificador porque el producto salió del catálogo de la que pulsa una
+	// persona. Vacío equivale a «catálogo», que es como se encolaba antes.
+	Motivo string `json:"motivo,omitempty"`
 }
 
 // PayloadCuenta es el de los trabajos que barren una cuenta entera. La

@@ -55,11 +55,17 @@ services:
       # La API REST de WooCommerce solo acepta la clave y el secreto por
       # cabecera cuando la conexión es HTTPS. En local no hay certificado, y
       # montar uno para una tienda de pruebas es más problema que solución:
-      # se le dice a WordPress que se considere tras un proxy seguro. Es
-      # exclusivo de este compose de pruebas y no toca nada de producción.
+      # se le dice a WordPress que se considere tras un proxy seguro.
+      #
+      # Pero SOLO en las peticiones a la API. Puesto para todas, WordPress
+      # generaba cada enlace del sitio en https:// mientras el servidor sigue
+      # hablando http, y la tienda dejaba de abrirse en el navegador con
+      # ERR_SSL_PROTOCOL_ERROR. Es exclusivo de este compose de pruebas.
       WORDPRESS_CONFIG_EXTRA: |
         define('FORCE_SSL_ADMIN', false);
-        $$_SERVER['HTTPS'] = 'on';
+        if (isset($$_SERVER['REQUEST_URI']) && strpos($$_SERVER['REQUEST_URI'], '/wp-json/') !== false) {
+            $$_SERVER['HTTPS'] = 'on';
+        }
     volumes:
       - woo_html:/var/www/html
 

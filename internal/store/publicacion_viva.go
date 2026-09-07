@@ -15,6 +15,11 @@ import (
 const (
 	PausaCatalogo = "catalogo"
 	PausaCanal    = "canal"
+	// PausaManual la decidió una persona desde la pantalla de Publicación.
+	// No se reanuda sola —Planificar solo reabre las de motivo «catalogo»—
+	// porque deshacer con un horario lo que alguien apagó a mano es la forma
+	// más rápida de que nadie vuelva a fiarse del botón.
+	PausaManual = "manual"
 )
 
 // PublicacionViva es una fila de variant_channel_listings vista como "algo que
@@ -169,7 +174,7 @@ func (s *Store) MarcarPublicacionViva(ctx context.Context, cuentaID, varianteID 
 
 // MarcarPublicacionPausada anota la pausa que acaba de aceptar el canal.
 func (s *Store) MarcarPublicacionPausada(ctx context.Context, cuentaID, varianteID int64, motivo string) error {
-	if motivo != PausaCatalogo && motivo != PausaCanal {
+	if motivo != PausaCatalogo && motivo != PausaCanal && motivo != PausaManual {
 		return fmt.Errorf("motivo de pausa desconocido: %q", motivo)
 	}
 	_, err := s.pool.Exec(ctx, `
@@ -205,4 +210,53 @@ func (s *Store) DesajustesDePublicacion(ctx context.Context) (retiradas, caidas 
 		       count(*) FILTER (WHERE status = 'deleted')::int
 		FROM variant_channel_listings`).Scan(&retiradas, &caidas)
 	return retiradas, caidas, err
+}
+
+// PublicacionesDeCuenta devuelve lo que la cuenta tiene abierto en el canal,
+// para poder activarlo o apagarlo en bloque desde la pantalla.
+//
+// Publicar deja la ficha en borrador a propósito —en WooCommerce y en Shopify
+// activar de cara al público es decisión humana— y sin esto no había ningún
+// sitio donde tomarla: había que entrar al canal producto por producto.
+//
+// paraActivar decide a cuáles se apunta: las pausadas y las que nunca se
+// activaron si es cierto; las vivas si es falso. Nunca se toca lo que retiró
+// el propio canal: reabrir una baja por infracción convierte un aviso en una
+// sanción.
+func (s *Store) PublicacionesDeCuenta(ctx context.Context, cuentaID int64, paraActivar bool) ([]PublicacionViva, error) {
+	// Al activar se apunta a TODO lo que tiene ficha en el canal, no solo a lo
+	// que Integra marcó como pausado. El estado de aquí dice «se lo mandé al
+	// canal», no «está a la venta»: la ficha nace en borrador y esa diferencia
+	// vive únicamente del lado del canal, así que filtrar por el estado local
+	// no encolaba nada justo cuando todo estaba por activar. Resume es
+	// idempotente en los cuatro adaptadores, de modo que pedirlo sobre una que
+	// ya está viva no cuesta nada.
+	//
+	// Lo que retiró el propio canal se excluye siempre: reabrir una baja por
+	// infracción convierte un aviso en una sanción, y hacerlo desde un botón
+	// que dice «poner a la venta» es peor todavía, porque nadie sabría que
+	// ocurrió.
+	cond := `v.status = 'published'`
+	args := []any{cuentaID}
+	if paraActivar {
+		cond = `COALESCE(v.pausada_motivo, '') <> $2`
+		args = append(args, PausaCanal)
+	}
+
+	filas, err := s.pool.Query(ctx, `
+		SELECT v.variant_id, pv.product_id, COALESCE(pv.sku,''),
+		       COALESCE(l.external_id,''), COALESCE(v.external_variant_id,''),
+		       COALESCE(v.channel_sku, pv.sku, '')
+		FROM variant_channel_listings v
+		JOIN product_channel_listings l ON l.id = v.listing_id
+		JOIN product_variants pv ON pv.id = v.variant_id
+		WHERE v.channel_account_id = $1
+		  AND l.external_id IS NOT NULL
+		  AND `+cond+`
+		ORDER BY v.id`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("listando las publicaciones de la cuenta %d: %w", cuentaID, err)
+	}
+	defer filas.Close()
+	return leerPublicacionesVivas(filas)
 }

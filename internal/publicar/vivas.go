@@ -101,7 +101,13 @@ func (s *Servicio) pausar(ctx context.Context, t jobs.Trabajo) error {
 	}
 	s.log.Info("publicación pausada por salir del catálogo",
 		"cuenta", p.CuentaID, "variante", p.VarianteID, "ref", ref.ListingID)
-	return s.st.MarcarPublicacionPausada(ctx, p.CuentaID, p.VarianteID, store.PausaCatalogo)
+	// Vacío es «catálogo»: así se encolaba antes de que existiera la pausa a
+	// mano, y una carga vieja que siga en la cola tiene que seguir valiendo.
+	motivo := p.Motivo
+	if motivo == "" {
+		motivo = store.PausaCatalogo
+	}
+	return s.st.MarcarPublicacionPausada(ctx, p.CuentaID, p.VarianteID, motivo)
 }
 
 // reanudar vuelve a abrir lo que Integra había pausado.
@@ -233,4 +239,39 @@ func (s *Servicio) periodoConciliacion() time.Duration {
 		return periodoPorDefecto
 	}
 	return s.periodo
+}
+
+// EncolarActivacion abre o apaga en bloque lo que una cuenta tiene publicado.
+//
+// Publicar deja la ficha en borrador a propósito: en WooCommerce y en Shopify,
+// que la vea el público es decisión de una persona. Esto es donde se toma esa
+// decisión, y sin ello había que entrar al canal producto por producto.
+//
+// Devuelve cuántas se encolaron. La clave única es por variante y cuenta, así
+// que pulsar dos veces no manda dos avisos al canal.
+func EncolarActivacion(ctx context.Context, cola encolador, st interface {
+	PublicacionesDeCuenta(ctx context.Context, cuentaID int64, paraActivar bool) ([]store.PublicacionViva, error)
+}, cuentaID int64, activar bool) (int, error) {
+	pubs, err := st.PublicacionesDeCuenta(ctx, cuentaID, activar)
+	if err != nil {
+		return 0, err
+	}
+	kind := TrabajoPausar
+	if activar {
+		kind = TrabajoReanudar
+	}
+	for _, p := range pubs {
+		// Prioridad alta: es una acción que alguien está mirando, y esperar
+		// detrás de un catálogo entero haría creer que el botón no hizo nada.
+		if _, err := cola.Encolar(ctx, kind,
+			PayloadPublicar{CuentaID: cuentaID, VarianteID: p.VarianteID, Motivo: store.PausaManual},
+			jobs.Opciones{
+				UniqueKey: fmt.Sprintf("%s:%d:%d", kind, cuentaID, p.VarianteID),
+				Priority:  10,
+				CuentaID:  cuentaID,
+			}); err != nil {
+			return 0, err
+		}
+	}
+	return len(pubs), nil
 }

@@ -98,6 +98,7 @@ func Nuevo(st *store.Store, log *slog.Logger, addr string, alm *imagen.Almacen, 
 	mux.HandleFunc("POST /api/ordenes/{id}/despachar", s.despacharOrden)
 	mux.HandleFunc("GET /api/publicaciones", s.publicaciones)
 	mux.HandleFunc("POST /api/cuentas/{id}/planificar", s.planificar)
+	mux.HandleFunc("POST /api/cuentas/{id}/publicaciones/{accion}", s.activarPublicaciones)
 	mux.HandleFunc("GET /api/cuentas", s.cuentas)
 	mux.HandleFunc("PUT /api/cuentas/{canal}", s.guardarCuenta)
 	mux.HandleFunc("POST /api/cuentas/{id}/probar", s.probarCuenta)
@@ -708,6 +709,44 @@ func (s *Server) planificar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	escribir(w, http.StatusOK, plan)
+}
+
+// activarPublicaciones abre o apaga de cara al público lo que ya está en el
+// canal.
+//
+// Integra publica la ficha en borrador a propósito: en WooCommerce y en
+// Shopify, que la vea el comprador es decisión de una persona. Sin esta ruta
+// esa decisión solo se podía tomar entrando al canal producto por producto,
+// que es tanto como no poder tomarla con un catálogo de verdad.
+func (s *Server) activarPublicaciones(w http.ResponseWriter, r *http.Request) {
+	if s.cola == nil {
+		escribir(w, http.StatusServiceUnavailable,
+			map[string]string{"error": "la cola de trabajos no está disponible en este proceso"})
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		escribir(w, http.StatusBadRequest, map[string]string{"error": "identificador inválido"})
+		return
+	}
+	activar := r.PathValue("accion") == "activar"
+
+	n, err := publicar.EncolarActivacion(r.Context(), s.cola, s.st, id, activar)
+	if err != nil {
+		escribir(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+		return
+	}
+
+	// Queda quién encendió o apagó un catálogo entero: es la acción con más
+	// consecuencia de la pantalla y la que más se va a preguntar después.
+	var usuario *int64
+	if c := ClaimsDeContext(r.Context()); c != nil {
+		usuario = &c.UserID
+	}
+	_ = s.st.RegistrarAuditoria(r.Context(), usuario, r.PathValue("accion"), "channel_accounts",
+		strconv.FormatInt(id, 10), nil, map[string]any{"publicaciones": n}, r.RemoteAddr)
+
+	escribir(w, http.StatusOK, map[string]any{"encoladas": n, "activar": activar})
 }
 
 func (s *Server) cuentas(w http.ResponseWriter, r *http.Request) {

@@ -827,6 +827,14 @@ export const api = {
   // Devuelve a la cola de montaje un pedido que agotó sus intentos. Cuando no
   // procede (ya está en Odoo, lo canceló el canal, le falta un SKU) el
   // servidor responde 409 con el motivo, que `pedir` convierte en el error.
+  // Abre o apaga de cara al público lo que ya está en el canal. Integra
+  // publica en borrador a propósito: que la ficha la vea el comprador es
+  // decisión de una persona.
+  activarPublicaciones: (cuentaId: number, activar: boolean) =>
+    pedir<{ encoladas: number; activar: boolean }>(
+      `/api/cuentas/${cuentaId}/publicaciones/${activar ? 'activar' : 'desactivar'}`,
+      { method: 'POST' }),
+
   guardarSueloCosto: (id: number, min_margen_pct: number, bloquear_bajo_costo: boolean) =>
     pedir<{ ok: boolean; total: number }>(`/api/cuentas/${id}/suelo-costo`, {
       method: 'PATCH',
