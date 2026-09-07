@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react'
 import type { AppId, Fondo, Preferencias } from './tipos'
 import { APPS, ORDEN_APPS } from './apps'
-import { FONDOS, cssFondo, usePreferencias } from './preferencias'
+import { FONDOS, FOTOS, cssFondo, urlFoto, usePreferencias } from './preferencias'
 import { useSesion } from './sesion'
 import { useSistema } from './sistema'
 
@@ -99,6 +99,11 @@ function Apariencia() {
   const [hasta, setHasta] = useState(fondo.tipo === 'degradado' ? fondo.hasta : '#0e7490')
 
   const ponerFondo = (f: Fondo) => poner({ fondo: f })
+  // Una foto pegada a mano: la dirección de una imagen (de Unsplash o de
+  // cualquier sitio). La página de una foto de Unsplash no sirve: hace falta
+  // la imagen en sí, que en Unsplash empieza por images.unsplash.com.
+  const [urlPropia, setUrlPropia] = useState(fondo.tipo === 'imagen' && !FOTOS.some(f => urlFoto(f.id, 1920) === fondo.url) ? fondo.url : '')
+  const urlPropiaValida = /^https?:\/\/\S+$/.test(urlPropia.trim()) && !/^https?:\/\/(www\.)?unsplash\.com\/photos\//.test(urlPropia.trim())
   const temas: { id: Preferencias['tema']; nombre: string; nota: string }[] = [
     { id: 'claro', nombre: 'Claro', nota: 'Fondos blancos, texto oscuro' },
     { id: 'oscuro', nombre: 'Oscuro', nota: 'Gris azulado, descansa la vista' },
@@ -172,6 +177,41 @@ function Apariencia() {
             </span>
           </div>
         </div>
+      </Grupo>
+
+      <Grupo titulo="Fotos de Unsplash" nota="Fotos de unsplash.com, servidas desde su propio CDN. Se cargan a 1920 px la primera vez y el navegador las guarda.">
+        <div className="fondos" role="radiogroup" aria-label="Fotos de Unsplash">
+          {FOTOS.map(f => {
+            const url = urlFoto(f.id, 1920)
+            const activo = fondo.tipo === 'imagen' && fondo.url === url
+            return (
+              <button
+                key={f.id} type="button" role="radio" aria-checked={activo}
+                className={`fondo-muestra${activo ? ' activo' : ''}`}
+                onClick={() => ponerFondo({ tipo: 'imagen', url, nombre: f.nombre })}
+              >
+                <span className="fondo-vista foto" style={{ backgroundImage: `url("${urlFoto(f.id, 320)}")` }} aria-hidden="true" />
+                <span className="fondo-nombre">{f.nombre}</span>
+              </button>
+            )
+          })}
+        </div>
+        <div className="fondo-url">
+          <input
+            type="url" placeholder="O pega la dirección de una imagen (https://images.unsplash.com/… o cualquier otra)"
+            value={urlPropia} onChange={e => setUrlPropia(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter' && urlPropiaValida) ponerFondo({ tipo: 'imagen', url: urlPropia.trim(), nombre: 'Foto propia' }) }}
+          />
+          <button type="button" className="primario" disabled={!urlPropiaValida}
+            onClick={() => ponerFondo({ tipo: 'imagen', url: urlPropia.trim(), nombre: 'Foto propia' })}>
+            Usar
+          </button>
+        </div>
+        {/^https?:\/\/(www\.)?unsplash\.com\/photos\//.test(urlPropia.trim()) && (
+          <div className="tenue mini-texto">
+            Eso es la página de la foto, no la imagen. En Unsplash abre la foto, clic derecho sobre ella → «Copiar dirección de la imagen», y pega esa.
+          </div>
+        )}
       </Grupo>
 
       <Grupo titulo="Tamaño del texto" nota="«Grande» sube toda la interfaz de 14 a 17 px.">

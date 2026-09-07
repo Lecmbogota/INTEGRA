@@ -108,6 +108,9 @@ html[data-tema="oscuro"] {
 .fondo-nombre { font-size: 12px; color: var(--texto-tenue); }
 .fondo-muestra.activo .fondo-nombre, .fondo-personalizado.activo .fondo-nombre { color: var(--texto); font-weight: 600; }
 .fondos-personalizados { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 10px; margin-top: 4px; max-width: 360px; }
+.fondo-vista.foto { background-size: cover; background-position: center; background-color: var(--surface-4); }
+.fondo-url { display: flex; gap: 8px; margin-top: 10px; }
+.fondo-url input { flex: 1; min-width: 0; }
 .fondo-personalizado { position: relative; cursor: pointer; }
 .fondo-colores { display: flex; gap: 6px; }
 .fondo-personalizado input[type="color"] {

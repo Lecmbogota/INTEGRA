@@ -135,6 +135,8 @@ function estiloFondo(f: Fondo): CSSProperties {
       return { background: f.color }
     case 'degradado':
       return { background: `linear-gradient(135deg, ${f.desde}, ${f.hasta})` }
+    case 'imagen':
+      return { background: `#1e293b url("${f.url}") center / cover no-repeat` }
   }
 }
 

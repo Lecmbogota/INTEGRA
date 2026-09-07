@@ -140,6 +140,7 @@ export type Fondo =
   | { tipo: 'preset'; id: string }      // uno de los fondos incluidos
   | { tipo: 'color'; color: string }    // color liso
   | { tipo: 'degradado'; desde: string; hasta: string }
+  | { tipo: 'imagen'; url: string; nombre?: string }   // una foto (Unsplash o propia)
 
 export type Preferencias = {
   tema: 'claro' | 'oscuro' | 'sistema'
