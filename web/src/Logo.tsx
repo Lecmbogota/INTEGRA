@@ -27,7 +27,17 @@ export function Logo() {
   )
 }
 
+// La marca oficial (las dos formas entrelazadas) vive en web/public/marca.png,
+// sacada del logo del diseñador y con el fondo transparente para que valga
+// sobre cualquier color. Si el fichero faltara, queda la recreación en SVG.
 export function Marca({ alto = 44 }: { alto?: number }) {
+  const [sinFichero, setSinFichero] = useState(false)
+  if (!sinFichero) {
+    return (
+      <img src="/marca.png" alt="Integra" height={alto} style={{ height: alto, width: 'auto', display: 'block' }}
+        onError={() => setSinFichero(true)} />
+    )
+  }
   return (
     <svg viewBox="0 0 100 100" height={alto} role="img" aria-label="Integra"
       fill="none" stroke="#24476E" strokeWidth="6.5" strokeLinejoin="round" strokeLinecap="round">
