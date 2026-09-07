@@ -464,3 +464,22 @@ func (s *Store) ResumenImagenes(ctx context.Context) (*ResumenImagenes, error) {
 	}
 	return &r, nil
 }
+
+// ConfirmarImagen anota que una persona miró la foto y dice que sí es el
+// producto. Pisa el veredicto del modelo: lo que confirma alguien mirando
+// pesa más que lo que opina un modelo de tres mil millones de parámetros.
+func (s *Store) ConfirmarImagen(ctx context.Context, productoID, imagenID int64, quien string) error {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE producto_imagenes
+		SET verificacion = 'corresponde',
+		    verificacion_nota = 'confirmada a mano por ' || $3,
+		    verificada_at = now()
+		WHERE product_id = $1 AND imagen_id = $2`, productoID, imagenID, quien)
+	if err != nil {
+		return fmt.Errorf("confirmando la imagen %d del producto %d: %w", imagenID, productoID, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("la imagen %d no está vinculada al producto %d", imagenID, productoID)
+	}
+	return nil
+}

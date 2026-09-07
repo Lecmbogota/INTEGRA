@@ -809,6 +809,10 @@ export const api = {
       method: 'POST',
     }),
 
+  // Una persona contradice al modelo de visión: la foto sí es el producto.
+  confirmarImagen: (varianteId: number, imagenId: number) =>
+    pedir<{ estado: string }>(`/api/productos/${varianteId}/imagenes/${imagenId}/confirmar`, { method: 'POST' }),
+
   editarMasivo: (
     seleccion: { ids?: number[]; filtro?: Record<string, unknown> },
     operacion: OperacionMasiva,

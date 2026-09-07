@@ -112,6 +112,18 @@ export function Imagenes({ varianteId, onCambio }: { varianteId: number; onCambi
     }
   }
 
+  async function confirmar(id: number) {
+    setOcupada(id)
+    try {
+      await api.confirmarImagen(varianteId, id)
+      await cargar()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setOcupada(null)
+    }
+  }
+
   function abrirSelector() {
     // Mientras sube no se abre otra tanda: se mezclarían las dos series.
     if (subiendo) return
@@ -186,12 +198,20 @@ export function Imagenes({ varianteId, onCambio }: { varianteId: number; onCambi
                     </span>
                   ))}
                 </div>
+                {/* Es la opinión de un modelo de visión, no un hecho: lo dice
+                    la pastilla y se puede contradecir. Sin el botón, un fallo
+                    del modelo se quedaba para siempre sobre una foto que
+                    cualquiera veía correcta. */}
                 {i.verificacion !== '' && i.verificacion !== 'corresponde' && (
                   <div className="etiquetas">
                     <span className={`pastilla ${i.verificacion === 'no_corresponde' ? 'bloqueante' : 'dudosa'}`}
                       title={i.verificacion_nota}>
-                      {i.verificacion === 'no_corresponde' ? 'No es el producto' : 'Dudosa'}
+                      {i.verificacion === 'no_corresponde' ? 'La IA dice que no es el producto' : 'La IA duda'}
                     </span>
+                    <button className="enlace" onClick={() => void confirmar(i.id)} disabled={ocupada === i.id}
+                      title="Anula la opinión del modelo: tú la has mirado y sí es el producto">
+                      Sí es el producto
+                    </button>
                   </div>
                 )}
                 <div className="acciones">
