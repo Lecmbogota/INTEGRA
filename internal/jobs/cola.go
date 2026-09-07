@@ -100,18 +100,33 @@ func (c *Cola) Encolar(ctx context.Context, kind string, payload any, op Opcione
 // FOR UPDATE SKIP LOCKED hace que varios workers puedan reclamar a la vez sin
 // pisarse ni bloquearse. El intento se consume al reclamar, no al terminar:
 // así un trabajo que mata al worker una y otra vez no reintenta para siempre.
-func (c *Cola) Reclamar(ctx context.Context, n int, lease time.Duration) ([]Trabajo, error) {
+// Reclamar toma hasta n trabajos pendientes de los tipos indicados.
+//
+// El filtro por tipo no es un detalle: sin él, un worker reclamaba cualquier
+// trabajo aunque no tuviera manejador y lo daba por fallido —«no hay manejador
+// registrado»—, gastándole un intento a un trabajo que otro proceso sí sabía
+// atender. Con dos workers especializados, cada uno destruía el trabajo del
+// otro; en las pruebas, el worker de la máquina se comía los trabajos de
+// prueba y las dejaba esperando a algo que ya nadie iba a procesar.
+//
+// Sin tipos se reclama de todos, que es como se comportaba antes.
+func (c *Cola) Reclamar(ctx context.Context, n int, lease time.Duration, tipos ...string) ([]Trabajo, error) {
+	filtro, args := "", []any{n, lease}
+	if len(tipos) > 0 {
+		args = append(args, tipos)
+		filtro = " AND kind = ANY($3)"
+	}
 	filas, err := c.pool.Query(ctx, `
 		UPDATE jobs SET status = 'running', attempts = attempts + 1,
 		       locked_until = now() + $2, updated_at = now()
 		WHERE id IN (
 		    SELECT id FROM jobs
-		    WHERE status = 'pending' AND run_at <= now()
+		    WHERE status = 'pending' AND run_at <= now()`+filtro+`
 		    ORDER BY priority, run_at, id
 		    LIMIT $1
 		    FOR UPDATE SKIP LOCKED)
 		RETURNING id, kind, payload, attempts, max_attempts, channel_account_id`,
-		n, lease)
+		args...)
 	if err != nil {
 		return nil, fmt.Errorf("reclamando trabajos: %w", err)
 	}

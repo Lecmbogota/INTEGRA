@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api, money, motivo, num, type Categoria, type Marca, type PaginaProductos, type Producto, rolActual } from './api'
+import { api, money, motivo, num, type Categoria, type Marca, type PaginaProductos, type Producto, rolActual , type CuentaCanal } from './api'
 import { Editar } from './Editar'
 import { EdicionMasiva } from './EdicionMasiva'
 import { PlantillaMasiva } from './PlantillaMasiva'
@@ -52,6 +52,7 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio }: {
   const [plantilla, setPlantilla] = useState(false)
   const [publicando, setPublicando] = useState(false)
   const esAdmin = rolActual() === 'admin'
+  const [despublicando, setDespublicando] = useState(false)
   // El resultado de publicar tiene su propio aviso: el banner de error de la
   // pantalla dice «no se pudo cargar la lista», que no es lo que pasó.
   const [aviso, setAviso] = useState<{ texto: string; malo: boolean } | null>(null)
@@ -59,36 +60,28 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio }: {
   // Publicar lo seleccionado. Planificar la cuenta entera es lo correcto para
   // la corrida nocturna, pero quien acaba de arreglar tres fichas quiere
   // verlas en el canal sin esperar a que pase por delante todo el catálogo.
-  // Borrar es la única acción de esta pantalla que no se deshace, y en dos de
-  // los cuatro canales ni siquiera es un borrado: la ficha queda cerrada para
-  // siempre. Por eso el aviso nombra los canales y exige escribir BORRAR.
-  async function borrarSeleccion() {
+  // Despublicar quita la ficha del canal. El producto NO se borra: viene de
+  // Odoo y sigue en Integra intacto, listo para volver a publicarse cuando se
+  // quiera. Lo que se pierde es lo que vivía en el canal —historial,
+  // preguntas, reseñas, posición en el buscador— y la dirección de la ficha.
+  //
+  // Es distinto de «Retirar de la venta»: eso la deja pausada y se puede
+  // reabrir con su historial entero. Por eso son dos acciones y no una.
+  async function despublicarDe(cuentas: CuentaCanal[]) {
     setAviso(null)
-    const n = marcados.size
-    const cuentas = (await api.cuentas()).filter((c) => c.activa)
-    if (cuentas.length === 0) {
-      setAviso({ texto: 'No hay ninguna cuenta de canal activa.', malo: true })
-      return
-    }
-    const donde = cuentas.map((c) => NOMBRE_CANAL[c.canal] ?? c.canal).join(', ')
-    const escrito = window.prompt(
-      `Se eliminarán de ${donde} las publicaciones de ${num(n)} productos.` +
-      '\n\nEsto NO es retirar de la venta: se pierden el historial, las preguntas, ' +
-      'las reseñas y la posición en el buscador del canal, y la dirección deja de ' +
-      'existir. En MercadoLibre y en Falabella ni siquiera hay borrado: la ficha ' +
-      'queda cerrada para siempre.' +
-      '\n\nNo se puede deshacer. Escribe BORRAR para confirmar:')
-    if (escrito !== 'BORRAR') return
-
+    setDespublicando(false)
     setPublicando(true)
     try {
       const ids = [...marcados]
       let total = 0
       for (const c of cuentas) total += (await api.borrarPublicaciones(c.id, ids)).encoladas
       setMarcados(new Set())
-      setAviso({ texto: `${num(total)} publicaciones encoladas para eliminarse. El worker las procesa en segundo plano.`, malo: false })
+      setAviso({
+        texto: `${num(total)} publicaciones encoladas para quitarse del canal. Los productos siguen en Integra.`,
+        malo: false,
+      })
     } catch (e) {
-      setAviso({ texto: `No se pudo borrar: ${e instanceof Error ? e.message : String(e)}`, malo: true })
+      setAviso({ texto: `No se pudo despublicar: ${e instanceof Error ? e.message : String(e)}`, malo: true })
     } finally {
       setPublicando(false)
     }
@@ -296,9 +289,9 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio }: {
               </button>
             )}
             {marcados.size > 0 && esAdmin && (
-              <button onClick={() => void borrarSeleccion()} disabled={publicando}
-                title="Elimina las fichas del canal. No se deshace.">
-                Borrar del canal
+              <button onClick={() => setDespublicando(true)} disabled={publicando}
+                title="Quita la ficha del canal. El producto sigue en Integra.">
+                Despublicar
               </button>
             )}
             <button onClick={() => setPlantilla(true)}
@@ -435,6 +428,14 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio }: {
         )}
       </section>
 
+      {despublicando && (
+        <DialogoDespublicar
+          cuantos={marcados.size}
+          onCerrar={() => setDespublicando(false)}
+          onConfirmar={(cs) => void despublicarDe(cs)}
+        />
+      )}
+
       {plantilla && (
         <PlantillaMasiva filtro={filtroActual} total={pagina?.total ?? 0}
           marcas={marcas} categorias={categorias}
@@ -481,5 +482,96 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio }: {
           }} />
       )}
     </>
+  )
+}
+
+// DialogoDespublicar deja elegir de qué canales se quita la ficha.
+//
+// Antes la acción alcanzaba siempre a todos los canales activos, que es justo
+// lo que no se quiere cuando un producto va bien en uno y mal en otro. Y el
+// aviso explica la diferencia con «retirar de la venta», porque la palabra
+// «despublicar» no la deja clara por sí sola.
+function DialogoDespublicar({ cuantos, onCerrar, onConfirmar }: {
+  cuantos: number
+  onCerrar: () => void
+  onConfirmar: (cuentas: CuentaCanal[]) => void
+}) {
+  const [cuentas, setCuentas] = useState<CuentaCanal[]>([])
+  const [elegidas, setElegidas] = useState<Set<number>>(new Set())
+  const [cargando, setCargando] = useState(true)
+
+  useEffect(() => {
+    api.cuentas()
+      .then((cs) => setCuentas(cs.filter((c) => c.activa)))
+      .catch(() => setCuentas([]))
+      .finally(() => setCargando(false))
+  }, [])
+
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onCerrar() }
+    window.addEventListener('keydown', h)
+    return () => window.removeEventListener('keydown', h)
+  }, [onCerrar])
+
+  const alternar = (id: number) => {
+    const s = new Set(elegidas)
+    s.has(id) ? s.delete(id) : s.add(id)
+    setElegidas(s)
+  }
+
+  return (
+    <div className="capa" onClick={onCerrar}>
+      <div className="hoja hoja-editor" onClick={(e) => e.stopPropagation()}>
+        <header className="hoja-cabecera">
+          <div>
+            <h2>Despublicar {num(cuantos)} productos</h2>
+            <div className="sub">Elige de qué canales se quita la ficha</div>
+          </div>
+          <button onClick={onCerrar}>Cerrar ✕</button>
+        </header>
+
+        <div className="cuerpo">
+          {cargando && <div className="vacio">Cargando canales…</div>}
+          {!cargando && cuentas.length === 0 && (
+            <div className="vacio">No hay ninguna cuenta de canal activa.</div>
+          )}
+          {cuentas.map((c) => (
+            <label key={c.id} className="casilla fila-cuenta">
+              <input type="checkbox" checked={elegidas.has(c.id)}
+                onChange={() => alternar(c.id)} />
+              <span className="expande">{NOMBRE_CANAL[c.canal] ?? c.canal}</span>
+            </label>
+          ))}
+          {cuentas.length > 1 && (
+            <button className="enlace"
+              onClick={() => setElegidas(new Set(cuentas.map((c) => c.id)))}>
+              Marcar todos
+            </button>
+          )}
+        </div>
+
+        <div className="aviso-caja">
+          <strong>El producto no se borra.</strong> Viene de Odoo y sigue en Integra,
+          listo para volver a publicarse. Lo que se pierde es lo que vivía en el canal:
+          el historial, las preguntas, las reseñas y la posición en el buscador, y la
+          dirección de la ficha deja de existir.
+        </div>
+
+        <div className="nota-previa">
+          Si solo quieres que deje de venderse un tiempo, usa <strong>Retirar</strong> en
+          Publicación: eso la pausa y se puede reabrir con su historial entero. En
+          MercadoLibre y en Falabella no hay despublicado real, así que la ficha queda
+          cerrada para siempre.
+        </div>
+
+        <footer className="hoja-pie">
+          <button onClick={onCerrar}>Cancelar</button>
+          <button className="primario" disabled={elegidas.size === 0}
+            onClick={() => onConfirmar(cuentas.filter((c) => elegidas.has(c.id)))}>
+            Despublicar de {num(elegidas.size)} canales
+          </button>
+        </footer>
+      </div>
+    </div>
   )
 }

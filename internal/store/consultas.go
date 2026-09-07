@@ -130,6 +130,17 @@ type FiltroProductos struct {
 	// la edición masiva: aplicar «precio = coste × factor» a una selección
 	// que incluya productos ya tarifados los sobrescribiría en silencio.
 	SoloSinPrecio bool
+	// SoloSinFoto acota a lo que no tiene ninguna imagen. Sin foto no publica
+	// ningún canal, así que es lo primero que hay que resolver de un producto
+	// nuevo.
+	SoloSinFoto bool
+	// SoloSinDescripcion: sin ella tampoco sale a ningún canal.
+	SoloSinDescripcion bool
+	// SoloSinEAN acota a lo que le falta el código de barras. Solo Falabella
+	// lo exige, pero es el dato que más falta y el que más tarde se descubre.
+	SoloSinEAN bool
+	// SoloConPromo acota a lo que tiene una oferta vigente ahora mismo.
+	SoloConPromo bool
 	// SoloSinPublicar acota a lo que no tiene ficha en ningún canal. Es el
 	// filtro que contesta «¿qué me falta por subir?», que antes obligaba a
 	// comparar dos pantallas a ojo.
@@ -175,6 +186,23 @@ func (s *Store) ListarProductos(ctx context.Context, f FiltroProductos) ([]FilaP
 	if m := strings.TrimSpace(f.Marca); m != "" {
 		args = append(args, m)
 		cond = append(cond, fmt.Sprintf("b.code = $%d", len(args)))
+	}
+	if f.SoloSinFoto {
+		cond = append(cond, `NOT EXISTS (
+			SELECT 1 FROM producto_imagenes pi WHERE pi.product_id = p.id)`)
+	}
+	if f.SoloSinDescripcion {
+		cond = append(cond,
+			`NULLIF(TRIM(COALESCE(c.descripcion, p.description_sale, '')), '') IS NULL`)
+	}
+	if f.SoloSinEAN {
+		cond = append(cond, `COALESCE(v.barcode, '') = ''`)
+	}
+	if f.SoloConPromo {
+		cond = append(cond, `EXISTS (
+			SELECT 1 FROM offers o
+			WHERE o.variant_id = v.id AND o.active AND o.reverted_at IS NULL
+			  AND o.starts_at <= now() AND (o.ends_at IS NULL OR o.ends_at > now()))`)
 	}
 	if f.SoloSinPublicar {
 		cond = append(cond, `NOT EXISTS (

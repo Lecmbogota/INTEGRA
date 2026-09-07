@@ -261,3 +261,55 @@ type errorConEspera struct{ d time.Duration }
 
 func (e errorConEspera) Error() string                          { return "el canal pidió parar" }
 func (e errorConEspera) EsperaAntesDeReintentar() time.Duration { return e.d }
+
+// Un worker no puede tocar los trabajos que no sabe atender.
+//
+// Reclamar no filtraba por tipo, así que cualquier worker se llevaba cualquier
+// trabajo y, al no encontrarle manejador, lo daba por fallido con «no hay
+// manejador registrado»: le gastaba un intento a un trabajo que otro proceso
+// sí sabía procesar. Con dos workers especializados cada uno destruía el
+// trabajo del otro, y en las pruebas el worker de la máquina se comía los
+// trabajos de prueba y las dejaba esperando algo que ya nadie iba a procesar.
+func TestUnWorkerNoSeLlevaLosTrabajosQueNoSabeAtender(t *testing.T) {
+	ctx := context.Background()
+	cola := NuevaCola(abrirPool(t))
+
+	mio, err := cola.Encolar(ctx, "test_mio", map[string]any{}, Opciones{Priority: prioridadDePrueba})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ajeno, err := cola.Encolar(ctx, "test_ajeno", map[string]any{}, Opciones{Priority: prioridadDePrueba})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	trabajos, err := cola.Reclamar(ctx, 10, time.Minute, "test_mio")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tr := range trabajos {
+		if tr.ID == ajeno {
+			t.Fatal("se reclamó un trabajo de un tipo que este worker no atiende")
+		}
+	}
+	var visto bool
+	for _, tr := range trabajos {
+		if tr.ID == mio {
+			visto = true
+		}
+	}
+	if !visto {
+		t.Error("no se reclamó el trabajo propio")
+	}
+
+	// Y el ajeno sigue intacto, con su intento sin gastar.
+	var estado string
+	var intentos int
+	if err := cola.Pool().QueryRow(ctx,
+		`SELECT status::text, attempts FROM jobs WHERE id = $1`, ajeno).Scan(&estado, &intentos); err != nil {
+		t.Fatal(err)
+	}
+	if estado != "pending" || intentos != 0 {
+		t.Errorf("el trabajo ajeno quedó en %q con %d intentos: se le gastó uno sin procesarlo", estado, intentos)
+	}
+}

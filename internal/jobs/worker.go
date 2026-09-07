@@ -56,6 +56,17 @@ func NuevoWorker(cola *Cola, log *slog.Logger, concurrencia int, tick time.Durat
 // encola su montaje en Odoo) sin que haya que pasarle la cola por separado.
 func (w *Worker) Cola() *Cola { return w.cola }
 
+// tipos son los que este worker tiene registrados.
+func (w *Worker) tipos() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	out := make([]string, 0, len(w.manejores))
+	for k := range w.manejores {
+		out = append(out, k)
+	}
+	return out
+}
+
 func (w *Worker) Registrar(kind string, h Handler) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -122,7 +133,9 @@ func (w *Worker) Ejecutar(ctx context.Context) error {
 		if libres == 0 {
 			continue
 		}
-		trabajos, err := w.cola.Reclamar(ctx, libres, w.lease)
+		// Solo los tipos que este worker sabe atender: reclamar los demás les
+		// gastaría un intento y los daría por fallidos sin haberlos intentado.
+		trabajos, err := w.cola.Reclamar(ctx, libres, w.lease, w.tipos()...)
 		if err != nil {
 			w.log.Error("reclamando trabajos", "error", err)
 			continue
