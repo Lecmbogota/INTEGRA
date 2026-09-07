@@ -1,4 +1,4 @@
-/* Escritorio, barra de tareas y menú de inicio.
+/* Escritorio y barra de tareas (el menú de inicio vive en inicio.css).
 
    Todo el color sale de las variables del tema (--surface-*, --texto,
    --acento…) para que el tema oscuro, que define otra persona sobre esas
@@ -15,8 +15,7 @@
 .menu-contextual,
 .menu-usuario,
 .barra-lista,
-.barra-tareas,
-.inicio {
+.barra-tareas {
   background: color-mix(in srgb, var(--surface-1) 72%, transparent);
   -webkit-backdrop-filter: blur(18px) saturate(1.4);
   backdrop-filter: blur(18px) saturate(1.4);
@@ -26,7 +25,7 @@
 /* Sin backdrop-filter el cristal se vería como un fondo semitransparente sin
    desenfoque: ilegible sobre un fondo de pantalla. Fondo opaco entonces. */
 @supports not (backdrop-filter: blur(1px)) {
-  .cristal, .widget, .galeria-widgets, .menu-contextual, .menu-usuario, .barra-lista, .barra-tareas, .inicio {
+  .cristal, .widget, .galeria-widgets, .menu-contextual, .menu-usuario, .barra-lista, .barra-tareas {
     background: var(--surface-1);
   }
 }
@@ -509,7 +508,7 @@
 .menu-contextual button:disabled { opacity: .45; cursor: default; background: transparent; }
 .menu-contextual .menu-marca { width: 14px; text-align: center; color: var(--acento); font-weight: 700; }
 .menu-separador { height: 1px; margin: 4px 6px; background: var(--borde); }
-.menu-usuario button.peligro, .inicio-pie button.peligro { color: var(--error); }
+.menu-usuario button.peligro { color: var(--error); }
 
 .menu-usuario {
   right: 8px;
@@ -700,177 +699,14 @@
 .barra-tareas.movil .reloj { padding: 0 6px; }
 .barra-tareas.movil .bandeja-usuario { padding: 0 4px; }
 
-/* ------------------------------------------------------------- inicio */
-
-.inicio {
-  position: fixed;
-  z-index: 900;
-  bottom: calc(var(--alto-barra, 52px) + 8px);
-  left: 8px;
-  width: min(640px, calc(100vw - 16px));
-  height: min(520px, calc(100vh - var(--alto-barra, 52px) - 16px));
-  border-radius: 16px;
-  box-shadow: 0 16px 48px rgba(0, 0, 0, .26);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  animation: subir .16s ease-out;
-}
-.inicio.centrada { left: 50%; transform: translateX(-50%); }
-.inicio.movil {
-  inset: 0 0 var(--alto-barra, 52px) 0;
-  width: auto;
-  height: auto;
-  border-radius: 0;
-  transform: none;
-  left: 0;
-}
-
-.inicio-buscador {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin: 14px 14px 8px;
-  padding: 0 12px;
-  height: 40px;
-  border-radius: var(--radio-pill);
-  background: var(--surface-1);
-  border: 1px solid var(--borde);
-  color: var(--texto-tenue);
-}
-.inicio-buscador:focus-within { border-color: var(--acento); box-shadow: 0 0 0 3px color-mix(in srgb, var(--acento) 22%, transparent); }
-.inicio-buscador input {
-  flex: 1 1 auto;
-  min-width: 0;
-  border: 0;
-  background: transparent;
-  color: var(--texto);
-  font: inherit;
-  font-size: 14px;
-  outline: none;
-}
-.inicio-buscador input::-webkit-search-cancel-button { -webkit-appearance: none; }
-.inicio-buscando { font-size: 12px; white-space: nowrap; }
-
-.inicio-resultados, .inicio-cuerpo {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: auto;
-  padding: 4px 14px 10px;
-}
-.inicio-grupo h3, .inicio-seccion h3 {
-  margin: 10px 4px 6px;
-  font-family: var(--fuente-titular);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: .04em;
-  text-transform: uppercase;
-  color: var(--texto-tenue);
-}
-.inicio-vacio { padding: 24px 8px; text-align: center; color: var(--texto-tenue); font-size: 13px; }
-
-.inicio-resultado, .inicio-fila {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  width: 100%;
-  padding: 7px 8px;
-  border: 0;
-  border-radius: var(--radio);
-  background: transparent;
-  color: var(--texto);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-.inicio-resultado:hover, .inicio-fila:hover, .inicio-fila:focus-visible,
-.inicio-resultado.seleccionado {
-  background: color-mix(in srgb, var(--acento) 14%, transparent);
-  outline: none;
-}
-.inicio-resultado-icono, .inicio-fila-icono {
-  flex: 0 0 auto;
-  width: 34px; height: 34px;
-  border-radius: 9px;
-  display: grid; place-items: center;
-  color: #fff;
-}
-.inicio-resultado-icono svg, .inicio-fila-icono svg { width: 20px; height: 20px; }
-.inicio-resultado-icono.neutro { background: var(--surface-4); color: var(--texto-tenue); }
-.inicio-resultado-texto, .inicio-fila-texto { display: flex; flex-direction: column; min-width: 0; }
-.inicio-resultado-titulo, .inicio-fila-nombre { font-size: 14px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.inicio-resultado-detalle, .inicio-fila-desc { font-size: 12px; color: var(--texto-tenue); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-.inicio-apps {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
-  gap: 4px;
-}
-.inicio-app {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  padding: 10px 4px;
-  border: 0;
-  border-radius: var(--radio);
-  background: transparent;
-  color: var(--texto);
-  font: inherit;
-  cursor: pointer;
-}
-.inicio-app:hover, .inicio-app:focus-visible { background: color-mix(in srgb, var(--acento) 14%, transparent); outline: none; }
-.inicio-app-icono {
-  width: 44px; height: 44px;
-  border-radius: 12px;
-  display: grid; place-items: center;
-  color: #fff;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, .18);
-}
-.inicio-app-icono svg { width: 24px; height: 24px; }
-.inicio-app-nombre { font-size: 12px; text-align: center; line-height: 1.2; }
-
-.inicio-pie {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 10px 14px;
-  border-top: 1px solid color-mix(in srgb, var(--borde) 70%, transparent);
-  background: color-mix(in srgb, var(--surface-3) 50%, transparent);
-}
-.inicio-usuario { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.inicio-usuario-texto { display: flex; flex-direction: column; min-width: 0; }
-.inicio-usuario-nombre { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.inicio-usuario-rol { font-size: 11px; color: var(--texto-tenue); }
-.inicio-pie-botones { display: flex; gap: 2px; flex-wrap: wrap; justify-content: flex-end; }
-.inicio-pie-botones button {
-  border: 0;
-  background: transparent;
-  color: var(--texto);
-  font: inherit;
-  font-size: 13px;
-  padding: 6px 10px;
-  border-radius: var(--radio);
-  cursor: pointer;
-}
-.inicio-pie-botones button:hover, .inicio-pie-botones button:focus-visible {
-  background: color-mix(in srgb, var(--texto) 9%, transparent);
-  outline: none;
-}
-
 /* ------------------------------------------------------- animaciones */
 
 @keyframes aparecer { from { opacity: 0; transform: scale(.97); } to { opacity: 1; transform: none; } }
 @keyframes subir { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 @keyframes latido { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.5); opacity: .55; } }
-/* El inicio centrado usa transform para centrarse: su animación no puede pisarlo. */
-.inicio.centrada { animation-name: subir-centrado; }
-@keyframes subir-centrado { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translateX(-50%); } }
-.inicio.movil { animation-name: aparecer; }
 
 @media (prefers-reduced-motion: reduce) {
-  .menu-contextual, .menu-usuario, .barra-lista, .inicio, .widget, .galeria-widgets { animation: none; }
+  .menu-contextual, .menu-usuario, .barra-lista, .widget, .galeria-widgets { animation: none; }
   .punto-animado { animation: none; }
   .icono-app, .widget, .widget-asa, .widget-menu, .widget-barra-relleno, .boton-anadir-widget, .galeria-item, .galeria-anadir,
   .barra-boton, .barra-app, .barra-app-marca, .reloj { transition: none; }

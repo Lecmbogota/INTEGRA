@@ -8,7 +8,7 @@ import { useDatos } from './datos'
 import { useNotificaciones, CentroNotificaciones } from './Notificaciones'
 import { useSesion } from './sesion'
 import { Marca } from '../Logo'
-import { Inicio } from './Inicio'
+import { Inicio, useRegistroRecientes } from './Inicio'
 import { MenuContextual, useCerrarFuera, nombreRol, type OpcionMenu } from './Escritorio'
 
 // La barra de tareas: inicio, buscador, apps ancladas y ventanas abiertas,
@@ -54,6 +54,11 @@ export function BarraTareas() {
   const notis = useNotificaciones()
   const { usuario, salir } = useSesion()
   const esAdmin = usuario.role === 'admin'
+
+  // Recientes del menú de inicio: cada ficha que se abre en una ventana
+  // (vista previa, editor, editor de fotos) queda apuntada, esté el menú
+  // abierto o no. Va aquí porque la barra está montada siempre.
+  useRegistroRecientes(sistema.ventanas, usuario.id)
 
   const [inicio, setInicio] = useState(false)
   const [centro, setCentro] = useState(false)
