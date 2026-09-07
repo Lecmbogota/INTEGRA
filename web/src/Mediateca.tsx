@@ -11,8 +11,8 @@ import { api, fecha, num, type FiltroMediateca, type ImagenBanco, type OrdenMedi
 // disco ocupa lo que ya no usa nadie.
 //
 // Lo que se puede hacer aquí y no desde el producto: limpiar en lote lo que
-// dejó una búsqueda en internet, y rescatar de entre esas huérfanas la foto
-// buena asignándola a su producto sin volver a subirla.
+// dejó una búsqueda en internet, y rescatar de entre esas huérfanas las fotos
+// buenas marcándolas y asignándolas a su producto sin volver a subirlas.
 
 const FILTROS: [FiltroMediateca, string, string][] = [
   ['todas', 'Todas', ''],
@@ -31,6 +31,7 @@ const ORDENES: [OrdenMediateca, string][] = [
 
 const ORIGEN: Record<string, string> = {
   subida: 'Subida a mano',
+  web: 'Descargada de internet',
   url: 'Descargada de internet',
   banco_fabricante: 'Banco del fabricante',
 }
@@ -62,7 +63,8 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
   const [version, setVersion] = useState(0)
   const [seleccion, setSeleccion] = useState<Set<number>>(new Set())
   const [visor, setVisor] = useState<ImagenBanco | null>(null)
-  const [asignando, setAsignando] = useState<ImagenBanco | null>(null)
+  // Lo que se va a asignar: una foto desde su botón, o todas las marcadas.
+  const [asignando, setAsignando] = useState<ImagenBanco[] | null>(null)
 
   // La búsqueda se retrasa 300 ms para no consultar por tecla, y `vigente`
   // descarta la respuesta de una consulta que ya quedó atrás.
@@ -78,9 +80,9 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
     return () => { vigente = false; clearTimeout(t) }
   }, [filtro, orden, busqueda, offset, version])
 
-  // Cambiar de filtro o de página vacía la selección: borrar «lo marcado»
-  // cuando lo marcado ya no está a la vista es la forma de borrar lo que no
-  // se quería.
+  // Cambiar de filtro o de página vacía la selección: actuar sobre «lo
+  // marcado» cuando lo marcado ya no está a la vista es la forma de tocar
+  // lo que no se quería.
   useEffect(() => { setSeleccion(new Set()) }, [filtro, orden, busqueda, offset])
 
   // Escape cierra lo que esté abierto encima.
@@ -101,12 +103,14 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
   }
 
   const items = pagina?.items ?? []
-  const huerfanasEnPagina = items.filter((i) => i.productos.length === 0)
-  const seleccionadasHuerfanas = huerfanasEnPagina.filter((i) => seleccion.has(i.id))
-  const todasMarcadas = huerfanasEnPagina.length > 0 && seleccionadasHuerfanas.length === huerfanasEnPagina.length
+  // En el orden de la página: al asignar, la primera marcada es la portada
+  // si se pide, y ese orden es el que se ve.
+  const seleccionadas = items.filter((i) => seleccion.has(i.id))
+  const seleccionadasHuerfanas = seleccionadas.filter((i) => i.productos.length === 0)
+  const todasMarcadas = items.length > 0 && seleccionadas.length === items.length
 
-  function marcarTodasLasHuerfanas() {
-    setSeleccion(todasMarcadas ? new Set() : new Set(huerfanasEnPagina.map((i) => i.id)))
+  function marcarTodas() {
+    setSeleccion(todasMarcadas ? new Set() : new Set(items.map((i) => i.id)))
   }
 
   async function borrar(ids: number[]) {
@@ -129,13 +133,21 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
     }
   }
 
-  async function asignar(imagen: ImagenBanco, producto: Producto, principal: boolean) {
+  async function asignar(imagenes: ImagenBanco[], producto: Producto, principal: boolean) {
     setOcupada(true)
     setError(null)
     try {
-      await api.asociarDelBanco(imagen.id, producto.id, principal)
-      setAviso(`Foto asignada a ${producto.sku || producto.nombre}${principal ? ' como portada' : ''}.`)
+      const nombre = producto.sku || producto.nombre
+      if (imagenes.length === 1) {
+        await api.asociarDelBanco(imagenes[0].id, producto.id, principal)
+        setAviso(`Foto asignada a ${nombre}${principal ? ' como portada' : ''}.`)
+      } else {
+        const r = await api.asociarVariasDelBanco(imagenes.map((i) => i.id), producto.id, principal)
+        setAviso(`${num(r.asociadas)} fotos asignadas a ${nombre}${principal ? ', la primera como portada' : ''}` +
+          `${r.rechazadas > 0 ? ` · ${num(r.rechazadas)} no se pudieron` : ''}.`)
+      }
       setAsignando(null)
+      setSeleccion(new Set())
       recargar()
     } catch (e) {
       setError(`No se pudo asignar: ${e instanceof Error ? e.message : String(e)}`)
@@ -182,22 +194,32 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
                   onClick={() => { setOrden(id); setOffset(0) }}>{nombre}</button>
               ))}
             </div>
-            {/* Las acciones en lote solo tienen sentido sobre huérfanas: el
-                servidor rechaza borrar lo que usa un producto, así que aquí
-                ni se ofrece. */}
-            {huerfanasEnPagina.length > 0 && (
-              <>
-                <label className="casilla">
-                  <input type="checkbox" checked={todasMarcadas} onChange={marcarTodasLasHuerfanas} />
-                  Marcar las {num(huerfanasEnPagina.length)} huérfanas de esta página
-                </label>
-                <button disabled={seleccionadasHuerfanas.length === 0 || ocupada}
-                  onClick={() => void borrar(seleccionadasHuerfanas.map((i) => i.id))}>
-                  Borrar {seleccionadasHuerfanas.length > 0 ? num(seleccionadasHuerfanas.length) : ''} marcadas
-                </button>
-              </>
-            )}
           </div>
+
+          {/* Acciones sobre lo marcado. Asignar vale para cualquier foto;
+              borrar solo para las que no usa nadie, porque el servidor
+              rechaza el resto y no tiene sentido ofrecerlo. */}
+          {items.length > 0 && (
+            <div className="filtros">
+              <label className="casilla">
+                <input type="checkbox" checked={todasMarcadas} onChange={marcarTodas} />
+                Marcar las {num(items.length)} de esta página
+              </label>
+              <span className="tenue">
+                {seleccionadas.length === 0 ? 'Nada marcado' : `${num(seleccionadas.length)} marcadas`}
+              </span>
+              <button className="primario" disabled={seleccionadas.length === 0 || ocupada}
+                onClick={() => setAsignando(seleccionadas)}
+                title="Enlaza todas las marcadas al mismo producto, en este orden">
+                Asignar {seleccionadas.length > 0 ? num(seleccionadas.length) : ''} marcadas a un producto
+              </button>
+              <button disabled={seleccionadasHuerfanas.length === 0 || ocupada}
+                onClick={() => void borrar(seleccionadasHuerfanas.map((i) => i.id))}
+                title="Solo las marcadas que no usa ningún producto">
+                Borrar {seleccionadasHuerfanas.length > 0 ? num(seleccionadasHuerfanas.length) : ''} huérfanas marcadas
+              </button>
+            </div>
+          )}
 
           {error && <div className="aviso-caja">{error}</div>}
           {aviso && !error && <div className="nota-previa">{aviso}</div>}
@@ -222,10 +244,8 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
                       title="Ver en grande" onClick={() => setVisor(i)} />
                     <figcaption>
                       <span className="dim">
-                        {huerfana && (
-                          <input type="checkbox" checked={marcada} onChange={() => alternar(i.id)}
-                            title="Marcar para borrar en lote" style={{ marginRight: 6 }} />
-                        )}
+                        <input type="checkbox" checked={marcada} onChange={() => alternar(i.id)}
+                          title="Marcar para asignar o borrar en lote" style={{ marginRight: 6 }} />
                         {i.ancho}×{i.alto} · {tamano(i.bytes)} · {i.formato}
                         {pequena && <span className="pastilla bloqueante" style={{ marginLeft: 6 }}>pequeña</span>}
                       </span>
@@ -246,7 +266,7 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
                           ))}
                       </div>
                       <div className="acciones">
-                        <button onClick={() => setAsignando(i)} disabled={ocupada}
+                        <button onClick={() => setAsignando([i])} disabled={ocupada}
                           title="Enlazarla a un producto sin volver a subirla">
                           Asignar a producto
                         </button>
@@ -280,8 +300,8 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
       <div className="nota-previa">
         Las fotos se suben, se quitan y se eligen como portada desde cada producto:
         pulsa su referencia aquí o ábrelo desde <strong>Productos</strong>. Aquí se
-        asignan a un producto las que ya están en el banco y se borran las que no usa
-        nadie. «Buscar imágenes faltantes» recorre el catálogo entero buscando en
+        marcan varias y se asignan de una vez a un producto, y se borran las que no
+        usa nadie. «Buscar imágenes faltantes» recorre el catálogo entero buscando en
         internet por SKU; lo que descarga y no convence acaba en «Huérfanas».
       </div>
 
@@ -294,7 +314,7 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
               {visor.origen_ref && <> · <a href={visor.origen_ref} target="_blank" rel="noreferrer">{dominio(visor.origen_ref)}</a></>}
             </div>
             <div className="grupo-acciones">
-              <button onClick={() => { setAsignando(visor); setVisor(null) }}>Asignar a producto</button>
+              <button onClick={() => { setAsignando([visor]); setVisor(null) }}>Asignar a producto</button>
               <button onClick={() => setVisor(null)}>Cerrar ✕</button>
             </div>
           </div>
@@ -302,7 +322,7 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
       )}
 
       {asignando && (
-        <DialogoAsignar imagen={asignando} ocupada={ocupada}
+        <DialogoAsignar imagenes={asignando} ocupada={ocupada}
           onCerrar={() => setAsignando(null)}
           onConfirmar={(p, principal) => void asignar(asignando, p, principal)} />
       )}
@@ -311,10 +331,10 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
 }
 
 // DialogoAsignar busca el producto por lo que el operador tiene a mano —la
-// referencia o el nombre— y enlaza la foto. Con «como portada» pasa a ser
-// la cara del producto en los cuatro canales.
-function DialogoAsignar({ imagen, ocupada, onCerrar, onConfirmar }: {
-  imagen: ImagenBanco
+// referencia o el nombre— y enlaza las fotos. Con «como portada», la primera
+// pasa a ser la cara del producto en los cuatro canales.
+function DialogoAsignar({ imagenes, ocupada, onCerrar, onConfirmar }: {
+  imagenes: ImagenBanco[]
   ocupada: boolean
   onCerrar: () => void
   onConfirmar: (producto: Producto, principal: boolean) => void
@@ -338,18 +358,34 @@ function DialogoAsignar({ imagen, ocupada, onCerrar, onConfirmar }: {
     return () => { vigente = false; clearTimeout(t) }
   }, [q])
 
-  const yaLaTiene = (p: Producto) => imagen.productos.some((x) => x.variante_id === p.id)
+  // Un producto que ya tiene TODAS las fotos marcadas no se ofrece: asignar
+  // no haría nada. Si tiene solo algunas, se asignan las que faltan.
+  const yaLasTiene = (p: Producto) => imagenes.every((i) => i.productos.some((x) => x.variante_id === p.id))
+  const varias = imagenes.length > 1
 
   return (
     <div className="capa" onClick={onCerrar}>
       <div className="hoja" onClick={(e) => e.stopPropagation()}>
         <header className="hoja-cabecera">
           <div>
-            <h2>Asignar la foto a un producto</h2>
-            <div className="sub">{imagen.ancho}×{imagen.alto} · {tamano(imagen.bytes)}</div>
+            <h2>{varias ? `Asignar ${num(imagenes.length)} fotos a un producto` : 'Asignar la foto a un producto'}</h2>
+            <div className="sub">
+              {varias
+                ? 'Quedarán en este orden detrás de las que el producto ya tenga.'
+                : `${imagenes[0].ancho}×${imagenes[0].alto} · ${tamano(imagenes[0].bytes)}`}
+            </div>
           </div>
           <button onClick={onCerrar} disabled={ocupada}>Cerrar ✕</button>
         </header>
+
+        {/* Las miniaturas de lo que se va a asignar: con varias marcadas,
+            ver cuáles son evita enlazar la moto junto con la cámara. */}
+        <div className="tira-miniaturas">
+          {imagenes.map((i, n) => (
+            <img key={i.id} src={`/imagenes/${i.sha256}/miniatura_300`} alt=""
+              title={`${n + 1} · ${i.ancho}×${i.alto}`} />
+          ))}
+        </div>
 
         <div className="form-edicion">
           <label>
@@ -367,10 +403,10 @@ function DialogoAsignar({ imagen, ocupada, onCerrar, onConfirmar }: {
               {candidatos.map((p) => (
                 <label key={p.id}>
                   <input type="radio" name="producto" checked={elegido?.id === p.id}
-                    disabled={yaLaTiene(p)} onChange={() => setElegido(p)} />
+                    disabled={yaLasTiene(p)} onChange={() => setElegido(p)} />
                   <code>{p.sku || '—'}</code>
                   <span className="expande-recorta">{p.nombre}</span>
-                  {yaLaTiene(p) && <span className="pastilla ok">ya la tiene</span>}
+                  {yaLasTiene(p) && <span className="pastilla ok">ya las tiene</span>}
                   {p.problemas?.includes('missing_image') && <span className="pastilla aviso">sin fotos</span>}
                 </label>
               ))}
@@ -379,7 +415,7 @@ function DialogoAsignar({ imagen, ocupada, onCerrar, onConfirmar }: {
 
           <label className="casilla">
             <input type="checkbox" checked={principal} onChange={(e) => setPrincipal(e.target.checked)} />
-            Ponerla como portada
+            {varias ? 'La primera como portada' : 'Ponerla como portada'}
           </label>
         </div>
 
@@ -387,7 +423,7 @@ function DialogoAsignar({ imagen, ocupada, onCerrar, onConfirmar }: {
           <button onClick={onCerrar} disabled={ocupada}>Cancelar</button>
           <button className="primario" disabled={!elegido || ocupada}
             onClick={() => elegido && onConfirmar(elegido, principal)}>
-            {ocupada ? 'Asignando…' : 'Asignar'}
+            {ocupada ? 'Asignando…' : varias ? `Asignar ${num(imagenes.length)} fotos` : 'Asignar'}
           </button>
         </div>
       </div>

@@ -653,6 +653,8 @@ button.enlace:hover:not(:disabled) { background: none; color: var(--acento-hover
 .lista-eleccion { display: flex; flex-direction: column; gap: 4px; max-height: 40vh; overflow: auto; }
 .lista-eleccion label { display: flex; gap: 8px; align-items: center; padding: 6px 8px; border-radius: 6px; cursor: pointer; }
 .lista-eleccion label:hover { background: rgba(0,0,0,.04); }
+.tira-miniaturas { display: flex; gap: 6px; flex-wrap: wrap; padding: 0 16px 12px; }
+.tira-miniaturas img { width: 56px; height: 56px; object-fit: cover; border-radius: 6px; border: 1px solid var(--borde, #ddd); background: #fff; }
 .galeria img {
   width: 100%; aspect-ratio: 1; object-fit: contain;
   background: #fff; display: block;

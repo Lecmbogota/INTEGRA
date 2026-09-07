@@ -26,6 +26,7 @@ func (s *Server) registrarImagenes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/imagenes/{id}", s.borrarDelBanco)
 	mux.HandleFunc("POST /api/imagenes/borrar", s.borrarVariasDelBanco)
 	mux.HandleFunc("POST /api/imagenes/{id}/asociar", s.asociarDelBanco)
+	mux.HandleFunc("POST /api/imagenes/asociar", s.asociarVariasDelBanco)
 	// El fichero se sirve por hash, no por identificador: así la URL es
 	// inmutable y se puede cachear para siempre.
 	mux.HandleFunc("GET /imagenes/{sha}", s.servirImagen)
@@ -151,6 +152,48 @@ func (s *Server) asociarDelBanco(w http.ResponseWriter, r *http.Request) {
 	_ = s.st.RegistrarAuditoria(r.Context(), usuario, "link", "producto_imagenes",
 		fmt.Sprintf("%d:%d", prodID, imgID), nil, map[string]any{"principal": cuerpo.Principal}, r.RemoteAddr)
 	escribir(w, http.StatusOK, map[string]string{"estado": "asociada"})
+}
+
+// asociarVariasDelBanco enlaza varias imágenes del banco al mismo producto.
+// Es el caso normal tras una búsqueda en internet: cuatro fotos buenas del
+// mismo aparato, que se marcan y se asignan de una vez. La primera de la
+// lista puede quedar como portada; las demás van detrás en ese orden.
+func (s *Server) asociarVariasDelBanco(w http.ResponseWriter, r *http.Request) {
+	var cuerpo struct {
+		IDs        []int64 `json:"ids"`
+		VarianteID int64   `json:"variante_id"`
+		Principal  bool    `json:"principal"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&cuerpo); err != nil || len(cuerpo.IDs) == 0 || cuerpo.VarianteID == 0 {
+		escribir(w, http.StatusBadRequest, map[string]string{"error": "hacen falta las imágenes y el producto"})
+		return
+	}
+	prodID, err := s.st.ProductoDeVariante(r.Context(), cuerpo.VarianteID)
+	if err != nil {
+		escribir(w, http.StatusNotFound, map[string]string{"error": "ese producto no existe"})
+		return
+	}
+	asociadas, rechazadas := 0, 0
+	for i, id := range cuerpo.IDs {
+		if err := s.st.AsociarImagen(r.Context(), prodID, id); err != nil {
+			rechazadas++
+			continue
+		}
+		asociadas++
+		if i == 0 && cuerpo.Principal {
+			_ = s.st.MarcarPrincipal(r.Context(), prodID, id)
+		}
+	}
+	_ = s.st.RecalcularAtencion(r.Context())
+	var usuario *int64
+	if c := ClaimsDeContext(r.Context()); c != nil {
+		usuario = &c.UserID
+	}
+	_ = s.st.RegistrarAuditoria(r.Context(), usuario, "link", "producto_imagenes",
+		strconv.FormatInt(prodID, 10), nil,
+		map[string]any{"imagenes": cuerpo.IDs, "asociadas": asociadas, "rechazadas": rechazadas, "principal": cuerpo.Principal},
+		r.RemoteAddr)
+	escribir(w, http.StatusOK, map[string]int{"asociadas": asociadas, "rechazadas": rechazadas})
 }
 
 // productoDesdeRuta acepta el identificador de variante que usa el resto de la

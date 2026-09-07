@@ -745,6 +745,12 @@ export const api = {
       method: 'POST', body: JSON.stringify({ variante_id: varianteId, principal }),
     }),
 
+  // Varias de golpe al mismo producto; la primera puede quedar como portada.
+  asociarVariasDelBanco: (ids: number[], varianteId: number, principal: boolean) =>
+    pedir<{ asociadas: number; rechazadas: number }>('/api/imagenes/asociar', {
+      method: 'POST', body: JSON.stringify({ ids, variante_id: varianteId, principal }),
+    }),
+
   // ---- destinos de avisos ----
   destinosAviso: () => pedir<DestinoAviso[]>('/api/avisos/destinos'),
 
