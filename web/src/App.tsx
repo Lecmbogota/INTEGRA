@@ -14,6 +14,7 @@ import { Pedidos } from './Pedidos'
 import { Publicacion } from './Publicacion'
 import { Prioridad } from './Prioridad'
 import { Atributos } from './Atributos'
+import { Actividad } from './Actividad'
 import { Automatizacion } from './Automatizacion'
 import { Integraciones } from './Integraciones'
 import { Usuarios } from './Usuarios'
@@ -54,6 +55,22 @@ export default function App() {
 
 function Aplicacion({ sesion, onSalir }: { sesion: Sesion; onSalir: () => void }) {
   const [seccion, setSeccion] = useState<Seccion>('panel')
+  // Lo que Integra tiene en marcha ahora mismo. Vive aquí y no dentro de la
+  // pantalla porque el número va en el menú: es lo que contesta «pulsé un
+  // botón, ¿está pasando algo?» sin tener que entrar a mirar. Cada 15 s basta;
+  // el detalle, con refresco rápido, está en la pantalla de Actividad.
+  const [tareasActivas, setTareasActivas] = useState(0)
+  useEffect(() => {
+    let vivo = true
+    const mirar = () => {
+      api.actividad(1)
+        .then((a) => { if (vivo) setTareasActivas(a.activas) })
+        .catch(() => {})
+    }
+    mirar()
+    const t = window.setInterval(mirar, 15000)
+    return () => { vivo = false; window.clearInterval(t) }
+  }, [])
   const [menuAbierto, setMenuAbierto] = useState(false)
   // Estables porque el cajón las usa como dependencia de su efecto de foco:
   // recrearlas en cada render lo montaría y desmontaría sin parar.
@@ -155,6 +172,7 @@ function Aplicacion({ sesion, onSalir }: { sesion: Sesion; onSalir: () => void }
       <Sidebar actual={seccion} onIr={irA}
         abierto={menuAbierto} onCerrar={cerrarMenu}
         avisos={resumen?.en_atencion ?? 0}
+        tareasActivas={tareasActivas}
         pedidosPendientes={pedidos ? pedidos.recibidos + pedidos.fallidos : 0}
         alertas={alertas}
         usuario={sesion.usuario} onSalir={onSalir} />
@@ -296,6 +314,7 @@ function Aplicacion({ sesion, onSalir }: { sesion: Sesion; onSalir: () => void }
         {seccion === 'usuarios' && <Usuarios />}
         {seccion === 'avisos' && <Avisos />}
         {seccion === 'atributos' && <Atributos />}
+        {seccion === 'actividad' && <Actividad />}
         {seccion === 'automatizacion' && <Automatizacion />}
 
         {seccion === 'integraciones' && (

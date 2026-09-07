@@ -325,6 +325,36 @@ export interface EstadoDeProducto {
   canales: EstadoEnCanal[]
 }
 
+// Lo que Integra está haciendo ahora y lo que hizo antes. Sin esto el trabajo
+// en segundo plano era invisible: quien pulsaba un botón no sabía si su envío
+// corría, esperaba detrás de otros trescientos, o llevaba una hora fallado.
+export interface TareaEnCurso {
+  tipo: string
+  corriendo: number
+  pendientes: number
+  fallidos: number
+  hechos: number
+  // Cuándo empezó lo más antiguo que sigue vivo: distingue «va lento» de
+  // «lleva parado desde ayer».
+  desde: string | null
+  ultimo_error: string
+}
+
+export interface Evento {
+  cuando: string
+  clase: 'persona' | 'trabajo' | 'aviso'
+  titulo: string
+  detalle: string
+  quien: string
+  malo: boolean
+}
+
+export interface Actividad {
+  activas: number
+  cola: TareaEnCurso[]
+  historia: Evento[]
+}
+
 export interface ResumenPublicacion {
   canal: string
   cuenta_id: number
@@ -868,6 +898,14 @@ export const api = {
     pedir<{ estado: string; numero: string }>(`/api/ordenes/${ordenId}/reintentar`, { method: 'POST' }),
 
   publicaciones: () => pedir<ResumenPublicacion[]>('/api/publicaciones'),
+
+  actividad: (limite = 60) => pedir<Actividad>(`/api/actividad?limite=${limite}`),
+
+  // Cancelar retira de la cola lo que aún no ha empezado; lo que ya está
+  // hablando con el canal no se toca. Con `tipo` vacío alcanza a todo.
+  gobernarCola: (accion: 'cancelar' | 'reintentar', tipo?: string) =>
+    pedir<{ afectados: number }>(`/api/actividad/${accion}?tipo=${encodeURIComponent(tipo ?? '')}`,
+      { method: 'POST' }),
 
   // El estado producto a producto: si nunca se publicó, si está al día, si le
   // falta enviar un cambio, o por qué no puede ir a un canal concreto.

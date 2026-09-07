@@ -942,3 +942,35 @@ button.enlace:hover:not(:disabled) { background: none; color: var(--acento-hover
   flex-direction: column;
   gap: 8px;
 }
+
+/* Barra de avance de una tanda de trabajos. Mide lo hecho hoy contra lo hecho
+   más lo que queda: es una estimación honesta, no una barra que llega al
+   100 % y se queda ahí esperando. */
+.barra-avance {
+  height: 4px;
+  background: var(--borde);
+  border-radius: 2px;
+  overflow: hidden;
+  margin: 6px 0;
+}
+.barra-avance-relleno {
+  height: 100%;
+  background: var(--primario, #2563EB);
+  transition: width .4s ease;
+}
+
+/* Una línea de la historia. */
+.fila-evento {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--borde);
+}
+.fila-evento:last-child { border-bottom: none; }
+.no-encoge { flex: 0 0 auto; }
+@media (max-width: 640px) {
+  /* En el móvil la fecha no cabe al lado: se va debajo con el resto. */
+  .fila-evento { flex-wrap: wrap; }
+  .no-encoge { flex: 1 1 100%; }
+}

@@ -7,14 +7,15 @@ import { Marca } from './Logo'
 export type Seccion =
   | 'panel' | 'catalogo' | 'imagenes' | 'mediateca'
   | 'publicacion' | 'categorias' | 'atributos' | 'canales' | 'integraciones'
-  | 'pedidos' | 'automatizacion' | 'usuarios' | 'avisos'
+  | 'pedidos' | 'actividad' | 'automatizacion' | 'usuarios' | 'avisos'
 
 type Item = { id: Seccion; nombre: string; icono: JSX.Element; insignia?: number }
 
-export function Sidebar({ actual, onIr, avisos, pedidosPendientes, alertas, usuario, onSalir, abierto, onCerrar }: {
+export function Sidebar({ actual, onIr, avisos, tareasActivas, pedidosPendientes, alertas, usuario, onSalir, abierto, onCerrar }: {
   actual: Seccion
   onIr: (s: Seccion) => void
   avisos: number
+  tareasActivas: number
   pedidosPendientes: number
   alertas: number
   usuario: { name: string; email: string; role: string }
@@ -113,6 +114,10 @@ export function Sidebar({ actual, onIr, avisos, pedidosPendientes, alertas, usua
     {
       titulo: 'Operación',
       items: [
+        // La insignia cuenta lo que está en marcha AHORA. Es el número que
+        // contesta «pulsé un botón, ¿está pasando algo?», que es justo lo que
+        // no se podía saber.
+        { id: 'actividad', nombre: 'Actividad', icono: <IconoPulso />, insignia: tareasActivas },
         { id: 'automatizacion', nombre: 'Automatización', icono: <IconoReloj />, insignia: alertas },
       ],
     },
@@ -236,3 +241,12 @@ const IconoCampana = () => (
 const IconoBaseDatos = () => (
   <svg {...props}><ellipse cx="12" cy="5" rx="8" ry="3" /><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5" /><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3" /></svg>
 )
+
+function IconoPulso() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor"
+      strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 12h4l3 8 4-16 3 8h4" />
+    </svg>
+  )
+}

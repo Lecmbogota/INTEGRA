@@ -119,6 +119,7 @@ func Nuevo(st *store.Store, log *slog.Logger, addr string, alm *imagen.Almacen, 
 	s.registrarIntegraciones(mux)
 	s.registrarBodegas(mux)
 	s.registrarAvisos(mux)
+	s.registrarActividad(mux)
 	// Público a propósito (ver middleware_auth.go): lo llaman los canales, no
 	// el navegador. La autenticidad se comprueba en el propio manejador.
 	s.registrarWebhooks(mux)
