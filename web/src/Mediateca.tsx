@@ -212,7 +212,7 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
 
   return (
     <>
-      <section className="panel">
+      <section className="panel" data-guia="subir">
         <h2>Subir fotos</h2>
         <div className="cuerpo">
           <input ref={input} type="file" accept="image/*" multiple hidden

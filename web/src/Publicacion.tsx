@@ -147,7 +147,7 @@ export function Publicacion() {
       {error && <div className="aviso-caja">Error: {error}</div>}
       {plan && <div className="nota-previa">{plan}</div>}
 
-      <section className="panel">
+      <section className="panel" data-guia="publicacion">
         <h2>Estado por canal</h2>
         <div className="cuerpo">
           {!cargado && <div className="vacio">Cargando canales…</div>}

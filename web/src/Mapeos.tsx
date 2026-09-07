@@ -61,7 +61,7 @@ export function Mapeos({ canalInicial }: { canalInicial?: string } = {}) {
     .reduce((s, m) => s + m.valor_inventario, 0)
 
   return (
-    <section className="panel">
+    <section className="panel" data-guia="mapeos">
       <h2>Mapeo de categorías — {NOMBRES[canal] ?? canal}</h2>
       <div className="cuerpo">
         {/* Cada canal tiene su propio árbol y su propia forma de llenar esta

@@ -273,7 +273,7 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = nul
       <section className="panel">
         <div className="cuerpo">
           <div className="filtros">
-            <input className="crece" placeholder="Buscar por nombre o referencia…"
+            <input className="crece" placeholder="Buscar por nombre o referencia…" data-guia="buscar"
               value={busqueda} onChange={(e) => setBusqueda(e.target.value)} />
             <select value={marca} onChange={(e) => setMarca(e.target.value)}>
               <option value="">Todas las marcas</option>
@@ -298,7 +298,7 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = nul
               Sin precio
             </label>
             <label className="casilla" title="Los que no tienen ficha en ningún canal">
-              <input type="checkbox" checked={sinPublicar}
+              <input type="checkbox" data-guia="pendientes" checked={sinPublicar}
                 onChange={(e) => { setSinPublicar(e.target.checked); setOffset(0) }} />
               Pendientes por publicar
             </label>
@@ -330,7 +330,7 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = nul
               <button onClick={() => setMarcados(new Set())}>Limpiar selección</button>
             )}
             {marcados.size > 0 && (
-              <button className="primario" onClick={() => void publicarSeleccion()}
+              <button className="primario" onClick={() => void publicarSeleccion()} data-guia="publicar"
                 disabled={publicando}
                 title="Encola el envío a los canales de los productos marcados">
                 {publicando ? 'Encolando…' : `Publicar ${num(marcados.size)}`}
@@ -372,7 +372,7 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = nul
             </thead>
             <tbody>
               {pagina?.items.map((p) => (
-                <tr key={p.id} className={`clicable ${marcados.has(p.id) ? 'marcada' : ''}`}
+                <tr key={p.id} data-guia="fila" className={`clicable ${marcados.has(p.id) ? 'marcada' : ''}`}
                   onClick={() => onVer(p.id)}
                   title="Ver cómo quedaría en cada canal">
                   <td className="col-check" onClick={(e) => e.stopPropagation()}>
@@ -442,7 +442,7 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = nul
                       onClick={(e) => { e.stopPropagation(); onVer(p.id) }}>
                       Ver en canales
                     </button>
-                    <button onClick={(e) => { e.stopPropagation(); setPestanaEditor('venta'); setEditando(p) }}
+                    <button onClick={(e) => { e.stopPropagation(); setPestanaEditor('venta'); setEditando(p) }} data-guia="editar"
                       title="Editar precio, marca y descripción">
                       Editar
                     </button>

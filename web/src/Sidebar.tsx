@@ -11,9 +11,11 @@ export type Seccion =
 
 type Item = { id: Seccion; nombre: string; icono: JSX.Element; insignia?: number }
 
-export function Sidebar({ actual, onIr, avisos, tareasActivas, pedidosPendientes, alertas, usuario, onSalir, abierto, onCerrar }: {
+export function Sidebar({ actual, onIr, avisos, tareasActivas, pedidosPendientes, alertas, usuario, onSalir, abierto, onCerrar, onGuia }: {
   actual: Seccion
   onIr: (s: Seccion) => void
+  // Abre el recorrido guiado. Va en el menú para que se encuentre siempre.
+  onGuia?: () => void
   avisos: number
   tareasActivas: number
   pedidosPendientes: number
@@ -165,7 +167,7 @@ export function Sidebar({ actual, onIr, avisos, tareasActivas, pedidosPendientes
           <div key={g.titulo} className="sidebar-grupo">
             <div className="sidebar-titulo">{g.titulo}</div>
             {g.items.map((it) => (
-              <button key={it.id}
+              <button key={it.id} data-guia={`menu-${it.id}`}
                 className={`sidebar-item ${actual === it.id ? 'activo' : ''}`}
                 aria-current={actual === it.id ? 'page' : undefined}
                 onClick={() => onIr(it.id)}>
@@ -178,6 +180,16 @@ export function Sidebar({ actual, onIr, avisos, tareasActivas, pedidosPendientes
             ))}
           </div>
         ))}
+
+        {onGuia && (
+          <button className="sidebar-item sidebar-guia" data-guia="ver-guia" onClick={onGuia}
+            title="Recorrido de dos minutos por cómo funciona Integra">
+            <span className="sidebar-icono">
+              <svg {...props}><circle cx="12" cy="12" r="10" /><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3" /><path d="M12 17h.01" /></svg>
+            </span>
+            <span className="crece">Ver guía</span>
+          </button>
+        )}
 
         {/* La sesión va abajo del todo: se consulta poco y se cierra menos. */}
         <div className="sidebar-sesion">

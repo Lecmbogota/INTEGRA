@@ -21,6 +21,7 @@ import { Usuarios } from './Usuarios'
 import { Mediateca } from './Mediateca'
 import { Avisos } from './Avisos'
 import { Sidebar, type Seccion } from './Sidebar'
+import { Guia } from './Guia'
 
 export default function App() {
   const [sesion, setSesion] = useState<Sesion | null>(leerSesion)
@@ -95,6 +96,17 @@ function Aplicacion({ sesion, onSalir }: { sesion: Sesion; onSalir: () => void }
   const [canalMapeo, setCanalMapeo] = useState<string | undefined>(undefined)
   // Cambios hechos desde la vista previa que la lista de productos debe ver.
   const [refrescoCatalogo, setRefrescoCatalogo] = useState(0)
+
+  // El recorrido guiado salta solo la primera vez que entra cada usuario; se
+  // recuerda en este navegador y queda «Ver guía» en el menú para repetirlo.
+  const claveGuia = `integra.guia.v1.${sesion.usuario.id}`
+  const [guia, setGuia] = useState(() => {
+    try { return localStorage.getItem(claveGuia) !== 'vista' } catch { return false }
+  })
+  const cerrarGuia = useCallback(() => {
+    setGuia(false)
+    try { localStorage.setItem(claveGuia, 'vista') } catch { /* sin almacenamiento: se repetirá */ }
+  }, [claveGuia])
 
   const irAArreglar = useCallback((d: DestinoFaltante) => {
     setPreview(null)
@@ -192,7 +204,7 @@ function Aplicacion({ sesion, onSalir }: { sesion: Sesion; onSalir: () => void }
         tareasActivas={tareasActivas}
         pedidosPendientes={pedidos ? pedidos.recibidos + pedidos.fallidos : 0}
         alertas={alertas}
-        usuario={sesion.usuario} onSalir={onSalir} />
+        usuario={sesion.usuario} onSalir={onSalir} onGuia={() => setGuia(true)} />
 
       <main className="contenido">
         {error && <div className="aviso-caja">Error: {error}</div>}
@@ -213,7 +225,7 @@ function Aplicacion({ sesion, onSalir }: { sesion: Sesion; onSalir: () => void }
             </header>
 
             {resumen && (
-              <div className="tarjetas">
+              <div className="tarjetas" data-guia="resumen">
                 <Tarjeta etiqueta="Productos" valor={num(resumen.productos)} pie={`${num(resumen.variantes)} variantes`} />
                 <Tarjeta etiqueta="Marcas" valor={num(resumen.marcas)} pie="normalizadas" />
                 <Tarjeta etiqueta="Con precio" valor={num(resumen.con_precio)} pie={`de ${num(resumen.variantes)}`} />
@@ -364,6 +376,8 @@ function Aplicacion({ sesion, onSalir }: { sesion: Sesion; onSalir: () => void }
           </>
         )}
       </main>
+
+      {guia && <Guia seccion={seccion} irA={irA} onCerrar={cerrarGuia} />}
 
       {preview !== null && (
         <Preview varianteId={preview} onCerrar={() => setPreview(null)} onIr={irAArreglar}

@@ -729,6 +729,22 @@ button.mini { padding: 3px 8px; font-size: 11px; min-height: 0; }
 .celda-mini img { display: block; width: 100%; aspect-ratio: 1; object-fit: contain; background: #fff; }
 .celda-mini .marca-sel { position: absolute; top: 6px; left: 6px; margin: 0; }
 .celda-mini .pie { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; font-size: 11px; padding: 4px 6px; color: var(--texto-terciario, #777); border-top: 1px solid #f0f0f0; }
+/* Recorrido guiado. */
+.guia-capa { position: fixed; inset: 0; z-index: 1000; }
+.guia-foco { position: fixed; border-radius: 10px; box-shadow: 0 0 0 9999px rgba(15,23,42,.62), 0 0 0 3px var(--acento); transition: left .25s, top .25s, width .25s, height .25s; pointer-events: none; }
+.guia-globo { position: fixed; background: #fff; color: #1f2937; border-radius: 12px; padding: 16px 18px 14px; box-shadow: 0 18px 50px rgba(0,0,0,.35); z-index: 1001; transition: left .25s, top .25s, bottom .25s; }
+.guia-globo.centrado { box-shadow: 0 0 0 9999px rgba(15,23,42,.62), 0 18px 50px rgba(0,0,0,.35); }
+.guia-globo h3 { margin: 6px 0 8px; font-size: 17px; }
+.guia-texto { font-size: 13.5px; line-height: 1.5; }
+.guia-texto p { margin: 0 0 8px; }
+.guia-texto code { font-family: var(--fuente-mono); font-size: 12px; background: #f3f4f6; padding: 1px 4px; border-radius: 4px; }
+.guia-progreso { display: flex; align-items: center; justify-content: space-between; font-size: 11px; color: #6b7280; }
+.guia-puntos { display: flex; gap: 4px; }
+.guia-puntos i { width: 6px; height: 6px; border-radius: 50%; background: #e5e7eb; display: inline-block; }
+.guia-puntos i.hecho { background: #93c5fd; }
+.guia-puntos i.activo { background: var(--acento); width: 14px; border-radius: 3px; }
+.guia-acciones { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+.sidebar-guia { margin-top: auto; opacity: .85; }
 .galeria img {
   width: 100%; aspect-ratio: 1; object-fit: contain;
   background: #fff; display: block;

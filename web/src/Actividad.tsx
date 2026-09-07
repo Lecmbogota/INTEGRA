@@ -82,7 +82,7 @@ export function Actividad() {
 
       {error && <div className="aviso-caja">No se pudo leer la actividad: {error}</div>}
 
-      <section className="panel">
+      <section className="panel" data-guia="actividad">
         <h2>En marcha</h2>
         <div className="cuerpo">
           {cargando && !datos && <div className="vacio">Cargando…</div>}

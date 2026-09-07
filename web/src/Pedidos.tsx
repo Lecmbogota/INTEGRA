@@ -159,7 +159,7 @@ export function Pedidos() {
         </div>
       )}
 
-      <section className="panel">
+      <section className="panel" data-guia="pedidos">
         <h2>Últimos pedidos</h2>
         <div className="cuerpo">
           {/* Con los fallidos contados en la tarjeta de arriba pero repartidos
