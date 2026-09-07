@@ -703,6 +703,22 @@ button.enlace:hover:not(:disabled) { background: none; color: var(--acento-hover
 .grupo-resumen { margin-left: auto; font-size: 11px; color: var(--texto-terciario, #888); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 55%; }
 .grupo-cuerpo { display: flex; flex-direction: column; gap: 8px; padding: 4px 10px 12px; }
 button.mini { padding: 3px 8px; font-size: 11px; min-height: 0; }
+/* Asignar foto a producto. */
+.hoja-media { max-width: 680px; width: min(96vw, 680px); }
+.dialogo-asignar { display: flex; flex-direction: column; gap: 10px; padding: 0 16px 12px; }
+.dialogo-asignar .tira-miniaturas { padding: 0; }
+.buscador-producto { width: 100%; font-size: 15px; padding: 10px 12px; }
+.lista-productos { display: flex; flex-direction: column; border: 1px solid #e6e6e6; border-radius: 8px; max-height: 44vh; overflow: auto; }
+.fila-producto { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-bottom: 1px solid #f0f0f0; cursor: pointer; min-width: 0; }
+.fila-producto:last-child { border-bottom: none; }
+.fila-producto:hover { background: rgba(37,99,235,.05); }
+.fila-producto.activa { background: rgba(37,99,235,.10); }
+.fila-producto.bloqueada { opacity: .55; cursor: default; }
+.fila-producto input[type=radio] { margin: 0; flex: none; }
+.fila-producto .sku { flex: none; font-family: var(--fuente-mono); font-size: 12px; min-width: 120px; }
+.fila-producto .nombre { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fila-producto .marca { flex: none; max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 600px) { .fila-producto { flex-wrap: wrap; } .fila-producto .nombre { white-space: normal; flex-basis: 100%; } }
 .galeria img {
   width: 100%; aspect-ratio: 1; object-fit: contain;
   background: #fff; display: block;

@@ -429,7 +429,8 @@ export function Mediateca({ onVer }: { onVer?: (varianteId: number) => void }) {
 
 // DialogoAsignar busca el producto por lo que el operador tiene a mano —la
 // referencia o el nombre— y enlaza las fotos. Con «como portada», la primera
-// pasa a ser la cara del producto en los cuatro canales.
+// pasa a ser la cara del producto en los cuatro canales. Se maneja entero
+// con el teclado: escribir, flechas para elegir, Enter para asignar.
 function DialogoAsignar({ imagenes, ocupada, onCerrar, onConfirmar }: {
   imagenes: ImagenBanco[]
   ocupada: boolean
@@ -438,31 +439,41 @@ function DialogoAsignar({ imagenes, ocupada, onCerrar, onConfirmar }: {
 }) {
   const [q, setQ] = useState('')
   const [candidatos, setCandidatos] = useState<Producto[]>([])
+  const [total, setTotal] = useState(0)
   const [buscando, setBuscando] = useState(false)
   const [elegido, setElegido] = useState<Producto | null>(null)
   const [principal, setPrincipal] = useState(false)
 
   useEffect(() => {
-    if (q.trim().length < 2) { setCandidatos([]); return }
+    if (q.trim().length < 2) { setCandidatos([]); setTotal(0); return }
     let vigente = true
     setBuscando(true)
     const t = setTimeout(() => {
-      api.productos({ q: q.trim(), limite: 8 })
-        .then((p) => { if (vigente) setCandidatos(p.items) })
-        .catch(() => { if (vigente) setCandidatos([]) })
+      api.productos({ q: q.trim(), limite: 12 })
+        .then((p) => { if (vigente) { setCandidatos(p.items); setTotal(p.total) } })
+        .catch(() => { if (vigente) { setCandidatos([]); setTotal(0) } })
         .finally(() => { if (vigente) setBuscando(false) })
-    }, 300)
+    }, 250)
     return () => { vigente = false; clearTimeout(t) }
   }, [q])
 
   // Un producto que ya tiene TODAS las fotos marcadas no se ofrece: asignar
   // no haría nada. Si tiene solo algunas, se asignan las que faltan.
   const yaLasTiene = (p: Producto) => imagenes.every((i) => i.productos.some((x) => x.variante_id === p.id))
+  const elegibles = candidatos.filter((p) => !yaLasTiene(p))
   const varias = imagenes.length > 1
+
+  function teclado(e: React.KeyboardEvent) {
+    if (elegibles.length === 0) return
+    const i = elegido ? elegibles.findIndex((p) => p.id === elegido.id) : -1
+    if (e.key === 'ArrowDown') { e.preventDefault(); setElegido(elegibles[Math.min(elegibles.length - 1, i + 1)]) }
+    if (e.key === 'ArrowUp') { e.preventDefault(); setElegido(elegibles[Math.max(0, i - 1)]) }
+    if (e.key === 'Enter' && elegido && !ocupada) { e.preventDefault(); onConfirmar(elegido, principal) }
+  }
 
   return (
     <div className="capa" onClick={onCerrar}>
-      <div className="hoja" onClick={(e) => e.stopPropagation()}>
+      <div className="hoja hoja-media" onClick={(e) => e.stopPropagation()} onKeyDown={teclado}>
         <header className="hoja-cabecera">
           <div>
             <h2>{varias ? `Asignar ${num(imagenes.length)} fotos a un producto` : 'Asignar la foto a un producto'}</h2>
@@ -475,38 +486,48 @@ function DialogoAsignar({ imagenes, ocupada, onCerrar, onConfirmar }: {
           <button onClick={onCerrar} disabled={ocupada}>Cerrar ✕</button>
         </header>
 
-        {/* Las miniaturas de lo que se va a asignar: con varias marcadas,
-            ver cuáles son evita enlazar la moto junto con la cámara. */}
-        <div className="tira-miniaturas">
-          {imagenes.map((i, n) => (
-            <img key={i.id} src={`/imagenes/${i.sha256}/miniatura_300`} alt=""
-              title={`${n + 1} · ${i.ancho}×${i.alto}`} />
-          ))}
-        </div>
+        <div className="dialogo-asignar">
+          {/* Las miniaturas de lo que se va a asignar: con varias marcadas,
+              ver cuáles son evita enlazar la moto junto con la cámara. */}
+          <div className="tira-miniaturas">
+            {imagenes.map((i, n) => (
+              <img key={i.id} src={`/imagenes/${i.sha256}/miniatura_300`} alt=""
+                title={`${n + 1} · ${i.ancho}×${i.alto}`} />
+            ))}
+          </div>
 
-        <div className="form-edicion">
-          <label>
-            <span>Producto</span>
-            <input type="search" autoFocus placeholder="Escribe la referencia o parte del nombre"
-              value={q} onChange={(e) => { setQ(e.target.value); setElegido(null) }} />
-          </label>
+          <input type="search" autoFocus className="buscador-producto"
+            placeholder="Referencia o parte del nombre (mínimo 2 letras)"
+            value={q} onChange={(e) => { setQ(e.target.value); setElegido(null) }} />
 
-          {buscando && <div className="vacio">Buscando…</div>}
-          {!buscando && q.trim().length >= 2 && candidatos.length === 0 && (
-            <div className="vacio">Ningún producto coincide.</div>
-          )}
+          <div className="tenue mini-texto">
+            {buscando && 'Buscando…'}
+            {!buscando && q.trim().length >= 2 && candidatos.length === 0 && 'Ningún producto coincide.'}
+            {!buscando && candidatos.length > 0 && (total > candidatos.length
+              ? `${num(candidatos.length)} de ${num(total)} coincidencias: escribe más para afinar`
+              : `${num(candidatos.length)} coincidencia${candidatos.length > 1 ? 's' : ''}`)}
+            {!buscando && q.trim().length < 2 && 'Usa las flechas para elegir y Enter para asignar.'}
+          </div>
+
           {candidatos.length > 0 && (
-            <div className="lista-eleccion">
-              {candidatos.map((p) => (
-                <label key={p.id}>
-                  <input type="radio" name="producto" checked={elegido?.id === p.id}
-                    disabled={yaLasTiene(p)} onChange={() => setElegido(p)} />
-                  <code>{p.sku || '—'}</code>
-                  <span className="expande-recorta">{p.nombre}</span>
-                  {yaLasTiene(p) && <span className="pastilla ok">ya las tiene</span>}
-                  {p.problemas?.includes('missing_image') && <span className="pastilla aviso">sin fotos</span>}
-                </label>
-              ))}
+            <div className="lista-productos" role="listbox">
+              {candidatos.map((p) => {
+                const bloqueado = yaLasTiene(p)
+                const activo = elegido?.id === p.id
+                return (
+                  <div key={p.id} role="option" aria-selected={activo}
+                    className={`fila-producto ${activo ? 'activa' : ''} ${bloqueado ? 'bloqueada' : ''}`}
+                    onClick={() => { if (!bloqueado) setElegido(p) }}
+                    onDoubleClick={() => { if (!bloqueado && !ocupada) onConfirmar(p, principal) }}>
+                    <input type="radio" name="producto" checked={activo} disabled={bloqueado} readOnly />
+                    <code className="sku">{p.sku || '—'}</code>
+                    <span className="nombre" title={p.nombre}>{p.nombre}</span>
+                    <span className="tenue mini-texto marca">{p.marca}</span>
+                    {bloqueado && <span className="pastilla ok">ya la tiene</span>}
+                    {!bloqueado && p.problemas?.includes('missing_image') && <span className="pastilla aviso">sin fotos</span>}
+                  </div>
+                )
+              })}
             </div>
           )}
 
@@ -520,7 +541,7 @@ function DialogoAsignar({ imagenes, ocupada, onCerrar, onConfirmar }: {
           <button onClick={onCerrar} disabled={ocupada}>Cancelar</button>
           <button className="primario" disabled={!elegido || ocupada}
             onClick={() => elegido && onConfirmar(elegido, principal)}>
-            {ocupada ? 'Asignando…' : varias ? `Asignar ${num(imagenes.length)} fotos` : 'Asignar'}
+            {ocupada ? 'Asignando…' : elegido ? `Asignar a ${elegido.sku || elegido.nombre}` : 'Asignar'}
           </button>
         </div>
       </div>
