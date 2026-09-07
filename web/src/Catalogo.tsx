@@ -30,13 +30,16 @@ const bloqueante = (m: string) => BLOQUEANTES.has(m)
 // esta pantalla abra el editor de ese producto ya en la pestaña del peso.
 export type AbrirEditor = { id: number; sku: string; pestana: Pestana }
 
-export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = null, onAbierto }: {
+export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = null, onAbierto, refresco = 0 }: {
   marcas: Marca[]
   categorias?: Categoria[]
   onVer: (varianteId: number) => void
   onCambio: () => void
   abrir?: AbrirEditor | null
   onAbierto?: () => void
+  // Sube cuando algo cambió fuera de esta pantalla (la vista previa quitó
+  // una foto): la lista se vuelve a pedir sin tocar filtros ni página.
+  refresco?: number
 }) {
   const [pagina, setPagina] = useState<PaginaProductos | null>(null)
   const [busqueda, setBusqueda] = useState('')
@@ -226,7 +229,7 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio, abrir = nul
     }, 300)
     return () => { vigente = false; clearTimeout(t) }
   }, [busqueda, marca, categoria, soloProblemas, verExcluidos, sinPrecio, sinPublicar,
-    sinFoto, sinDescripcion, sinEAN, conPromo, orden, ordenDesc, offset, version])
+    sinFoto, sinDescripcion, sinEAN, conPromo, orden, ordenDesc, offset, version, refresco])
 
   // Al cambiar un filtro se vuelve a la primera página: quedarse en la página 7
   // de un resultado que ahora tiene 2 muestra una tabla vacía sin explicación.

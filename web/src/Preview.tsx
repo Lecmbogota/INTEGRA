@@ -44,10 +44,13 @@ export type DestinoFaltante =
   | { tipo: 'editar'; pestana: Pestana; varianteId: number; sku: string }
   | { tipo: 'categorias'; canal: string }
 
-export function Preview({ varianteId, onCerrar, onIr }: {
+export function Preview({ varianteId, onCerrar, onIr, onCambio }: {
   varianteId: number
   onCerrar: () => void
   onIr?: (destino: DestinoFaltante) => void
+  // Algo del producto cambió desde aquí (una foto menos, una portada nueva):
+  // la lista de detrás tiene que enterarse sin recargar la página.
+  onCambio?: () => void
 }) {
   const refImagenes = useRef<HTMLDivElement>(null)
   const [datos, setDatos] = useState<PreviewRespuesta | null>(null)
@@ -145,7 +148,7 @@ export function Preview({ varianteId, onCerrar, onIr }: {
             </div>
 
             <div ref={refImagenes}>
-              <Imagenes varianteId={varianteId} onCambio={recargar} />
+              <Imagenes varianteId={varianteId} onCambio={() => { recargar(); onCambio?.() }} />
             </div>
 
             <div className="previa-rejilla">

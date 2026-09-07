@@ -93,6 +93,8 @@ function Aplicacion({ sesion, onSalir }: { sesion: Sesion; onSalir: () => void }
   // tal pestaña del editor, o ver el mapeo de categorías de tal canal.
   const [abrirEditor, setAbrirEditor] = useState<AbrirEditor | null>(null)
   const [canalMapeo, setCanalMapeo] = useState<string | undefined>(undefined)
+  // Cambios hechos desde la vista previa que la lista de productos debe ver.
+  const [refrescoCatalogo, setRefrescoCatalogo] = useState(0)
 
   const irAArreglar = useCallback((d: DestinoFaltante) => {
     setPreview(null)
@@ -274,7 +276,7 @@ function Aplicacion({ sesion, onSalir }: { sesion: Sesion; onSalir: () => void }
 
         {seccion === 'catalogo' && (
           <Catalogo marcas={marcas} categorias={categorias} onVer={(id) => setPreview(id)} onCambio={() => void cargarPanel()}
-            abrir={abrirEditor} onAbierto={() => setAbrirEditor(null)} />
+            abrir={abrirEditor} onAbierto={() => setAbrirEditor(null)} refresco={refrescoCatalogo} />
         )}
 
         {seccion === 'mediateca' && (
@@ -364,7 +366,8 @@ function Aplicacion({ sesion, onSalir }: { sesion: Sesion; onSalir: () => void }
       </main>
 
       {preview !== null && (
-        <Preview varianteId={preview} onCerrar={() => setPreview(null)} onIr={irAArreglar} />
+        <Preview varianteId={preview} onCerrar={() => setPreview(null)} onIr={irAArreglar}
+          onCambio={() => { setRefrescoCatalogo((v) => v + 1); void cargarPanel() }} />
       )}
     </div>
   )
