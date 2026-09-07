@@ -765,6 +765,18 @@ button.mini { padding: 3px 8px; font-size: 11px; min-height: 0; }
 .boton-ayuda:hover { background: var(--acento-hover, #1d4ed8); transform: translateY(-1px); }
 @media (max-width: 1024px) { .boton-ayuda { right: 14px; bottom: 14px; } }
 @media (max-width: 480px) { .guia-puntos { display: none; } .guia-barra { display: block; } }
+/* Hoja inferior: en pantallas estrechas el globo ocupa el pie de la pantalla. */
+.guia-globo.hoja { max-height: 58vh; padding: 12px 16px; border-radius: 16px 16px 0 0; box-shadow: 0 -12px 40px rgba(0,0,0,.35); transform: none; }
+.guia-globo.hoja::before { display: none; }
+.guia-globo.hoja::after { content: ""; display: block; width: 40px; height: 4px; border-radius: 2px; background: #d1d5db; margin: 0 auto 8px; order: -1; }
+.guia-globo.hoja h3 { font-size: 16px; margin: 4px 0 6px; }
+.guia-globo.hoja .guia-texto { font-size: 14px; line-height: 1.55; -webkit-overflow-scrolling: touch; }
+.guia-globo.hoja .guia-acciones { margin-top: 12px; gap: 10px; }
+.guia-globo.hoja .guia-acciones button { min-height: 44px; font-size: 15px; padding: 0 16px; }
+.guia-globo.hoja .guia-acciones button:not(.enlace) { flex: 1; }
+.guia-globo.hoja .guia-acciones .enlace { flex: none; min-height: 0; }
+.guia-globo.hoja .guia-progreso { font-size: 12px; }
+@media (max-width: 767px) { .guia-puntos { display: none; } .guia-barra { display: block; } .guia-foco { border-radius: 8px; } }
 .galeria img {
   width: 100%; aspect-ratio: 1; object-fit: contain;
   background: #fff; display: block;

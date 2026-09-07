@@ -30,6 +30,14 @@ const FRACCION_ALTO = 0.7
 // Por debajo de este ancho el menú lateral es un cajón cerrado y las cosas
 // se tocan con el dedo: el globo sin objetivo va como hoja inferior.
 const ANCHO_MOVIL = 1024
+// Por debajo de este ancho (o con pantalla táctil) no hay sitio para un globo
+// al lado de nada: el globo va SIEMPRE como hoja inferior y el elemento
+// resaltado se lleva a la parte alta de la pantalla, encima de la hoja.
+const ANCHO_HOJA = 768
+const esHoja = () => window.innerWidth < ANCHO_HOJA
+  || (typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches && window.innerWidth < ANCHO_MOVIL)
+// Fracción de la ventana que queda libre por encima de la hoja para el foco.
+const FRACCION_LIBRE = 0.42
 // Cuánto se espera a que aparezca el elemento de un paso.
 const ESPERA_APARECER = 3000
 // Cuánto se espera si el elemento existe pero no se ve (el menú cerrado en
@@ -174,12 +182,17 @@ export function Guia({ pasos, nombre, seccion, irA, onCerrar }: {
       encontrado = true
       const vh = window.innerHeight
       const r = el.getBoundingClientRect()
-      const alto = r.height > vh * FRACCION_ALTO
+      const hoja = esHoja()
+      // Con la hoja inferior, lo único que se ve del fondo es la parte alta
+      // de la pantalla: el elemento tiene que caber ahí, por su inicio.
+      const alto = hoja ? r.height > vh * FRACCION_LIBRE * 0.9 : r.height > vh * FRACCION_ALTO
       // Un elemento alto no cabe: basta con que se vea su inicio. Uno normal
       // se centra, salvo que ya esté a la vista, y entonces no se mueve nada.
-      const yaBien = alto ? r.top >= 0 && r.top <= vh * 0.25 : r.top >= 0 && r.bottom <= vh
+      const yaBien = hoja
+        ? r.top >= 0 && (alto ? r.top <= vh * 0.12 : r.bottom <= vh * FRACCION_LIBRE)
+        : alto ? r.top >= 0 && r.top <= vh * 0.25 : r.top >= 0 && r.bottom <= vh
       if (yaBien) { setRect(r); setBuscando(false); return }
-      el.scrollIntoView({ block: alto ? 'start' : 'center', behavior: 'smooth' })
+      el.scrollIntoView({ block: alto || hoja ? 'start' : 'center', behavior: 'smooth' })
       esperaScroll = window.setTimeout(() => {
         if (!vivo) return
         setRect(el.getBoundingClientRect())
@@ -232,7 +245,7 @@ export function Guia({ pasos, nombre, seccion, irA, onCerrar }: {
   // el globo de verdad y se decide dónde va, antes de que se vea.
   useLayoutEffect(() => {
     const globo = globoRef.current
-    if (!globo || !rect || buscando) { setColocacion(null); return }
+    if (!globo || !rect || buscando || esHoja()) { setColocacion(null); return }
     const vw = window.innerWidth, vh = window.innerHeight
     setColocacion(colocar(cajaFoco(rect, vw, vh), globo.offsetWidth, globo.offsetHeight, vw, vh))
   }, [i, rect, buscando, tic])
@@ -291,10 +304,15 @@ export function Guia({ pasos, nombre, seccion, irA, onCerrar }: {
 
   const vw = window.innerWidth, vh = window.innerHeight
   const movil = vw < ANCHO_MOVIL
-  const foco = rect && !buscando ? cajaFoco(rect, vw, vh) : null
+  const hoja = esHoja()
+  // Con la hoja inferior el foco se recorta a lo que queda libre por encima
+  // de ella; si aún no se ha medido la hoja, se estima con la fracción libre.
+  const techo = hoja ? vh - (globoRef.current?.offsetHeight || vh * (1 - FRACCION_LIBRE)) - 8 : vh
+  const foco = rect && !buscando ? cajaFoco(rect, vw, Math.max(80, techo)) : null
   // Cómo se enseña el globo: anclado al foco, centrado, o como hoja inferior
-  // en el móvil cuando no hay nada que resaltar.
-  const modo = buscando ? 'buscando' : foco ? 'anclado' : movil ? 'hoja' : 'centrado'
+  // (siempre en pantallas estrechas; en el móvil ancho, cuando no hay nada
+  // que resaltar).
+  const modo = buscando ? 'buscando' : hoja ? 'hoja' : foco ? 'anclado' : movil ? 'hoja' : 'centrado'
   const visible = modo === 'centrado' || modo === 'hoja' || (modo === 'anclado' && colocacion !== null)
   const claseGlobo = [
     'guia-globo',
