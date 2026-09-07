@@ -395,6 +395,19 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio }: {
 
       {plantilla && (
         <PlantillaMasiva filtro={filtroActual} total={pagina?.total ?? 0}
+          marcas={marcas} categorias={categorias}
+          onFiltrar={(c) => {
+            // Los filtros del diálogo son los mismos de la lista: cambiarlos
+            // aquí mueve también lo que se ve detrás, que es lo que evita
+            // descargar una cosa y encontrarse otra al cerrar.
+            if ('marca' in c) setMarca(c.marca ?? '')
+            if ('categoria' in c) setCategoria(c.categoria ?? '')
+            if ('q' in c) setBusqueda(c.q ?? '')
+            if ('problemas' in c) setSoloProblemas(!!c.problemas)
+            if ('excluidos' in c) setVerExcluidos(!!c.excluidos)
+            if ('sin_precio' in c) setSinPrecio(!!c.sin_precio)
+            if ('sin_publicar' in c) setSinPublicar(!!c.sin_publicar)
+          }}
           onCerrar={() => setPlantilla(false)}
           onAplicado={() => {
             // No se cierra el diálogo al aplicar: el resumen de lo que cambió

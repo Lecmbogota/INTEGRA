@@ -984,3 +984,22 @@ th.ordenable {
   white-space: nowrap;
 }
 th.ordenable:hover { text-decoration: underline; }
+
+/* Filtros dentro del diálogo de plantilla, para acotar la descarga sin salir. */
+.filtros-plantilla {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 8px 0;
+}
+.filtros-plantilla select { min-width: 160px; }
+.etiquetas-filtro { margin-bottom: 10px; }
+/* Una pastilla que además se puede pulsar para quitar el filtro. */
+.pastilla.quitable {
+  cursor: pointer;
+  border: none;
+  font: inherit;
+  font-size: 12px;
+}
+.pastilla.quitable:hover { filter: brightness(0.94); }

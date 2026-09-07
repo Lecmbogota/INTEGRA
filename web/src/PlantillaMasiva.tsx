@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { api, money, num, type FiltroCatalogo, type ResultadoPlantilla } from './api'
+import { api, money, num, type Categoria, type FiltroCatalogo, type Marca, type ResultadoPlantilla } from './api'
 
 // Actualización masiva de precios y promociones por hoja de cálculo.
 //
@@ -7,9 +7,16 @@ import { api, money, num, type FiltroCatalogo, type ResultadoPlantilla } from '.
 // pasar, y solo entonces confirmar. Una plantilla puede cambiar el precio de
 // cientos de productos y no hay forma de deshacer eso a mano, así que el paso
 // intermedio no es una cortesía: es lo que hace la herramienta usable.
-export function PlantillaMasiva({ filtro, total, onCerrar, onAplicado }: {
+export function PlantillaMasiva({ filtro, total, marcas, categorias, onFiltrar, onCerrar, onAplicado }: {
   filtro: FiltroCatalogo
   total: number
+  marcas: Marca[]
+  categorias: Categoria[]
+  // Cambiar el filtro sin salir del diálogo. Antes había que cerrarlo, tocar
+  // los filtros de la lista y volver a abrirlo, y como el diálogo no decía por
+  // qué estaba filtrando, lo normal era descargar el catálogo entero sin
+  // querer.
+  onFiltrar: (cambio: Partial<FiltroCatalogo>) => void
   onCerrar: () => void
   onAplicado: () => void
 }) {
@@ -20,7 +27,20 @@ export function PlantillaMasiva({ filtro, total, onCerrar, onAplicado }: {
   const entrada = useRef<HTMLInputElement>(null)
 
   const hayFiltro = !!(filtro.q || filtro.marca || filtro.categoria ||
-    filtro.problemas || filtro.excluidos || filtro.sin_precio)
+    filtro.problemas || filtro.excluidos || filtro.sin_precio || filtro.sin_publicar)
+
+  // Lo que está acotando la descarga, dicho en palabras y con su aspa para
+  // quitarlo. Un filtro que no se ve es un filtro que sorprende.
+  const activos: { clave: keyof FiltroCatalogo; texto: string }[] = []
+  if (filtro.q) activos.push({ clave: 'q', texto: `busca «${filtro.q}»` })
+  if (filtro.marca) {
+    activos.push({ clave: 'marca', texto: marcas.find((m) => m.codigo === filtro.marca)?.nombre ?? filtro.marca })
+  }
+  if (filtro.categoria) activos.push({ clave: 'categoria', texto: filtro.categoria })
+  if (filtro.problemas) activos.push({ clave: 'problemas', texto: 'solo con problemas' })
+  if (filtro.excluidos) activos.push({ clave: 'excluidos', texto: 'solo excluidos' })
+  if (filtro.sin_precio) activos.push({ clave: 'sin_precio', texto: 'sin precio' })
+  if (filtro.sin_publicar) activos.push({ clave: 'sin_publicar', texto: 'pendientes por publicar' })
 
   async function descargar() {
     setOcupado('descarga')
@@ -108,10 +128,47 @@ export function PlantillaMasiva({ filtro, total, onCerrar, onAplicado }: {
           <li className={previa ? 'hecho' : 'activo'}>
             <div className="paso-titulo">1. Descarga la plantilla</div>
             <p className="tenue">
-              Trae {num(total)} productos {hayFiltro ? 'del filtro que tienes puesto' : 'del catálogo'},
+              Trae <strong>{num(total)}</strong> productos {hayFiltro ? 'del filtro que tienes puesto' : 'del catálogo entero'},
               con su precio actual y su promoción vigente ya rellenados.
               Edita solo las columnas de encabezado verde.
             </p>
+
+            {/* Acotar la descarga desde aquí. Sin esto había que cerrar el
+                diálogo, filtrar en la lista y volver a abrirlo. */}
+            <div className="filtros-plantilla">
+              <select value={filtro.marca ?? ''} aria-label="Filtrar por marca"
+                onChange={(e) => onFiltrar({ marca: e.target.value || undefined })}>
+                <option value="">Todas las marcas</option>
+                {marcas.map((m) => <option key={m.codigo} value={m.codigo}>{m.nombre}</option>)}
+              </select>
+              <select value={filtro.categoria ?? ''} aria-label="Filtrar por categoría"
+                onChange={(e) => onFiltrar({ categoria: e.target.value || undefined })}>
+                <option value="">Todas las categorías</option>
+                {categorias.map((c) => <option key={c.nombre} value={c.nombre}>{c.nombre}</option>)}
+              </select>
+              <label className="casilla">
+                <input type="checkbox" checked={!!filtro.sin_precio}
+                  onChange={(e) => onFiltrar({ sin_precio: e.target.checked || undefined })} />
+                Solo sin precio
+              </label>
+            </div>
+
+            {activos.length > 0 && (
+              <div className="etiquetas etiquetas-filtro">
+                {activos.map((a) => (
+                  <button key={a.clave} className="pastilla dudosa quitable"
+                    title="Quitar este filtro"
+                    onClick={() => onFiltrar({ [a.clave]: undefined } as Partial<FiltroCatalogo>)}>
+                    {a.texto} ✕
+                  </button>
+                ))}
+                <button className="enlace" onClick={() => onFiltrar({
+                  q: undefined, marca: undefined, categoria: undefined,
+                  problemas: undefined, excluidos: undefined,
+                  sin_precio: undefined, sin_publicar: undefined,
+                })}>Quitar todos</button>
+              </div>
+            )}
             <button onClick={() => void descargar()} disabled={ocupado !== null}>
               {ocupado === 'descarga' ? 'Preparando…' : 'Descargar plantilla (.xlsx)'}
             </button>
