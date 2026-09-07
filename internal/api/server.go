@@ -703,7 +703,15 @@ func (s *Server) planificar(w http.ResponseWriter, r *http.Request) {
 		escribir(w, http.StatusBadRequest, map[string]string{"error": "identificador inválido"})
 		return
 	}
-	plan, err := publicar.Planificar(r.Context(), s.st, s.cola, id)
+	// El cuerpo es opcional. Con una lista de variantes se planifica solo eso:
+	// quien acaba de arreglar tres fichas quiere verlas en el canal sin
+	// esperar a que pase por delante el catálogo entero.
+	var req struct {
+		Variantes []int64 `json:"variantes"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+
+	plan, err := publicar.PlanificarSolo(r.Context(), s.st, s.cola, id, req.Variantes)
 	if err != nil {
 		escribir(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
 		return

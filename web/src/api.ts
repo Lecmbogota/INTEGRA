@@ -846,7 +846,10 @@ export const api = {
     pedir<{ estado: string; numero: string }>(`/api/ordenes/${ordenId}/reintentar`, { method: 'POST' }),
 
   publicaciones: () => pedir<ResumenPublicacion[]>('/api/publicaciones'),
-  planificar: (cuentaId: number) =>
+  // Sin `variantes` planifica la cuenta entera; con ellas, solo esas. Es lo
+  // que separa la corrida nocturna de «acabo de arreglar estas tres fichas y
+  // quiero verlas en el canal».
+  planificar: (cuentaId: number, variantes?: number[]) =>
     pedir<{
       publicar: number; precio: number; stock: number; sin_cambios: number; no_listos: number
       // Los que no salen porque su precio no cubre el coste.
@@ -854,7 +857,11 @@ export const api = {
       // Lo que se retira del canal por haber salido del catálogo, y lo que vuelve a abrirse al regresar.
       pausar: number; reanudar: number
     }>(
-      `/api/cuentas/${cuentaId}/planificar`, { method: 'POST' }),
+      `/api/cuentas/${cuentaId}/planificar`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ variantes: variantes ?? [] }),
+      }),
 
   cuentas: () => pedir<CuentaCanal[]>('/api/cuentas'),
   guardarCuenta: (canal: string, nombre: string, credenciales: CredencialesCanal) =>

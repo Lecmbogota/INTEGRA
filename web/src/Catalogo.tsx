@@ -34,6 +34,47 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio }: {
   const [marcados, setMarcados] = useState<Set<number>>(new Set())
   const [masiva, setMasiva] = useState(false)
   const [plantilla, setPlantilla] = useState(false)
+  const [publicando, setPublicando] = useState(false)
+  // El resultado de publicar tiene su propio aviso: el banner de error de la
+  // pantalla dice «no se pudo cargar la lista», que no es lo que pasó.
+  const [aviso, setAviso] = useState<{ texto: string; malo: boolean } | null>(null)
+
+  // Publicar lo seleccionado. Planificar la cuenta entera es lo correcto para
+  // la corrida nocturna, pero quien acaba de arreglar tres fichas quiere
+  // verlas en el canal sin esperar a que pase por delante todo el catálogo.
+  async function publicarSeleccion() {
+    setError(null)
+    setAviso(null)
+    setPublicando(true)
+    try {
+      const cuentas = await api.cuentas()
+      const activas = cuentas.filter((c) => c.activa)
+      if (activas.length === 0) {
+        setAviso({ texto: 'No hay ninguna cuenta de canal activa: configúrala en Canales antes de publicar.', malo: true })
+        return
+      }
+      const ids = [...marcados]
+      const partes: string[] = []
+      for (const c of activas) {
+        const p = await api.planificar(c.id, ids)
+        const total = p.publicar + p.precio + p.stock
+        partes.push(total === 0
+          ? `${c.canal}: nada que enviar${p.no_listos > 0 ? ` (${num(p.no_listos)} sin requisitos)` : ''}`
+          : `${c.canal}: ${num(total)} envíos`)
+      }
+      setAviso({
+        texto: `${partes.join(' · ')}. El worker los procesa en segundo plano; su avance se ve en Publicación.`,
+        malo: false,
+      })
+    } catch (e) {
+      setAviso({
+        texto: `No se pudo publicar la selección: ${e instanceof Error ? e.message : String(e)}`,
+        malo: true,
+      })
+    } finally {
+      setPublicando(false)
+    }
+  }
 
   const filtroActual = {
     q: busqueda, marca, categoria, problemas: soloProblemas,
@@ -104,6 +145,15 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio }: {
         </div>
       </header>
 
+      {aviso && (
+        <div className={aviso.malo ? 'aviso-caja' : 'nota-previa'}>
+          <div className="fila">
+            <span className="expande-recorta">{aviso.texto}</span>
+            <button onClick={() => setAviso(null)}>Cerrar</button>
+          </div>
+        </div>
+      )}
+
       {error && (
         <div className="aviso-caja">
           <div className="fila">
@@ -166,6 +216,13 @@ export function Catalogo({ marcas, categorias = [], onVer, onCambio }: {
             )}
             {marcados.size > 0 && (
               <button onClick={() => setMarcados(new Set())}>Limpiar selección</button>
+            )}
+            {marcados.size > 0 && (
+              <button className="primario" onClick={() => void publicarSeleccion()}
+                disabled={publicando}
+                title="Encola el envío a los canales de los productos marcados">
+                {publicando ? 'Encolando…' : `Publicar ${num(marcados.size)}`}
+              </button>
             )}
             <button onClick={() => setPlantilla(true)}
               title="Descarga el catálogo como hoja de Excel, edítalo y súbelo para actualizar precios y promociones de muchos productos a la vez.">

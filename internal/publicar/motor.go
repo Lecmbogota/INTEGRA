@@ -80,13 +80,38 @@ type encolador interface {
 // Es idempotente: la clave única del trabajo impide que dos planificaciones
 // seguidas encolen dos veces el mismo envío.
 func Planificar(ctx context.Context, st catalogo, cola encolador, cuentaID int64) (*Plan, error) {
+	return PlanificarSolo(ctx, st, cola, cuentaID, nil)
+}
+
+// PlanificarSolo hace lo mismo acotado a unas variantes concretas.
+//
+// Publicar el catálogo entero es lo correcto para la corrida nocturna, pero no
+// para una persona que acaba de arreglar tres fichas y quiere verlas en el
+// canal: esperaba a que el resto pasara por delante sin saber cuál de los
+// cientos de trabajos era el suyo. Con la lista vacía se planifica todo, que
+// es como se llamaba antes.
+func PlanificarSolo(ctx context.Context, st catalogo, cola encolador, cuentaID int64, soloVariantes []int64) (*Plan, error) {
 	candidatos, err := st.CandidatosPublicacion(ctx, cuentaID)
 	if err != nil {
 		return nil, err
 	}
 
+	var elegidas map[int64]bool
+	if len(soloVariantes) > 0 {
+		elegidas = make(map[int64]bool, len(soloVariantes))
+		for _, v := range soloVariantes {
+			elegidas[v] = true
+		}
+	}
+
 	p := &Plan{}
 	for _, c := range candidatos {
+		// El filtro va antes que el recuento de «no listos»: con una selección
+		// hecha, los números del resumen tienen que hablar solo de lo elegido
+		// o dirían que faltan requisitos en productos que nadie pidió enviar.
+		if elegidas != nil && !elegidas[c.VarianteID] {
+			continue
+		}
 		if !c.Listo {
 			p.NoListos++
 			continue
