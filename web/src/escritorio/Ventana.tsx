@@ -35,6 +35,16 @@ function reducirMovimiento(): boolean {
   return typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
 }
 
+// Qué recorrido de la guía explica cada app. Casi siempre coincide con el
+// id; los diálogos con clave distinta se listan, y lo que no tiene recorrido
+// propio (configuración, la propia ayuda) abre el general.
+function claveGuiaDe(app: string): string {
+  const especiales: Record<string, string> = {
+    'selector-mediateca': 'selector', 'asignar-foto': 'asignar', configuracion: 'general', ayuda: 'general',
+  }
+  return especiales[app] ?? app
+}
+
 export function Ventana({ ventana, children }: { ventana: VentanaTipo; children: ReactNode }) {
   const sistema = useSistema()
   const def = APPS[ventana.app]
@@ -253,6 +263,13 @@ export function Ventana({ ventana, children }: { ventana: VentanaTipo; children:
           <span className="ventana-icono" style={{ background: def.color }} aria-hidden="true">{def.icono}</span>
           <span className="ventana-nombre">{ventana.titulo}</span>
           <div className="ventana-botones">
+            {/* La ayuda va en todas las ventanas, siempre en el mismo sitio:
+                abre el recorrido de esta app (o el general si no tiene). */}
+            <button type="button" className="ayuda" aria-label="Ayuda de esta ventana"
+              title="Cómo funciona esta pantalla (tecla ?)" data-guia="ventana-ayuda"
+              onClick={() => window.dispatchEvent(new CustomEvent('integra:guia', { detail: { clave: claveGuiaDe(ventana.app) } }))}>
+              ?
+            </button>
             <button type="button" aria-label="Minimizar" title="Minimizar" onClick={() => salir('minimizando')}>
               <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
             </button>

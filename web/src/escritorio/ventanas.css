@@ -77,6 +77,8 @@
 }
 .ventana-botones button:hover:not(:disabled) { background: var(--surface-4); color: var(--texto); }
 .ventana-botones button.cerrar:hover:not(:disabled) { background: var(--error); color: #fff; }
+.ventana-botones button.ayuda { font-weight: 700; font-size: 13px; color: var(--acento); }
+.ventana-botones button.ayuda:hover:not(:disabled) { background: color-mix(in srgb, var(--acento) 14%, transparent); color: var(--acento); }
 .ventana.movil .ventana-botones button { width: 44px; height: 40px; }
 .ventana.movil .ventana-botones button > svg { width: 16px; height: 16px; }
 
