@@ -97,6 +97,7 @@ func Nuevo(st *store.Store, log *slog.Logger, addr string, alm *imagen.Almacen, 
 	mux.HandleFunc("POST /api/ordenes/{id}/reintentar", s.reintentarOrden)
 	mux.HandleFunc("POST /api/ordenes/{id}/despachar", s.despacharOrden)
 	mux.HandleFunc("GET /api/publicaciones", s.publicaciones)
+	mux.HandleFunc("GET /api/publicaciones/productos", s.estadoPublicaciones)
 	mux.HandleFunc("POST /api/cuentas/{id}/planificar", s.planificar)
 	mux.HandleFunc("POST /api/cuentas/{id}/publicaciones/{accion}", s.activarPublicaciones)
 	mux.HandleFunc("GET /api/cuentas", s.cuentas)
@@ -688,6 +689,59 @@ func (s *Server) publicaciones(w http.ResponseWriter, r *http.Request) {
 		res = []store.ResumenPublicacion{}
 	}
 	escribir(w, http.StatusOK, res)
+}
+
+// estadoPublicaciones responde qué le pasa a cada producto en cada canal.
+//
+// Es la pregunta que ni Productos ni Publicación sabían contestar: la primera
+// lista el catálogo de Odoo y la segunda cuenta fichas por canal, pero entre
+// las dos no había manera de saber cuál de estos es un producto concreto —uno
+// que nunca se publicó, uno publicado y al día, o uno publicado al que le
+// falta enviar un cambio— ni por qué uno no puede ir a un canal.
+func (s *Server) estadoPublicaciones(w http.ResponseWriter, r *http.Request) {
+	cuentas, err := s.st.ListarCuentas(r.Context())
+	if err != nil {
+		s.fallo(w, err)
+		return
+	}
+	var cs []publicar.CuentaDeCanal
+	for _, c := range cuentas {
+		if c.Activa {
+			cs = append(cs, publicar.CuentaDeCanal{ID: c.ID, Canal: c.CanalCodigo})
+		}
+	}
+
+	estados, err := publicar.EstadoPublicaciones(r.Context(), s.st, cs)
+	if err != nil {
+		s.fallo(w, err)
+		return
+	}
+
+	// El filtro por situación se aplica aquí y no en la consulta porque la
+	// situación no está en la base: se deduce comparando los hashes con los
+	// del catálogo de ahora mismo.
+	if sit := r.URL.Query().Get("situacion"); sit != "" {
+		filtrados := make([]publicar.EstadoDeProducto, 0, len(estados))
+		for _, e := range estados {
+			for _, c := range e.Canales {
+				if c.Situacion == sit {
+					filtrados = append(filtrados, e)
+					break
+				}
+			}
+		}
+		estados = filtrados
+	}
+	if q := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q"))); q != "" {
+		filtrados := make([]publicar.EstadoDeProducto, 0, len(estados))
+		for _, e := range estados {
+			if strings.Contains(strings.ToLower(e.SKU), q) || strings.Contains(strings.ToLower(e.Titulo), q) {
+				filtrados = append(filtrados, e)
+			}
+		}
+		estados = filtrados
+	}
+	escribir(w, http.StatusOK, map[string]any{"total": len(estados), "items": estados})
 }
 
 // planificar compara el catálogo con lo publicado y encola solo lo que

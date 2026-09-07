@@ -303,6 +303,28 @@ export interface ResumenOrdenes {
   monto_hoy: number
 }
 
+// Situación de un producto en un canal. Es la pregunta que ni Productos ni
+// Publicación sabían contestar por separado.
+export type Situacion = 'nuevo' | 'al_dia' | 'pendiente' | 'pausado' | 'retirado' | 'no_publicable'
+
+export interface EstadoEnCanal {
+  cuenta_id: number
+  canal: string
+  situacion: Situacion
+  // Lo que impide publicar, dicho como lo diría quien lo va a arreglar.
+  falta: string[] | null
+  // Qué hay pendiente de enviar: ficha, precio, stock.
+  cambios: string[] | null
+  external_id: string
+}
+
+export interface EstadoDeProducto {
+  variante_id: number
+  sku: string
+  titulo: string
+  canales: EstadoEnCanal[]
+}
+
 export interface ResumenPublicacion {
   canal: string
   cuenta_id: number
@@ -846,6 +868,15 @@ export const api = {
     pedir<{ estado: string; numero: string }>(`/api/ordenes/${ordenId}/reintentar`, { method: 'POST' }),
 
   publicaciones: () => pedir<ResumenPublicacion[]>('/api/publicaciones'),
+
+  // El estado producto a producto: si nunca se publicó, si está al día, si le
+  // falta enviar un cambio, o por qué no puede ir a un canal concreto.
+  estadoPublicaciones: (p?: { situacion?: string; q?: string }) => {
+    const q = new URLSearchParams()
+    if (p?.situacion) q.set('situacion', p.situacion)
+    if (p?.q) q.set('q', p.q)
+    return pedir<{ total: number; items: EstadoDeProducto[] }>(`/api/publicaciones/productos?${q}`)
+  },
   // Sin `variantes` planifica la cuenta entera; con ellas, solo esas. Es lo
   // que separa la corrida nocturna de «acabo de arreglar estas tres fichas y
   // quiero verlas en el canal».

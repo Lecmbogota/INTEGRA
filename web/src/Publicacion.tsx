@@ -1,5 +1,26 @@
 import { useCallback, useEffect, useState } from 'react'
-import { api, fecha, num, type CuentaCanal, type ResumenPublicacion } from './api'
+import { api, fecha, num, type CuentaCanal, type ResumenPublicacion, type EstadoDeProducto, type Situacion } from './api'
+
+// Cómo se nombra y se pinta cada situación. «Sin publicar» no es un problema
+// —es el estado natural de un producto nuevo— y por eso no sale en rojo; lo
+// que sí lo es, «no se puede publicar», sí.
+const ETIQUETA: Record<string, string> = {
+  nuevo: 'Sin publicar',
+  al_dia: 'Al día',
+  pendiente: 'Cambios sin enviar',
+  pausado: 'Retirado por nosotros',
+  retirado: 'Lo retiró el canal',
+  no_publicable: 'No se puede publicar',
+}
+
+const TONO: Record<string, string> = {
+  nuevo: 'dudosa',
+  al_dia: 'ok',
+  pendiente: 'aviso',
+  pausado: 'dudosa',
+  retirado: 'bloqueante',
+  no_publicable: 'bloqueante',
+}
 
 const NOMBRES: Record<string, string> = {
   mercadolibre: 'MercadoLibre', falabella: 'Falabella',
@@ -34,6 +55,23 @@ export function Publicacion() {
       .finally(() => { setCargado(true); setRefrescando(false) })
   }, [])
   useEffect(() => { void cargar() }, [cargar])
+
+  // El estado producto a producto. Sin esto, entre Productos —que lista el
+  // catálogo de Odoo— y el resumen de arriba —que cuenta fichas por canal— no
+  // había manera de saber qué es un producto concreto: nunca publicado,
+  // publicado y al día, o publicado con un cambio sin enviar.
+  const [estados, setEstados] = useState<EstadoDeProducto[]>([])
+  const [situacion, setSituacion] = useState<Situacion | ''>('')
+  const [buscando, setBuscando] = useState('')
+  const [cargandoEstado, setCargandoEstado] = useState(true)
+
+  useEffect(() => {
+    setCargandoEstado(true)
+    api.estadoPublicaciones({ situacion: situacion || undefined, q: buscando || undefined })
+      .then((r) => setEstados(r.items))
+      .catch(() => setEstados([]))
+      .finally(() => setCargandoEstado(false))
+  }, [situacion, buscando, plan])
 
   // Integra publica la ficha en borrador a propósito: en WooCommerce y en
   // Shopify, que la vea el comprador es decisión de una persona. Este es el
@@ -178,6 +216,66 @@ export function Publicacion() {
               </div>
             )
           })}
+        </div>
+      </section>
+
+      <section className="panel">
+        <h2>Producto a producto</h2>
+        <div className="cuerpo">
+          <div className="filtros">
+            <input className="crece" placeholder="Buscar por SKU o nombre…"
+              value={buscando} onChange={(e) => setBuscando(e.target.value)} />
+            <select aria-label="Filtrar por situación" value={situacion}
+              onChange={(e) => setSituacion(e.target.value as Situacion | '')}>
+              <option value="">Todas las situaciones</option>
+              <option value="nuevo">Sin publicar todavía</option>
+              <option value="pendiente">Con cambios sin enviar</option>
+              <option value="al_dia">Publicados y al día</option>
+              <option value="no_publicable">No se pueden publicar</option>
+              <option value="pausado">Retirados por nosotros</option>
+              <option value="retirado">Retirados por el canal</option>
+            </select>
+          </div>
+
+          {cargandoEstado && <div className="vacio">Cargando…</div>}
+          {!cargandoEstado && estados.length === 0 && (
+            <div className="vacio">Ningún producto en esa situación.</div>
+          )}
+
+          {estados.length > 0 && (
+            <div className="tabla-envoltorio">
+              <table className="tabla-tarjetas">
+                <thead>
+                  <tr><th>Producto</th><th>Canal</th><th>Situación</th><th>Detalle</th></tr>
+                </thead>
+                <tbody>
+                  {estados.map((e) => e.canales.map((c, i) => (
+                    <tr key={`${e.variante_id}-${c.cuenta_id}`}>
+                      {/* El SKU solo en la primera fila del producto: repetirlo
+                          en cada canal hace la tabla ilegible de un vistazo. */}
+                      <td className="titulo-tarjeta">
+                        {i === 0 ? <><span className="sku">{e.sku}</span> {e.titulo}</> : ''}
+                      </td>
+                      <td data-etiqueta="Canal">{NOMBRES[c.canal] ?? c.canal}</td>
+                      <td data-etiqueta="Situación">
+                        <span className={`pastilla ${TONO[c.situacion] ?? 'aviso'}`}>
+                          {ETIQUETA[c.situacion] ?? c.situacion}
+                        </span>
+                      </td>
+                      <td className="apilada tenue mini-texto" data-etiqueta="Detalle">
+                        {c.cambios && c.cambios.length > 0 && `falta enviar: ${c.cambios.join(', ')}`}
+                        {c.falta && c.falta.length > 0 && (
+                          <div className={c.situacion === 'no_publicable' ? 'error' : ''}>
+                            {c.falta.join(' · ')}
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  )))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       </section>
 
