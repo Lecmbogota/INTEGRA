@@ -147,7 +147,7 @@ export function Login({ onEntrar }: { onEntrar: (s: Sesion) => void }) {
   const fecha = ahora.toLocaleDateString('es-CO', { weekday: 'long', day: 'numeric', month: 'long' })
 
   return (
-    <div className={`bloqueo ${saliendo ? 'saliendo' : ''}`}>
+    <div className={`pantalla-bloqueo ${saliendo ? 'saliendo' : ''}`}>
       <div className="bloqueo-fondo" style={{ background: fondo }} aria-hidden="true" />
       <div className="bloqueo-velo" aria-hidden="true" />
 

@@ -1,6 +1,6 @@
 /* Pantalla de bloqueo: fondo del escritorio desenfocado, reloj arriba, el
    usuario en el centro. Se funde con el escritorio al entrar. */
-.bloqueo {
+.pantalla-bloqueo {
   position: fixed; inset: 0; overflow: hidden; color: #fff;
   display: grid; grid-template-rows: auto 1fr auto; align-items: center; justify-items: center;
   font-family: var(--fuente-cuerpo);
@@ -10,7 +10,7 @@
 .bloqueo-velo { position: absolute; inset: 0; z-index: 0; background: linear-gradient(180deg, rgba(10,14,24,.35), rgba(10,14,24,.55)); }
 /* Solo el contenido se apila sobre el fondo; la foto y el velo siguen
    absolutos, detrás. */
-.bloqueo > :not(.bloqueo-fondo):not(.bloqueo-velo) { position: relative; z-index: 1; }
+.pantalla-bloqueo > :not(.bloqueo-fondo):not(.bloqueo-velo) { position: relative; z-index: 1; }
 
 .bloqueo-reloj { margin-top: 8vh; text-align: center; text-shadow: 0 2px 18px rgba(0,0,0,.45); }
 .bloqueo-hora { font-family: var(--fuente-titular); font-size: clamp(56px, 9vw, 96px); font-weight: 600; line-height: 1; letter-spacing: -.02em; }
@@ -54,8 +54,8 @@
 .bloqueo-nota code { font-family: var(--fuente-mono); background: rgba(0,0,0,.35); padding: 2px 6px; border-radius: 4px; }
 
 /* Al entrar: la pantalla se aleja y se funde; el escritorio llega detrás. */
-.bloqueo.saliendo { animation: bloqueo-salir .75s ease-in forwards; pointer-events: none; }
-.bloqueo.saliendo .bloqueo-fondo { filter: blur(0) saturate(1); transition: filter .7s ease; }
+.pantalla-bloqueo.saliendo { animation: bloqueo-salir .75s ease-in forwards; pointer-events: none; }
+.pantalla-bloqueo.saliendo .bloqueo-fondo { filter: blur(0) saturate(1); transition: filter .7s ease; }
 .pantalla.entrando { animation: escritorio-entrar .9s ease-out both; }
 
 @keyframes bloqueo-entrar { from { opacity: 0 } to { opacity: 1 } }
@@ -68,5 +68,5 @@
   .bloqueo-avatar { width: 88px; height: 88px; font-size: 38px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .bloqueo, .bloqueo.saliendo, .pantalla.entrando { animation-duration: .01s; }
+  .pantalla-bloqueo, .pantalla-bloqueo.saliendo, .pantalla.entrando { animation-duration: .01s; }
 }
