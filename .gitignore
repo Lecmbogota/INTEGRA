@@ -23,3 +23,7 @@ dist/
 # Banco de imágenes y datos locales: cientos de MB, no son código
 /datos/
 .claude/scheduled_tasks.lock
+
+# Logs de los lanzadores locales (_iniciar.bat, _migrar.bat…): _migrar.log
+# guarda la URL de la base de datos con su contraseña.
+_*.log
